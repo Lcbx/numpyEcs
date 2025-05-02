@@ -22,13 +22,24 @@ class ComponentStorage:
         self._nums = np.zeros((self._capacity, len(self._num_fields)), dtype=float)
         self._objs: Dict[str, List[Any]] = {f: [] for f in self._obj_fields}
         self._dense = np.zeros((self._capacity,), dtype=int)
-        self.sparse = np.full((0,), -1, dtype=int)
+        self.sparse = np.full((self._capacity,), -1, dtype=int)
 
     @property
     def dense(self) -> np.ndarray:
         return self._dense[:self._size]
+    
+    @property
+    def sparse_size(self) -> int:
+        return self.sparse.shape[0]
+        
+    def _grow_sparse(self, entity : int):
+        sparse_size = self.sparse_size
+        new_cap = max(sparse_size * 2, entity+32)
+        new_sparse = np.full((new_cap,), -1, dtype=int)
+        new_sparse[:sparse_size] = self.sparse[:sparse_size]
+        self.sparse = new_sparse
 
-    def _grow(self):
+    def _grow_dense(self):
         new_cap = self._capacity * 2
         # expand numeric buffer
         new_nums = np.zeros((new_cap, len(self._num_fields)), dtype=float)
@@ -41,15 +52,11 @@ class ComponentStorage:
         self._capacity = new_cap
 
     def add(self, entity: int, component: Any) -> None:
-        # ensure sparse covers this entity
-        if entity >= self.sparse.shape[0]:
-            pad = np.full((entity + 1 - self.sparse.shape[0],), -1, dtype=int)
-            self.sparse = np.concatenate([self.sparse, pad])
-        if self.sparse[entity] != -1:
-            raise ValueError(f"Entity {entity} already has {self.component_cls.__name__}")
         # grow if needed
+        if entity >= self.sparse_size:
+            self._grow_sparse(entity)
         if self._size >= self._capacity:
-            self._grow()
+            self._grow_dense()
         idx = self._size
         # write sparse/dense
         self.sparse[entity] = idx
@@ -63,7 +70,7 @@ class ComponentStorage:
         self._size += 1
 
     def remove(self, entity: int) -> None:
-        if entity >= self.sparse.shape[0] or self.sparse[entity] == -1:
+        if entity >= self.sparse_size or self.sparse[entity] == -1:
             return
         idx = int(self.sparse[entity])
         last = self._size - 1
@@ -81,7 +88,7 @@ class ComponentStorage:
         self._size -= 1
 
     def get(self, entity: int) -> Any:
-        if entity >= self.sparse.shape[0]:
+        if entity >= self.sparse_size:
             return None
         idx = int(self.sparse[entity])
         if idx == -1:
