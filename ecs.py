@@ -2,6 +2,11 @@ import numpy as np
 import numbers
 import inspect
 from typing import Type, Dict, Callable, Any, List, Tuple
+from dataclasses import dataclass
+
+component = dataclass
+
+ComponentProxy = lambda s,e: None
 
 class ComponentStorage:
     """
@@ -87,18 +92,8 @@ class ComponentStorage:
             lst.pop()
         self._size -= 1
 
-    def get(self, entity: int) -> Any:
-        if entity >= self.sparse_size:
-            return None
-        idx = int(self.sparse[entity])
-        if idx == -1:
-            return None
-        kwargs: Dict[str, Any] = {}
-        for j, f in enumerate(self._num_fields):
-            kwargs[f] = self._nums[idx, j]
-        for f, lst in self._objs.items():
-            kwargs[f] = lst[idx]
-        return self.component_cls(**kwargs)
+    def get(self, entity: int) -> ComponentProxy:
+        return ComponentProxy(self, entity)
 
 class ECS:
     """
@@ -115,11 +110,17 @@ class ECS:
         self.entity_masks = np.zeros((0,), dtype=np.uint64)
         self._free_entities: List[int] = []
         self._next_entity_id = 0
-
-    def _ensure_entity_mask(self, entity: int) -> None:
-        if entity >= self.entity_masks.shape[0]:
-            pad = np.zeros((entity + 1 - self.entity_masks.shape[0],), dtype=np.uint64)
-            self.entity_masks = np.concatenate([self.entity_masks, pad])
+    
+    @property
+    def entity_masks_size(self) -> int:
+        return self.entity_masks.shape[0]
+    
+    def _grow_entity_mask(self, entity : int):
+        entity_masks_size = self.entity_masks_size
+        new_cap = max(entity_masks_size * 2, entity+32)
+        new_entity_masks = np.full((new_cap,), 0, dtype=int)
+        new_entity_masks[:entity_masks_size] = self.entity_masks[:entity_masks_size]
+        self.entity_masks = new_entity_masks
 
     def create_entities(self, n: int) -> np.ndarray:
         """
@@ -135,7 +136,13 @@ class ECS:
             self._next_entity_id += 1
             out.append(eid)
         return out
-
+        
+    def create_entity(self, *components) -> int:
+        [entity] = self.create_entities(1)
+        for comp in components:
+            self.add_component(entity, comp)
+        return entity
+    
     def delete_entity(self, entity: int) -> None:
         for comp_cls in list(self._comp_bits):
             if self.has_component(entity, comp_cls):
@@ -149,7 +156,7 @@ class ECS:
             self._comp_bits[cls] = 1 << self._next_bit
             self._next_bit += 1
         bit = self._comp_bits[cls]
-        self._ensure_entity_mask(entity)
+        self._grow_entity_mask(entity)
         self.entity_masks[entity] |= bit
         if cls not in self._stores:
             self._stores[cls] = ComponentStorage(cls)
@@ -157,38 +164,45 @@ class ECS:
 
     def remove_component(self, entity: int, comp_cls: Type) -> None:
         bit = self._comp_bits.get(comp_cls, 0)
-        if entity < self.entity_masks.shape[0]:
+        if entity < entity_masks_size:
             self.entity_masks[entity] &= ~bit
         store = self._stores.get(comp_cls)
         if store:
             store.remove(entity)
 
-    def get_component(self, entity: int, comp_cls: Type) -> Any:
+    def get_component(self, entity: int, comp_cls: Type) -> ComponentProxy:
         store = self._stores.get(comp_cls)
-        return store.get(entity) if store else None
+        return ComponentProxy(store, entity)
 
-    def get_block(self, comp_cls: Type, entities: np.ndarray) -> np.ndarray:
-        """ returns numeric block of comp_cls component type associated with entities """
+    def get_vector(self, comp_cls: Type, entities: np.ndarray) -> np.ndarray:
+        """ returns numeric block of component type comp_cls associated with entities """
         store = self._stores[comp_cls]
         es = np.atleast_1d(entities).astype(int)
         idx = store.sparse[es]
         return store._nums[idx]
 
-    def apply(self, *args):
+    def get_vectors(self, *args):
         """
-        Apply an in-place mutator to numeric blocks of N component types.
+        returns numeric blocks of N component types associated with entities
 
         Usage:
-            ecs.apply(C1, C2, …, entities, fn)
+            ecs.get_blocks(C1, C2, …, entities)
 
         - C1…Cn are component classes
         - entities: 1D array of entity IDs
-        - fn(*arrays) must mutate the arrays in-place
         """
-        *comp_clss, entities, fn = args
+        *comp_clss, entities = args
         es = np.atleast_1d(entities).astype(int)
-        blocks = [self.get_block(C, es) for C in comp_clss]
-        fn(*blocks)
+        return [self.get_vector(C, es) for C in comp_clss]
+    
+    def set_vector(self, comp_cls: Type, entities: np.ndarray, vectors: np.ndarray) -> None:
+        """
+        Overwrite the numeric rows of `comp_cls` at `entities` with `vectors`.
+        """
+        store = self._stores[comp_cls]
+        es = np.atleast_1d(entities).astype(int)
+        idx = store.sparse[es]
+        store._nums[idx] = vectors
 
 
     def where(self, *args) -> np.ndarray:
@@ -221,6 +235,56 @@ class ECS:
             return ents
 
         # apply predicate
-        flags = [predicate(*[self.get_component(e, C) for C in comp_clss]) for e in ents]
+        flags = [predicate(*[self.get_component(e, C).build() for C in comp_clss]) for e in ents]
         return ents[np.array(flags, dtype=bool)]    
+        
+class ComponentProxy:
+    """
+    Lazy proxy for one component instance on one entity.
+    Wraps the ComponentStorage for fast field access.
+    """
+    def __init__(self, store, entity: int):
+        object.__setattr__(self, "_store", store)
+        object.__setattr__(self, "_entity", entity)
+
+    def __getattr__(self, name):
+        store = self._store
+        idx = int(store.sparse[self._entity])
+        if name in store._num_fields:
+            j = store._num_fields.index(name)
+            return store._nums[idx, j]
+        elif name in store._obj_fields:
+            return store._objs[name][idx]
+
+    def __setattr__(self, name, value):
+        store = self._store
+        idx = int(store.sparse[self._entity])
+        if name in store._num_fields:
+            j = store._num_fields.index(name)
+            store._nums[idx, j] = float(value)
+        elif name in store._obj_fields:
+            store._objs[name][idx] = value
+
+    def __repr__(self):
+        store = self._store
+        idx = int(store.sparse[self._entity])
+        data = {
+            f: getattr(self, f)
+            for f in store._num_fields + store._obj_fields
+        }
+        return f"<{store.component_cls.__name__}Proxy e={self._entity} {data}>"
     
+    def build(self) -> Any:
+        """
+        Reconstruct and return a full instance of the component.
+        """
+        store = self._store
+        idx = int(store.sparse[self._entity])
+        kwargs: Dict[str, Any] = {}
+        # numeric fields
+        for j, f in enumerate(store._num_fields):
+            kwargs[f] = store._nums[idx, j]
+        # object fields
+        for f in store._obj_fields:
+            kwargs[f] = store._objs[f][idx]
+        return store.component_cls(**kwargs)
