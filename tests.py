@@ -1,6 +1,58 @@
 from ecs import *
 import pytest
 
+
+def test_no_free_entities():
+    ecs = ECS()
+    ids = ecs.create_entities(3)
+    assert isinstance(ids, list) or isinstance(ids, np.ndarray)
+    assert list(ids) == [0, 1, 2]
+    assert ecs._next_entity_id == 3
+    assert ecs._free_entities == []
+
+def test_single_free_entity_exact():
+    ecs = ECS()
+    ecs._free_entities = [10]
+    [eid] = ecs.create_entities(1)
+    assert isinstance(eid, Entity)
+    assert eid == 10
+    assert ecs._next_entity_id == 0
+    assert ecs._free_entities == []
+
+def test_single_free_entity_more_than_one():
+    ecs = ECS()
+    ecs._free_entities = [5]
+    out = ecs.create_entities(3)
+    assert out == [5, 0, 1]
+    assert ecs._next_entity_id == 2
+    assert ecs._free_entities == []
+
+def test_multiple_delete_entity_twice():
+    ecs = ECS()
+    ecs._free_entities = [7, 8, 9, 10]
+    ecs.delete_entity(7)
+    assert ecs._free_entities == [7, 8, 9, 10]
+    out = ecs.create_entities(2)
+    assert out == [9,10]
+
+def test_multiple_free_entities_exact_n():
+    ecs = ECS()
+    ecs._free_entities = [20, 30]
+    ecs._next_entity_id = 5
+    out = ecs.create_entities(2)
+    assert out == [20, 30]
+    assert ecs._free_entities == []
+    assert ecs._next_entity_id == 5
+
+def test_multiple_free_entities_more_than_n():
+    ecs = ECS()
+    ecs._free_entities = [100, 101, 102, 103]
+    ecs._next_entity_id = 0
+    out = ecs.create_entities(3)
+    assert out == [101, 102, 103]
+    assert ecs._free_entities[0] == 100
+    assert ecs._next_entity_id == 0
+
 @component
 class Foo:
     a: float
@@ -144,11 +196,14 @@ def test_movement_system():
     ecs = ECS()
     ecs.register(Position2D, Velocity2D, Tag)
     # Setup entities
-    ecs.add_component(1, Position2D(0.0, 0.0))
-    ecs.add_component(1, Velocity2D(1.0, 2.0))
-    ecs.add_component(2, Position2D(5.0, -3.0))
-    ecs.add_component(2, Velocity2D(-1.0, 0.5))
-    ecs.add_component(2, Tag(42, "Enemy"))
+    ecs.create_entity()
+    ecs.create_entity(
+        Position2D(0.0, 0.0),
+        Velocity2D(1.0, 2.0))
+    ecs.create_entity(
+        Position2D(5.0, -3.0),
+        Velocity2D(-1.0, 0.5),
+        Tag(42, "Enemy"))
 
     # Verify initial positions
     p1 = ecs.get_component(1, Position2D)
@@ -177,9 +232,10 @@ def test_aabb_system_and_overlap():
         Orientation(0,0,np.sin(np.pi/8), np.cos(np.pi/8))
     )
     # Entity 2 without rotation
-    ecs.add_component(2, LocalAABB(-2,-2,-2, 2,2,2))
-    ecs.add_component(2, Position(5,0,0))
-    ecs.add_component(2, AxisAlignedBoundingBox(0,0,0,0,0,0))
+    ecs.add_component(2,
+        LocalAABB(-2,-2,-2, 2,2,2),
+        Position(5,0,0),
+        AxisAlignedBoundingBox(0,0,0,0,0,0))
 
     # Run systems
     update_world_aabb(ecs)

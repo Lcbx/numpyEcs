@@ -227,34 +227,43 @@ class ECS:
         new_entity_masks = np.full((new_cap,), 0, dtype=int)
         new_entity_masks[:entity_masks_size] = self.entity_masks[:entity_masks_size]
         self.entity_masks = new_entity_masks
-
+    
     def create_entities(self, n: int) -> np.ndarray:
         """
         Create `n` new entity IDs, reusing deleted ones when possible.
         """
         out = []
-        # reuse free entities first
-        while self._free_entities and len(out) < n:
-            out.append(self._free_entities.pop())
-        # then allocate new IDs
-        while len(out) < n:
-            eid = self._next_entity_id
-            self._next_entity_id += 1
-            out.append(eid)
+        len_free = len(self._free_entities)
+        if len_free:
+            if len_free <= n:
+                out = self._free_entities
+                self._free_entities = []
+                n -= len_free
+            elif n == 1:
+                return self._free_entities.pop()
+            else:
+                out = self._free_entities[-n:]
+                self._free_entities[:-n]
+                return out
+        
+        current_id = self._next_entity_id
+        self._next_entity_id += n
+        if self.entity_masks_size <= self._next_entity_id:
+            self._grow_entity_mask(self._next_entity_id)
+        out.extend( range(current_id, self._next_entity_id) )
         return out
         
     def create_entity(self, *components) -> int:
         [entity] = self.create_entities(1)
-        for comp in components:
-            self.add_component(entity, comp)
+        self.add_component(entity, *components)
         return entity
     
     def delete_entity(self, entity: Entity) -> None:
         for comp_cls in list(self._comp_bits):
             if self.has_component(entity, comp_cls):
                 self.remove_component(entity, comp_cls)
-        # add to free list
-        self._free_entities.append(entity)
+        if not entity in self._free_entities:
+            self._free_entities.append(entity)
     
     def register(self, *component_types, allow_multiple_components_per_entity : bool = False):
         for cls in component_types:
@@ -268,12 +277,14 @@ class ECS:
         store = self._stores.get(comp_cls)
         store.mult_comp = True
     
-    def add_component(self, entity: Entity, component: Any) -> None:
-        cls = type(component)
-        bit = self._comp_bits[cls]
-        self._grow_entity_mask(entity)
-        self.entity_masks[entity] |= bit
-        self._stores[cls].add(entity, component)
+    def add_component(self, entity: Entity, *components) -> None:
+        bits = self.entity_masks[entity]
+        for comp in components:
+            cls = type(comp)
+            bit = self._comp_bits[cls]
+            bits |= bit
+            self._stores[cls].add(entity, comp)
+        self.entity_masks[entity] = bits
 
     def remove_component(self, entity: Entity, comp_cls: Type) -> None:
         bit = self._comp_bits.get(comp_cls, 0)
