@@ -142,6 +142,7 @@ class AxisAlignedBoundingBox:
 
 def test_movement_system():
     ecs = ECS()
+    ecs.register(Position2D, Velocity2D, Tag)
     # Setup entities
     ecs.add_component(1, Position2D(0.0, 0.0))
     ecs.add_component(1, Velocity2D(1.0, 2.0))
@@ -167,6 +168,7 @@ def test_movement_system():
 
 def test_aabb_system_and_overlap():
     ecs = ECS()
+    ecs.register(LocalAABB, Position, AxisAlignedBoundingBox, Orientation)
     # Entity 1 with rotated AABB
     e1 = ecs.create_entity(
         LocalAABB(-1,-1,-1, 1,1,1),
@@ -229,6 +231,7 @@ def test_storage_multicomp_add_get_remove():
 
 def test_ecs_multicomp_reassignment():
     ecs = ECS()
+    ecs.register(MultiComp)
     # Override the store for MultiComp to enable mult_comp
     s = ComponentStorage(MultiComp, mult_comp=True, initial_capacity=5)
     ecs._stores[MultiComp] = s

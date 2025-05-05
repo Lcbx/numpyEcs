@@ -217,10 +217,6 @@ class ECS:
         self.entity_masks = np.zeros((0,), dtype=np.uint64)
         self._free_entities: List[Entity] = []
         self._next_entity_id = 0
-        
-    def set_multi_component_per_entity(self, comp_cls: Type) -> None:
-        store = self._stores.get(comp_cls)
-        store.mult_comp = True
     
     @property
     def entity_masks_size(self) -> int:
@@ -260,17 +256,24 @@ class ECS:
                 self.remove_component(entity, comp_cls)
         # add to free list
         self._free_entities.append(entity)
-
+    
+    def register(self, *component_types, allow_multiple_components_per_entity : bool = False):
+        for cls in component_types:
+            if cls not in self._comp_bits:
+                self._comp_bits[cls] = 1 << self._next_bit
+                self._next_bit += 1
+            if cls not in self._stores:
+                self._stores[cls] = ComponentStorage(cls, mult_comp = allow_multiple_components_per_entity)
+    
+    def allow_multiple_components_per_entity(self, comp_cls: Type) -> None:
+        store = self._stores.get(comp_cls)
+        store.mult_comp = True
+    
     def add_component(self, entity: Entity, component: Any) -> None:
         cls = type(component)
-        if cls not in self._comp_bits:
-            self._comp_bits[cls] = 1 << self._next_bit
-            self._next_bit += 1
         bit = self._comp_bits[cls]
         self._grow_entity_mask(entity)
         self.entity_masks[entity] |= bit
-        if cls not in self._stores:
-            self._stores[cls] = ComponentStorage(cls)
         self._stores[cls].add(entity, component)
 
     def remove_component(self, entity: Entity, comp_cls: Type) -> None:
