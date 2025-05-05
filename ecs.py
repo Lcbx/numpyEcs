@@ -51,10 +51,10 @@ class ComponentStorage:
         new_sparse[:sparse_size] = self.sparse[:sparse_size]
         self.sparse = new_sparse
     
-    def _grow_dense(self):
+    def _grow_dense(self, needed_size:int=0):
         
         # expand
-        new_cap = self._capacity * 2
+        new_cap = max(self._size * 2, needed_size+32)
         new_nums = np.zeros((new_cap, len(self._num_fields)), dtype=float)
         new_dense = np.zeros((new_cap,), dtype=int)
         
@@ -139,9 +139,8 @@ class ComponentStorage:
         
         #proxies = self.get(entity)
         #print(f"relocate entity {entity}, length {length}, size {self._size}, proxies {proxies}")
-        
-        while self._size + length > self._capacity:
-            self._grow_dense()
+        needed = self._size + length
+        if needed > self._capacity: self._grow_dense(needed)
         
         head = self.sparse[entity]
         tail = head + length
