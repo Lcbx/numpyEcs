@@ -54,10 +54,12 @@ ground = world.create_entity(
     )
 )
 
-SPACE_SIZE = 30
 rnd_uint8 = lambda : get_random_value(0, 255)
 rnd_color = lambda : Color(rnd_uint8(),rnd_uint8(),rnd_uint8(),255)
-for e in world.create_entities(25):
+
+SPACE_SIZE = 30
+
+for e in world.create_entities(5000):
     world.add_component(e,
         Position(
             get_random_value(-SPACE_SIZE, SPACE_SIZE),
@@ -84,16 +86,20 @@ camera = Camera3D(
 
 
 init_window(800, 450, "Hello")
-set_target_fps(30)
+set_target_fps(60)
 
 while not window_should_close():
     
     frameTime = get_frame_time()
-    
+
+    positions = world.get_store(Position)
+    meshes = world.get_store(Mesh)
+    bboxes = world.get_store(BoundingBox)
+
     pv = world.where(Position, Velocity)
     p_vec, v_vec = world.get_vectors(Position, Velocity, pv)
     p_vec += v_vec * frameTime
-    world.set_vector(Position, pv, p_vec)
+    positions.set_vector(pv, p_vec)
     
     begin_drawing()
     begin_mode_3d(camera)
@@ -101,11 +107,15 @@ while not window_should_close():
     
     # NOTE: poor performance
     for e in world.where(Position, Mesh, BoundingBox):
-        pos = world.get_component(e, Position)
-        mesh = world.get_component(e, Mesh)
-        bbSize = world.get_component(e, BoundingBox)
-        # NOTE: this isn't the best representation of a bounding box
-        draw_cube(Vector3(pos.x,pos.y,pos.z),
+        pos = positions.get(e)
+        mesh = meshes.get(e)
+        bbSize = bboxes.get(e)
+
+        draw_cube(
+            Vector3(
+                pos.x + bbSize.x_min,
+                pos.y + bbSize.y_min,
+                pos.z + bbSize.z_min),
             bbSize.x_max - bbSize.x_min,
             bbSize.y_max - bbSize.y_min,
             bbSize.z_max - bbSize.z_min,

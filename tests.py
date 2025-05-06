@@ -59,46 +59,46 @@ class Foo:
     b: str
 
 def test_single_component_storage_basic():
-    s = ComponentStorage(Foo, mult_comp=False, initial_capacity=2)
+    s = ComponentStorage(Foo, mult_comp=False, capacity=2)
     assert s.get(1) is None
     
-    s.add(1, Foo(1.23, "first"))
+    s._add(1, Foo(1.23, "first"))
     proxy1 = s.get(1)
     assert proxy1 is not None
     assert pytest.approx(proxy1.a) == 1.23
     assert proxy1.b == "first"
     
-    s.remove(1)
+    s._remove(1)
     assert s.get(1) is None
-    s.add(1, Foo(4.56, "second"))
+    s._add(1, Foo(4.56, "second"))
     proxy2 = s.get(1)
     assert pytest.approx(proxy2.a) == 4.56
     assert proxy2.b == "second"
     
-    s.add(2, Foo(7.89, "third"))
-    s.add(3, Foo(0.12, "fourth"))  # forces _grow_dense
+    s._add(2, Foo(7.89, "third"))
+    s._add(3, Foo(0.12, "fourth"))  # forces _grow_dense
     proxy3 = s.get(3)
     assert pytest.approx(proxy3.a) == 0.12
     assert proxy3.b == "fourth"
 
-    s.remove(2)
+    s._remove(2)
     assert s.get(2) is None
 
 def test_single_component_storage_sparse_dense_integrity():
-    s = ComponentStorage(Foo, mult_comp=False, initial_capacity=1)
+    s = ComponentStorage(Foo, mult_comp=False, capacity=1)
     
     for eid, val in enumerate([10.0, 20.0, 30.0], start=5):
-        s.add(eid, Foo(val, f"val{eid}"))
+        s._add(eid, Foo(val, f"val{eid}"))
     assert s._capacity >= 3
     
     for eid in (5,6,7):
-        idx = s.sparse[eid]
+        idx = s._sparse[eid]
         assert 0 <= idx < s._size
     
     foo6 = s.get(6)
     assert foo6 is not None
     
-    s.remove(6)
+    s._remove(6)
     assert s.get(6) is None
     assert s.get(5) is not None and s.get(5).a == pytest.approx(10.0)
     assert s.get(7) is not None and s.get(7).a == pytest.approx(30.0)
@@ -125,7 +125,8 @@ def update_world_aabb(ecs):
     # just translate
     wa[:, :3] = la[:, :3] + pos
     wa[:, 3:] = la[:, 3:] + pos
-    ecs.set_vector(AxisAlignedBoundingBox, nr_ents, wa)
+    aabbs = ecs.get_store(AxisAlignedBoundingBox)
+    aabbs.set_vector(nr_ents, wa)
     
     # Rotated boxes
     rot_ents = ecs.where(LocalAABB, Position, Orientation)
@@ -143,12 +144,12 @@ def update_world_aabb(ecs):
     pts = rotate_vectors_by_quaternions(ori, offs) + pos[:,None,:]
     wa[:, :3] = pts.min(axis=1)
     wa[:, 3:] = pts.max(axis=1)
-    ecs.set_vector(AxisAlignedBoundingBox, rot_ents, wa)
+    aabbs.set_vector(rot_ents, wa)
     
     
 def detect_aabb_overlaps(ecs):
     ents = ecs.where(AxisAlignedBoundingBox)
-    blk = ecs.get_vector(AxisAlignedBoundingBox, ents)
+    blk = ecs.get_store(AxisAlignedBoundingBox).get_vector() # we want them all, so no need for indexing
     mins = blk[:, :3]
     maxs = blk[:, 3:]
 
@@ -206,8 +207,9 @@ def test_movement_system():
         Tag(42, "Enemy"))
 
     # Verify initial positions
-    p1 = ecs.get_component(1, Position2D)
-    p2 = ecs.get_component(2, Position2D)
+    positions = ecs.get_store(Position2D)
+    p1 = positions.get(1)
+    p2 = positions.get(2)
     assert (p1.x, p1.y) == pytest.approx((0.0, 0.0))
     assert (p2.x, p2.y) == pytest.approx((5.0, -3.0))
 
@@ -215,10 +217,10 @@ def test_movement_system():
     targets = ecs.where(Tag, Position2D, Velocity2D, lambda t, p, v: t.name == "Enemy")
     p_vec, v_vec = ecs.get_vectors(Position2D, Velocity2D, targets)
     p_vec -= v_vec * 0.5
-    ecs.set_vector(Position2D, targets, p_vec)
+    ecs.get_store(Position2D).set_vector(targets, p_vec)
 
     # Check updated position for entity 2
-    p2_after = ecs.get_component(2, Position2D)
+    p2_after = ecs.get_store(Position2D).get(2)
     assert (p2_after.x, p2_after.y) == pytest.approx((5.0 + 0.5, -3.0 - 0.25))
 
 def test_aabb_system_and_overlap():
@@ -239,7 +241,7 @@ def test_aabb_system_and_overlap():
 
     # Run systems
     update_world_aabb(ecs)
-    wa1 = ecs.get_component(e1, AxisAlignedBoundingBox)
+    wa1 = ecs.get_store(AxisAlignedBoundingBox).get(e1)
     # Compute expected rotated extents
     half_diag = np.sqrt(2)
     assert wa1.x_min == pytest.approx(5 - half_diag)
@@ -260,26 +262,26 @@ class MultiComp:
 
 def test_storage_multicomp_add_get_remove():
     # Create a storage that allows multiple MultiComp per entity
-    s = ComponentStorage(MultiComp, mult_comp=True, initial_capacity=4)
+    store = ComponentStorage(MultiComp, mult_comp=True, capacity=4)
     entity_id = 42
 
-    s.add(entity_id, MultiComp(1.))
-    s.add(entity_id, MultiComp(2.))
-    s.add(entity_id, MultiComp(3.))
+    store._add(entity_id, MultiComp(1.))
+    store._add(entity_id, MultiComp(2.))
+    store._add(entity_id, MultiComp(3.))
 
-    comps = s.get(entity_id)
+    comps = store.get(entity_id)
     assert isinstance(comps, list)
     assert len(comps) == 3
     assert comps[0].val == pytest.approx(1.)
     assert comps[1].val == pytest.approx(2.)
     assert comps[2].val == pytest.approx(3.)
 
-    idx = s.sparse[entity_id]
-    block = s._nums[:s._size].transpose()
+    idx = store._sparse[entity_id]
+    block = store._nums[:store._size].transpose()
     assert np.allclose(block, [1., 2., 3.])
 
-    s.remove(entity_id, which=1)
-    comps = s.get(entity_id)
+    store._remove(entity_id, which=1)
+    comps = store.get(entity_id)
     assert isinstance(comps, list)
     assert len(comps) == 2
     assert comps[0].val == pytest.approx(1.0)
@@ -287,34 +289,31 @@ def test_storage_multicomp_add_get_remove():
 
 def test_ecs_multicomp_reassignment():
     ecs = ECS()
-    ecs.register(MultiComp)
-    # Override the store for MultiComp to enable mult_comp
-    s = ComponentStorage(MultiComp, mult_comp=True, initial_capacity=5)
-    ecs._stores[MultiComp] = s
+    ecs.register(MultiComp, allow_same_type_components_per_entity=True, initial_capacity=5)
+    store = ecs.get_store(MultiComp)
 
     ecs.create_entities(12)
     e = ecs.create_entity(MultiComp(1.1), MultiComp(2.2), MultiComp(3.3))
     ecs.create_entity(MultiComp(4.4))
     ecs.add_component(e, MultiComp(5.5))
-    proxies = ecs.get_component(e, MultiComp)
+    proxies = store.get(e)
     assert len(proxies) == 4
-    s.remove(e, 1) # 2.2
-    s.remove(e, 1) # 3.3
-    proxies = ecs.get_component(e, MultiComp)
+    store._remove(e, 1) # 2.2
+    store._remove(e, 1) # 3.3
+    proxies = store.get(e)
     assert len(proxies) == 2
     assert proxies[0].val == pytest.approx(1.1)
     assert proxies[1].val == pytest.approx(5.5)
     
     ecs.add_component(e, MultiComp(6.6))
-    proxies = ecs.get_component(e, MultiComp)
+    proxies = store.get(e)
     assert len(proxies) == 3
     assert proxies[0].val == pytest.approx(1.1)
     assert proxies[1].val == pytest.approx(6.6)
     assert proxies[2].val == pytest.approx(5.5)
     
     ecs.add_component(e, MultiComp(7.7))
-    proxies = ecs.get_component(e, MultiComp)
-    store = ecs._stores[MultiComp]
-    head = store.sparse[e]
+    proxies = store.get(e)
+    head = store._sparse[e]
     block = store._nums[head : head + 4, 0]
     assert np.allclose(block, [1.1, 6.6, 7.7, 5.5])
