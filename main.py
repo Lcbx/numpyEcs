@@ -13,7 +13,7 @@ args = parser.parse_args()
 
 if args.tests:
     #import tests
-    #tests.test_no_free_entities()
+    #tests.test_ecs_multicomp_reassignment()
     ret = pytest.main("-q tests.py".split())
     sys.exit(ret)
 
@@ -50,7 +50,7 @@ ground = world.create_entity(
     Mesh(LIGHTGRAY),
     BoundingBox(
         -25,0,-25,
-        25.5,0,25
+        25,1,25
     )
 )
 
@@ -58,8 +58,8 @@ rnd_uint8 = lambda : get_random_value(0, 255)
 rnd_color = lambda : Color(rnd_uint8(),rnd_uint8(),rnd_uint8(),255)
 
 SPACE_SIZE = 30
-
-for e in world.create_entities(5000):
+CUBE_MAX = 7
+for e in world.create_entities(10):
     world.add_component(e,
         Position(
             get_random_value(-SPACE_SIZE, SPACE_SIZE),
@@ -70,15 +70,15 @@ for e in world.create_entities(5000):
             0,
             get_random_value(-4, 4) ),
         BoundingBox(
-            get_random_value(-10, 0), get_random_value(-10, 0), get_random_value(-10, 0),
-            get_random_value(1, 10), get_random_value(1, 10), get_random_value(1, 10) ),
+            get_random_value(-CUBE_MAX, 0), get_random_value(-CUBE_MAX, 0), get_random_value(-CUBE_MAX, 0),
+            get_random_value(1, CUBE_MAX), get_random_value(1, CUBE_MAX), get_random_value(1, CUBE_MAX) ),
         Mesh(rnd_color()),
     )
 
 
 camera = Camera3D(
-    Vector3(30, 70,-30),
-    Vector3(0,0,0),
+    Vector3(30, 70,-25),
+    Vector3(0,0,-25),
     Vector3(0,1,0),
     60.0,
     CAMERA_PERSPECTIVE
@@ -92,6 +92,7 @@ while not window_should_close():
     
     frameTime = get_frame_time()
 
+    # I added a get_store methode to ECS class
     positions = world.get_store(Position)
     meshes = world.get_store(Mesh)
     bboxes = world.get_store(BoundingBox)
@@ -105,21 +106,21 @@ while not window_should_close():
     begin_mode_3d(camera)
     clear_background(WHITE)
     
-    # NOTE: poor performance
-    for e in world.where(Position, Mesh, BoundingBox):
-        pos = positions.get(e)
-        mesh = meshes.get(e)
-        bbSize = bboxes.get(e)
 
+    ents = world.where(Position, Mesh, BoundingBox)
+    pos_arr, mesh_ar, bb_arr, = world.get_vectors(Position, Mesh, BoundingBox, ents)
+
+    for pos, bb, mesh in zip(pos_arr, bb_arr, mesh_ar):
+        bmin = bb[:3]
+        bmax = bb[3:]
+        center = (bmax + bmin) * 0.5
         draw_cube(
-            Vector3(
-                pos.x + bbSize.x_min,
-                pos.y + bbSize.y_min,
-                pos.z + bbSize.z_min),
-            bbSize.x_max - bbSize.x_min,
-            bbSize.y_max - bbSize.y_min,
-            bbSize.z_max - bbSize.z_min,
-            mesh.color)
+            tuple(pos + center),
+            bmax[0] - bmin[0], # x
+            bmax[1] - bmin[1], # y
+            bmax[2] - bmin[2], # z
+            mesh[meshes.color_id] # have to do this for object fields
+        )
     
     end_mode_3d()
     draw_text(f"{get_fps()}", 10, 10, 20, LIGHTGRAY)

@@ -277,7 +277,7 @@ def test_storage_multicomp_add_get_remove():
     assert comps[2].val == pytest.approx(3.)
 
     idx = store._sparse[entity_id]
-    block = store._nums[:store._size].transpose()
+    block = store.get_vector().transpose()
     assert np.allclose(block, [1., 2., 3.])
 
     store._remove(entity_id, which=1)
@@ -314,6 +314,8 @@ def test_ecs_multicomp_reassignment():
     
     ecs.add_component(e, MultiComp(7.7))
     proxies = store.get(e)
-    head = store._sparse[e]
-    block = store._nums[head : head + 4, 0]
-    assert np.allclose(block, [1.1, 6.6, 7.7, 5.5])
+    assert len(proxies) == 4
+    assert proxies[0].val == pytest.approx(1.1)
+    assert proxies[1].val == pytest.approx(6.6)
+    assert proxies[2].val == pytest.approx(7.7)
+    assert proxies[3].val == pytest.approx(5.5)

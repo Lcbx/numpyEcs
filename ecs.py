@@ -3,220 +3,256 @@ import inspect
 from typing import Type, Dict, Callable, Any, List, Tuple
 from dataclasses import dataclass
 
+
+# TODO: inherit int so we can distinguish between entities and ints ?
 Entity = int
 component = dataclass
 
 # forward declaration
 ComponentProxy = lambda s,e: None
 
+
 class ComponentStorage:
     """
     Stores one component type using:
-      - preallocated 2D numpy array for all float fields (_nums)
-      - parallel Python lists for non-numeric fields (_objs)
-      - numpy arrays for _sparse (entity -> index) and dense (index -> entity)
+      - structured numpy array (_dense) for all fields
+      - numpy arrays for sparse (entity -> head index)
+      - optional multi-component support (contiguous blocks per entity)
     """
-    
-    # can either be in _sparse (dense index pointing to nowhere)
-    #  or in dense to indeicate an empty spot (when multi-component flag is set)
     NONE = -1
-    
-    def __init__(self, component_cls: Type, capacity: int = 128, mult_comp: bool = False):
-        self.mult_comp = mult_comp
+    entity_field = 'entity'
+
+    def __init__(self,
+                 component_cls: Type,
+                 capacity: int = 128,
+                 mult_comp: bool = False):
         self.component_cls = component_cls
-        ann = getattr(component_cls, '__annotations__', {})
-        # Only float annotations are treated as numeric
-        self._num_fields = [n for n,t in ann.items() if t is float]
-        self._obj_fields = [n for n in ann if n not in self._num_fields]
-        # Preallocate buffers
-        self._capacity = capacity
-        self._size = 0
-        self._nums = np.zeros((self._capacity, len(self._num_fields)), dtype=float)
-        self._objs: Dict[str, List[Any]] = {f: [] for f in self._obj_fields}
-        self._dense = np.zeros((self._capacity,), dtype=int)
-        self._sparse = np.full((self._capacity,), ComponentStorage.NONE, dtype=int)
+        self.mult_comp     = mult_comp
+
+        # Inspect dataclass annotations to build structured dtype
+        ann = getattr(component_cls, "__annotations__", {})
+        fields = [
+            (name, np.float64) if typ is float
+            else (name, int) if typ is int
+            else (name, object)
+            for name, typ in ann.items()
+         ]
+
+        # custom ndarray type field info
+        # with a field for the entity associated to the component for book-keeping
+        self._dtype = np.dtype( [(ComponentStorage.entity_field, int)] + fields)
+        self._fields = ann.keys()
+
+        # Expose object-field names for get_objects
+        for i, (name, typ) in enumerate(ann.items()):
+            if typ is not float:
+                object.__setattr__(self, f"{name}_str", name)
+                object.__setattr__(self, f"{name}_id", i)
+
+        # buffers
+        self._capacity  = capacity
+        self._size      = 0
+        self._sparse    = np.full(self._capacity, ComponentStorage.NONE, dtype=int)
+        self._dense     = np.zeros(self._capacity, dtype=self._dtype)
+        self._entities = ComponentStorage.NONE
 
     @property
-    def dense(self) -> np.ndarray:
-        return self._dense[:self._size]
-    
+    def capacity(self) -> int:
+        return self._dense.shape[0]
+
     @property
-    def _sparse_size(self) -> int:
+    def sparse_size(self) -> int:
         return self._sparse.shape[0]
-        
-    def _grow__sparse(self, entity : Entity):
-        _sparse_size = self._sparse_size
-        new_cap = max(_sparse_size * 2, entity+32)
-        new__sparse = np.full((new_cap,), ComponentStorage.NONE, dtype=int)
-        new__sparse[:_sparse_size] = self._sparse[:_sparse_size]
-        self._sparse = new__sparse
-    
-    def _grow_dense(self, needed_size:int=0):
-        
-        # expand
-        new_cap = max(self._size * 2, needed_size+32)
-        new_nums = np.zeros((new_cap, len(self._num_fields)), dtype=float)
-        new_dense = np.zeros((new_cap,), dtype=int)
-        
+
+    @property
+    def _entities(self) -> np.ndarray:
+        return self._dense[ComponentStorage.entity_field]
+
+    @_entities.setter
+    def _entities(self, value:np.ndarray) -> None:
+        self._dense[ComponentStorage.entity_field] = value
+
+    def _grow_sparse(self, entity: int):
+        old = self.sparse_size
+        new_cap = max(old * 2, entity + 32)
+        sp = np.full(new_cap, ComponentStorage.NONE, dtype=int)
+        sp[:old] = self._sparse
+        self._sparse = sp
+
+    def _grow_dense(self, needed: int = 0):
         if self.mult_comp:
-           # Rebuild compacted
-           valid = np.nonzero(self._dense[:self._size] != ComponentStorage.NONE)[0]
-           self._size = valid.size
-           new_nums[:self._size] = self._nums[valid]
-           new_dense[:self._size] = self._dense[valid]
-           for f, lst in self._objs.items():
-               self._objs[f] = [lst[i] for i in valid]
-           for new_idx, ent in enumerate(self._dense):
-               if self._dense[new_idx-1] != ent:
-                   self._sparse[ent] = new_idx
+            valid = np.nonzero(self._entities[:self._size] != ComponentStorage.NONE)[0]
+            compacted = self._dense[valid]
+            new_size  = valid.size
         else:
-            new_nums[:self._size] = self._nums[:self._size]
-            new_dense[:self._size] = self._dense[:self._size]
-        
-        self._nums = new_nums
-        self._dense = new_dense
+            compacted = self._dense[:self._size]
+            new_size  = self._size
+
+        new_cap = max(self._capacity + new_size, needed+32)
+        new_dense = np.zeros(new_cap, dtype=self._dtype)
+        new_dense[ComponentStorage.entity_field] = ComponentStorage.NONE
+
+        new_dense[:new_size] = compacted
+
+        self._sparse = np.full(new_cap, ComponentStorage.NONE, dtype=int)
+        for idx in range(new_size):
+            ent = new_dense[ComponentStorage.entity_field][idx]
+            if self._sparse[ent] == ComponentStorage.NONE:
+                self._sparse[ent] = idx
+
+        self._dense    = new_dense
         self._capacity = new_cap
-    
-    def _add(self, entity: Entity, component: Any) -> None:
-        if entity >= self._sparse_size:
-            self._grow__sparse(entity)
-        if self._size >= self._capacity:
+        self._size     = new_size
+
+    def _add(self, entity: int, component: Any) -> None:
+        # ensure sparse space
+        if entity >= self.sparse_size:
+            self._grow_sparse(entity)
+        # ensure dense space
+        if self._size >= self.capacity:
             self._grow_dense()
-        
+
         head = self._sparse[entity]
         if not self.mult_comp or head == ComponentStorage.NONE:
+            # first or only
             idx = self._size
             self._sparse[entity] = idx
             self._size += 1
         else:
+            # find end of current block
             idx = head
-            while (idx < self._size and self._dense[idx] == entity): idx += 1
-            
-            if self._dense[idx] == ComponentStorage.NONE: pass
-            elif idx == self._size:
+            while idx < self._size and self._entities[idx] == entity:
+                idx += 1
+            if idx == self._size:
                 self._size += 1
+            elif self._entities[idx] == ComponentStorage.NONE:
+                pass
             else:
-                self._relocate_to_end(entity, idx - head)
+                length = idx - head
+                self._relocate_to_end(entity, length)
                 idx = self._size
                 self._size += 1
-        
-        # write the new component into slot `idx`
+
+        # write record at idx
         self._set(idx, entity, component)
-    
-    def _set(self, denseIndex:int, entity:Entity, component : Any) -> None:
-        self._dense[denseIndex] = entity
-        compType = type(component)
-        if compType == self.component_cls:
-            for j, f in enumerate(self._num_fields):
-                self._nums[denseIndex, j] = float(getattr(component, f))
-            for f in self._obj_fields:
-                value = getattr(component, f)
-                if denseIndex < len(self._objs[f]):
-                    self._objs[f][denseIndex] = value
-                else:
-                    self._objs[f].append(value)
-            return
-        elif isinstance(component, ComponentProxy):
-            proxy = component
-            src_store = proxy._store
-            src_idx   = proxy._denseIndex
-            self._nums[denseIndex, :] = src_store._nums[src_idx, :]
-            for f in self._obj_fields:
-                value = src_store._objs[f][src_idx]
-                if denseIndex < len(self._objs[f]):
-                    self._objs[f][denseIndex] = value
-                else:
-                    self._objs[f].append(value)
-            return
-        raise ValueError(f"Component type mismatch in _set : {compType} instead of {self.component_cls}")
-     
-    def _relocate_to_end(self, entity: Entity, length: int):
-        """
-        Move the contiguous block of `length` slots for `entity` to the end
-        of our dense/_nums buffers, leaving holes behind.
-        Used in multi-component add.
-        """
-        
-        #proxies = self.get(entity)
-        #print(f"relocate entity {entity}, length {length}, size {self._size}, proxies {proxies}")
-        needed = self._size + length
-        if needed > self._capacity: self._grow_dense(needed)
-        
+
+    def _set(self, idx:int, entity:Entity, component:Any) -> None:
+        self._entities[idx] = entity
+        rec = self._dense[idx]
+        for field in self._fields:
+            rec[field] = getattr(component, field)
+
+    def _relocate_to_end(self, entity: int, length: int):
         head = self._sparse[entity]
-        tail = head + length
-        
-        proxies = self.get(entity)
-        
-        # NOTE: if before _grow_dense(), this would delete the data
-        self._dense[head:tail] = ComponentStorage.NONE
-        self._sparse[head:tail] = ComponentStorage.NONE
-        
-        old_size = self._size
-        self._sparse[entity] = old_size
-        self._size += length
-        for i, comp in enumerate(proxies):
-            self._set(old_size + i, entity, comp)
-
-    # TODO: multi-components are handled with ComponentProxies ;
-    # we sould use those for component deletions
-    def _remove(self, entity: Entity, which:int=0) -> None:
-        if entity >= self._sparse_size:
+        if head == ComponentStorage.NONE or length <= 0:
             return
-        
-        idx = int(self._sparse[entity])
-        
-        if self.mult_comp:
-            comps = self.get(entity)
-            idx = comps[which]._denseIndex
-            self._dense[idx] = ComponentStorage.NONE
-            if which == 0:
-                while self._dense[idx] == ComponentStorage.NONE: idx +=1
-                self._sparse[entity] = idx
-        else:
-            self._size -= 1
-            self._sparse[entity] = ComponentStorage.NONE
-            
-            last = self._size
-            if last == idx: return
-            last_ent = int(self._dense[last])
-            self._set(idx, last_ent, self.get(last_ent))
-            
 
-    def get(self, entity: Entity) -> Any:
-        """
-        If mult_comp=False: return a single proxy or None.
-        If mult_comp=True: return a list of proxies (possibly empty).
-        """
+        old_size = self._size
+        needed   = old_size + length
+        if needed > self.capacity:
+            self._grow_dense(needed)
+
+        # copy block [head:head+length] → [old_size:old_size+length]
+        self._dense[old_size:old_size+length] = self._dense[head:head+length]
+
+        # mark holes
+        self._entities[head:head+length] = ComponentStorage.NONE
+
+        # update head
+        self._sparse[entity] = old_size
+        self._size = old_size + length
+
+    def _remove(self, entity: int, which: int = 0) -> None:
         head = self._sparse[entity]
         if head == ComponentStorage.NONE:
+            return
+
+        if not self.mult_comp:
+            # swap-pop last into head
+            last = self._size - 1
+            if head != last:
+                self._dense[head] = self._dense[last]
+                moved = self._entities[head]
+                self._sparse[moved] = head
+            self._sparse[entity] = ComponentStorage.NONE
+            self._entities[last] = ComponentStorage.NONE
+            self._size -= 1
+        else:
+            # multi: remove the `which`-th in the block
+            proxies = self.get(entity)
+            proxies_len = len(proxies)
+            if which >= proxies_len: return
+            rem_idx = proxies[which]._idx
+            self._entities[rem_idx] = ComponentStorage.NONE
+            if proxies_len == 1: return # removed last component
+            if which == 0:
+                # advance head to next slot
+                nxt = rem_idx + 1
+                while nxt < self._size and self._entities[nxt] == ComponentStorage.NONE:
+                    nxt += 1
+                self._sparse[entity] = nxt
+
+    def get(self, entity: int) -> Any:
+        head = self._sparse[entity]
+
+        if head == ComponentStorage.NONE:
             return [] if self.mult_comp else None
-        
-        if not self.mult_comp: return ComponentProxy(self, entity, head)
-        
-        #print(f"get entity {entity}, index {head}, dense {self._dense[head]}, size {self._size}")
-        
+
+        if not self.mult_comp:
+            return ComponentProxy(self, entity, head)
+
         proxies = []
-        while head < self._size and self._dense[head] == entity:
-            proxies.append(ComponentProxy(self, entity, head))
-            head += 1
-            while self._dense[head] == ComponentStorage.NONE: head +=1
-        
+        idx = head
+        while idx < self._size and self._entities[idx] == entity:
+            proxies.append(ComponentProxy(self, entity, idx))
+            idx += 1
+            while idx < self._size and self._entities[idx] == ComponentStorage.NONE:
+                idx += 1
         return proxies
 
+    def get_vector(self, *args) -> np.ndarray:
+        """
+        Usage:
+            get_vector()                            # all component fields, for all entities
+            get_vector(f1, f2, ...)                 # only f1,f2,..., for all entities
+            get_vector(f1, f2, ..., entities_array) # f1,f2,... for given entities
+        """
+        # 1) Parse args
+        entities = None
+        fields = []
+        if args:
+            if isinstance(args[-1], np.ndarray):
+                *fields, entities = args
+                entities = np.atleast_1d(entities).astype(int)
+            else:
+                fields = list(args)
 
-    def get_vector(self, entities: np.ndarray = None) -> np.ndarray:
-        """ returns numeric block of component associated with entities """
-        if entities is None: return self._nums
-        es = np.atleast_1d(entities).astype(int)
-        idx = self._sparse[es]
-        return self._nums[idx]
+        # 2) Default to all fields (minus the entity column) if none specified
+        if not fields:
+            fields = self._fields
 
+        if entities is None:
+            return np.stack([ self._dense[field][:self._size] for field in fields ], axis=1)
+        
+        rows = self._sparse[entities]
+        return np.stack([ self._dense[field][rows] for field in fields ], axis=1)
 
     def set_vector(self, entities: np.ndarray, vector: np.ndarray) -> None:
-        """ Overwrites the numeric rows at `entities` with `vectors` """
-        es = np.atleast_1d(entities).astype(int)
+        """
+        Overwrite the rows at `entities` for *all* component fields
+        (except the internal 'entity' column) with the columns of `vector`.
+        
+        `vector` must be a 2-D array of shape (len(entities), Nfields),
+        in the same order as get_vector() would return.
+        """
+        es  = np.atleast_1d(entities).astype(int)
         idx = self._sparse[es]
-        self._nums[idx] = vector
+
+        arr = np.atleast_2d(vector)
+
+        for j, field in enumerate(self._fields):
+            self._dense[field][idx] = arr[:, j]
+
 
 
 class ECS:
@@ -365,53 +401,39 @@ class ECS:
         return ents[np.array(flags, dtype=bool)]    
 
 
+
 class ComponentProxy:
     """
-    Lazy proxy for one component instance.
-    Wraps ComponentStorage and stores the dense‐array index directly.
+    Lazy proxy for one component instance in a structured‐array storage.
+    Wraps ComponentStorage, holds the entity ID and the record‐index in its _dense array.
     """
-    def __init__(self, store : ComponentStorage, entity : Entity, denseIndex: int):
+    def __init__(self, store: ComponentStorage, entity: int, dense_index: int):
+        # Bypass __setattr__
         object.__setattr__(self, "_store", store)
         object.__setattr__(self, "_entity", entity)
-        object.__setattr__(self, "_denseIndex", denseIndex)
+        object.__setattr__(self, "_idx", dense_index)
 
-    def __getattr__(self, name):
-        store = self._store
-        idx   = self._denseIndex
-        if name in store._num_fields:
-            j = store._num_fields.index(name)
-            return store._nums[idx, j]
-        if name in store._obj_fields:
-            return store._objs[name][idx]
-        raise AttributeError(f"{store.component_cls.__name__} has no field {name}")
+    def __getattr__(self, name: str):
+        return self._store._dense[name][self._idx]
 
-    def __setattr__(self, name, value):
-        store = self._store
-        idx   = self._denseIndex
-        if name in store._num_fields:
-            j = store._num_fields.index(name)
-            store._nums[idx, j] = float(value)
-            return
-        if name in store._obj_fields:
-            store._objs[name][idx] = value
-            return
-        raise AttributeError(f"{store.component_cls.__name__} has no field {name}")
+    def __setattr__(self, name: str, value: Any):
+        self._store._dense[name][self.q] = value
 
     def __repr__(self):
         store = self._store
-        idx   = self._denseIndex
-        data = {f: getattr(self, f)
-                for f in store._num_fields + store._obj_fields}
-        return f"<{store.component_cls.__name__}Proxy e={self._entity} {data}>"
+        vals = {field: store._dense[field][self._idx]
+                for field in store._dtype.names
+                if field != ComponentStorage.entity_field}
+        return f"<{store.component_cls.__name__}Proxy e={self._entity} {vals}>"
 
     def build(self) -> Any:
         """
-        Reconstruct and return a full instance of the component.
+        Reconstruct a full component instance (dataclass) from the proxy.
         """
         store = self._store
-        idx   = self._denseIndex
-        kwargs = {f: store._nums[idx, j]
-                  for j, f in enumerate(store._num_fields)}
-        for f in store._obj_fields:
-            kwargs[f] = store._objs[f][idx]
+        kwargs = {}
+        for field in store._dtype.names:
+            if field == ComponentStorage.entity_field:
+                continue
+            kwargs[field] = store._dense[field][self._idx]
         return store.component_cls(**kwargs)
