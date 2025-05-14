@@ -162,10 +162,12 @@ class ComponentStorage:
         self._sparse[entity] = old_size
         self._size = old_size + length
 
-    def _remove(self, entity: int, which: int = 0) -> None:
+    # NOTE: bool return tells ecs to update entity_masks for this entity
+    def _remove(self, component : ComponentProxy) -> bool:
+        entity = component._entity
         head = self._sparse[entity]
-        if head == ComponentStorage.NONE:
-            return
+
+        if head == ComponentStorage.NONE: return False
 
         if not self.mult_comp:
             # swap-pop last into head
@@ -177,20 +179,20 @@ class ComponentStorage:
             self._sparse[entity] = ComponentStorage.NONE
             self._entities[last] = ComponentStorage.NONE
             self._size -= 1
+            return True
         else:
-            # multi: remove the `which`-th in the block
-            proxies = self.get(entity)
-            proxies_len = len(proxies)
-            if which >= proxies_len: return
-            rem_idx = proxies[which]._idx
+            rem_idx = component._idx
             self._entities[rem_idx] = ComponentStorage.NONE
-            if proxies_len == 1: return # removed last component
-            if which == 0:
-                # advance head to next slot
+            # if we just removed the first component
+            # set head to next component of the entity
+            if head == rem_idx:
                 nxt = rem_idx + 1
                 while nxt < self._size and self._entities[nxt] == ComponentStorage.NONE:
                     nxt += 1
+                # if there are none, tell ecs there are none left
+                if self._entities[nxt] != entity: return True
                 self._sparse[entity] = nxt
+            return False
 
     def get(self, entity: int) -> Any:
         head = self._sparse[entity]
@@ -342,13 +344,13 @@ class ECS:
             self._stores[cls]._add(entity, comp)
         self.entity_masks[entity] = bits
 
-    def remove_component(self, entity: Entity, comp_cls: Type) -> None:
-        bit = self._comp_bits.get(comp_cls, 0)
-        if entity < entity_masks_size:
-            self.entity_masks[entity] &= ~bit
+    def remove_component(self, component: ComponentProxy) -> None:
+        if entity >= entity_masks_size: return
         store = self._stores.get(comp_cls)
-        if store:
-            store._remove(entity)
+        # _remove return true if there are no components of that type left in entity
+        if store and store._remove(entity):
+            bit = self._comp_bits.get(comp_cls, 0)
+            self.entity_masks[entity] &= ~bit
 
     def get_store(self, comp_cls: Type) -> ComponentStorage:
         return self._stores.get(comp_cls)
@@ -407,23 +409,22 @@ class ComponentProxy:
     Lazy proxy for one component instance in a structured‐array storage.
     Wraps ComponentStorage, holds the entity ID and the record‐index in its _dense array.
     """
-    def __init__(self, store: ComponentStorage, entity: int, dense_index: int):
-        # Bypass __setattr__
-        object.__setattr__(self, "_store", store)
-        object.__setattr__(self, "_entity", entity)
-        object.__setattr__(self, "_idx", dense_index)
+    def __init__(self, store: ComponentStorage, entity: Entity, dense_index: int):
+        self._store = store
+        self._idx = dense_index
+        self._entity = entity
+        self.__setattr__ = self.__setattr__impl
 
     def __getattr__(self, name: str):
         return self._store._dense[name][self._idx]
 
-    def __setattr__(self, name: str, value: Any):
+    def __setattr__impl(self, name: str, value: Any):
         self._store._dense[name][self.q] = value
 
     def __repr__(self):
         store = self._store
-        vals = {field: store._dense[field][self._idx]
-                for field in store._dtype.names
-                if field != ComponentStorage.entity_field}
+        idx = self._idx
+        vals = {field: store._dense[field][idx] for field in store._fields }
         return f"<{store.component_cls.__name__}Proxy e={self._entity} {vals}>"
 
     def build(self) -> Any:
@@ -432,8 +433,6 @@ class ComponentProxy:
         """
         store = self._store
         kwargs = {}
-        for field in store._dtype.names:
-            if field == ComponentStorage.entity_field:
-                continue
+        for field in store._fields:
             kwargs[field] = store._dense[field][self._idx]
         return store.component_cls(**kwargs)

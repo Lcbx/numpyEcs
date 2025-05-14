@@ -63,25 +63,25 @@ def test_single_component_storage_basic():
     assert s.get(1) is None
     
     s._add(1, Foo(1.23, "first"))
-    proxy1 = s.get(1)
-    assert proxy1 is not None
-    assert pytest.approx(proxy1.a) == 1.23
-    assert proxy1.b == "first"
+    proxy = s.get(1)
+    assert proxy is not None
+    assert pytest.approx(proxy.a) == 1.23
+    assert proxy.b == "first"
     
-    s._remove(1)
+    s._remove(proxy)
     assert s.get(1) is None
     s._add(1, Foo(4.56, "second"))
-    proxy2 = s.get(1)
-    assert pytest.approx(proxy2.a) == 4.56
-    assert proxy2.b == "second"
+    proxy = s.get(1)
+    assert pytest.approx(proxy.a) == 4.56
+    assert proxy.b == "second"
     
     s._add(2, Foo(7.89, "third"))
     s._add(3, Foo(0.12, "fourth"))  # forces _grow_dense
-    proxy3 = s.get(3)
-    assert pytest.approx(proxy3.a) == 0.12
-    assert proxy3.b == "fourth"
+    proxy = s.get(3)
+    assert pytest.approx(proxy.a) == 0.12
+    assert proxy.b == "fourth"
 
-    s._remove(2)
+    s._remove(s.get(2))
     assert s.get(2) is None
 
 def test_single_component_storage_sparse_dense_integrity():
@@ -98,7 +98,7 @@ def test_single_component_storage_sparse_dense_integrity():
     foo6 = s.get(6)
     assert foo6 is not None
     
-    s._remove(6)
+    s._remove(foo6)
     assert s.get(6) is None
     assert s.get(5) is not None and s.get(5).a == pytest.approx(10.0)
     assert s.get(7) is not None and s.get(7).a == pytest.approx(30.0)
@@ -280,7 +280,7 @@ def test_storage_multicomp_add_get_remove():
     block = store.get_vector().transpose()
     assert np.allclose(block, [1., 2., 3.])
 
-    store._remove(entity_id, which=1)
+    store._remove(store.get(entity_id)[1])
     comps = store.get(entity_id)
     assert isinstance(comps, list)
     assert len(comps) == 2
@@ -298,8 +298,8 @@ def test_ecs_multicomp_reassignment():
     ecs.add_component(e, MultiComp(5.5))
     proxies = store.get(e)
     assert len(proxies) == 4
-    store._remove(e, 1) # 2.2
-    store._remove(e, 1) # 3.3
+    store._remove(store.get(e)[1]) # 2.2
+    store._remove(store.get(e)[1]) # 3.3
     proxies = store.get(e)
     assert len(proxies) == 2
     assert proxies[0].val == pytest.approx(1.1)
@@ -307,6 +307,7 @@ def test_ecs_multicomp_reassignment():
     
     ecs.add_component(e, MultiComp(6.6))
     proxies = store.get(e)
+    print(proxies)
     assert len(proxies) == 3
     assert proxies[0].val == pytest.approx(1.1)
     assert proxies[1].val == pytest.approx(6.6)
