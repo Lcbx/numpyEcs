@@ -4,8 +4,9 @@ from typing import Type, Dict, Callable, Any, List, Tuple
 from dataclasses import dataclass
 
 
-# TODO: inherit int so we can distinguish between entities and ints ?
-Entity = int
+# useful when we'll instantiate scenes, so we can translate entity ids stored in components
+class Entity(int): pass
+
 component = dataclass
 
 # forward declaration
@@ -40,7 +41,7 @@ class ComponentStorage:
 
         # custom ndarray type field info
         # with a field for the entity associated to the component for book-keeping
-        self._dtype = np.dtype( [(ComponentStorage.entity_field, int)] + fields)
+        self._dtype = np.dtype( [(ComponentStorage.entity_field, Entity)] + fields)
         self._fields = ann.keys()
 
         # Expose object-field names for get_objects
@@ -104,7 +105,7 @@ class ComponentStorage:
         self._capacity = new_cap
         self._size     = new_size
 
-    def _add(self, entity: int, component: Any) -> None:
+    def _add(self, entity: Entity, component: Any) -> None:
         # ensure sparse space
         if entity >= self.sparse_size:
             self._grow_sparse(entity)
@@ -142,7 +143,7 @@ class ComponentStorage:
         for field in self._fields:
             rec[field] = getattr(component, field)
 
-    def _relocate_to_end(self, entity: int, length: int):
+    def _relocate_to_end(self, entity: Entity, length: int):
         head = self._sparse[entity]
         if head == ComponentStorage.NONE or length <= 0:
             return
@@ -194,7 +195,7 @@ class ComponentStorage:
                 self._sparse[entity] = nxt
             return False
 
-    def get(self, entity: int) -> Any:
+    def get(self, entity: Entity) -> Any:
         head = self._sparse[entity]
 
         if head == ComponentStorage.NONE:
@@ -284,11 +285,11 @@ class ECS:
         new_entity_masks[:entity_masks_size] = self.entity_masks[:entity_masks_size]
         self.entity_masks = new_entity_masks
     
-    def create_entities(self, n: int) -> np.ndarray:
+    def create_entities(self, n: int) -> List[Entity]:
         """
         Create `n` new entity IDs, reusing deleted ones when possible.
         """
-        out = []
+        out : List[Entity] = []
         len_free = len(self._free_entities)
         if len_free:
             if len_free <= n:
@@ -296,10 +297,10 @@ class ECS:
                 self._free_entities = []
                 n -= len_free
             elif n == 1:
-                return self._free_entities.pop()
+                return [ self._free_entities.pop() ]
             else:
                 out = self._free_entities[-n:]
-                self._free_entities[:-n]
+                self._free_entities = self._free_entities[:-n]
                 return out
         
         current_id = self._next_entity_id
@@ -307,9 +308,9 @@ class ECS:
         if self.entity_masks_size <= self._next_entity_id:
             self._grow_entity_mask(self._next_entity_id)
         out.extend( range(current_id, self._next_entity_id) )
-        return out
+        return list(map( Entity, out)) # dunno why but it wont be Entity type otherwise
         
-    def create_entity(self, *components) -> int:
+    def create_entity(self, *components) -> Entity:
         [entity] = self.create_entities(1)
         self.add_component(entity, *components)
         return entity

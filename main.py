@@ -13,7 +13,7 @@ args = parser.parse_args()
 
 if args.tests:
     #import tests
-    #tests.test_ecs_multicomp_reassignment()
+    #tests.test_single_free_entity_exact()
     ret = pytest.main("-q tests.py".split())
     sys.exit(ret)
 
