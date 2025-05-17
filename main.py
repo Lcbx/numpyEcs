@@ -7,7 +7,8 @@ parser = argparse.ArgumentParser(
     epilog='link: https://github.com/Lcbx/numpyEcs')
 parser.add_argument('-t', '--tests', action='store_true', help='launches unit tests')
 parser.add_argument('--test', help='launches specific test')
-parser.add_argument('-s', '--scene', help='run provided scene script')
+parser.add_argument('-s', '--scene', help='set scene script (to run or compile)')
+parser.add_argument('-c', '--compile', action='store_true', help='compile scene into standalone executable')
 args = parser.parse_args()
 
 # run particular test
@@ -22,4 +23,9 @@ if args.tests:
     sys.exit(ret)
 
 # runs the scene
-if args.scene: __import__( args.scene )
+if args.scene:
+    if args.compile:
+        import subprocess
+        subprocess.run( f'py -m nuitka --standalone --onefile --follow-imports {args.scene} --output-dir=build'.split(' ') )
+    else:
+        __import__( args.scene )
