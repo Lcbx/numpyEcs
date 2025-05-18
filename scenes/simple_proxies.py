@@ -89,21 +89,20 @@ while not window_should_close():
     begin_mode_3d(camera)
     clear_background(WHITE)
     
-
     ents = world.where(Position, Mesh, BoundingBox)
-    pos_arr, mesh_ar, bb_arr, = world.get_vectors(Position, Mesh, BoundingBox, ents)
-    bmins = bb_arr[:,:3] # entity (int), bounding box (6 floats)
-    bmaxs = bb_arr[:,3:]
-    sizes = bmaxs - bmins
-    centers = (bmaxs + bmins) * 0.5
+    pos_arr, bb_arr = world.get_vectors(Position, BoundingBox, ents)
 
-    for pos, mesh, center, size in zip(pos_arr, mesh_ar, centers, sizes ):
+    for e, pos, bbox in zip(ents, pos_arr, bb_arr):
+        bmin = bbox[:3]
+        bmax = bbox[3:]
+        size = bmax - bmin
+        center = (bmax + bmin) * 0.5
         draw_cube(
             tuple(pos + center),
             size[0], # x
             size[1], # y
             size[2], # z
-            mesh[meshes.color_id]
+            meshes.get(e).color
         )
 
     frame_index+=1
