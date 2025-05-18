@@ -32,19 +32,14 @@ class ComponentStorage:
 
         # Inspect dataclass annotations to build structured dtype
         ann = getattr(component_cls, "__annotations__", {})
-        fields = [
-            (name, np.float64) if typ is float
-            else (name, int) if typ is int
-            else (name, object)
-            for name, typ in ann.items()
-         ]
+        self._fields = list(ann.keys())
 
-        # custom ndarray type field info
-        # with a field for the entity associated to the component for book-keeping
-        self._dtype = np.dtype( [(ComponentStorage.entity_field, Entity)] + fields)
-        self._fields = ann.keys()
+        self._dense = {}
+        for nm, typ in ann.items():
+            dtype = np.float64 if typ is float else int if typ is int else object
+            self._dense[nm] = np.zeros(capacity, dtype=dtype)
 
-        # Expose object-field names for get_objects
+        # Expose object-field names
         for i, (name, typ) in enumerate(ann.items()):
             if typ is not float:
                 object.__setattr__(self, f"{name}_str", name)
@@ -54,24 +49,15 @@ class ComponentStorage:
         self._capacity  = capacity
         self._size      = 0
         self._sparse    = np.full(self._capacity, ComponentStorage.NONE, dtype=int)
-        self._dense     = np.zeros(self._capacity, dtype=self._dtype)
-        self._entities = ComponentStorage.NONE
+        self._entities  = np.full(self._capacity, ComponentStorage.NONE, dtype=int)
 
     @property
     def capacity(self) -> int:
-        return self._dense.shape[0]
+        return self._capacity
 
     @property
     def sparse_size(self) -> int:
         return self._sparse.shape[0]
-
-    @property
-    def _entities(self) -> np.ndarray:
-        return self._dense[ComponentStorage.entity_field]
-
-    @_entities.setter
-    def _entities(self, value:np.ndarray) -> None:
-        self._dense[ComponentStorage.entity_field] = value
 
     def _grow_sparse(self, entity: int):
         old = self.sparse_size
@@ -81,28 +67,32 @@ class ComponentStorage:
         self._sparse = sp
 
     def _grow_dense(self, needed: int = 0):
+
+        new_cap =  max(self._capacity * 2, needed + 32)
+
+        new_entities = np.full(new_cap, ComponentStorage.NONE, dtype=int)
+
         if self.mult_comp:
-            valid = np.nonzero(self._entities[:self._size] != ComponentStorage.NONE)[0]
-            compacted = self._dense[valid]
-            new_size  = valid.size
+            valid_idx = np.nonzero(self._entities[:self._size] != ComponentStorage.NONE)[0]
+            new_size  = valid_idx.shape[0]
+            new_entities[:new_size] = self._entities[valid_idx]
         else:
-            compacted = self._dense[:self._size]
-            new_size  = self._size
+            new_size = self._size
+            new_entities[:new_size] = self._entities[:new_size]
 
-        new_cap = max(self._capacity + new_size, needed+32)
-        new_dense = np.zeros(new_cap, dtype=self._dtype)
-        new_dense[ComponentStorage.entity_field] = ComponentStorage.NONE
+        for field_name, arr in self._dense.items():
+            new_arr = np.zeros(new_cap, dtype=arr.dtype)
+            new_arr[:new_size] = (arr[valid_idx] if self.mult_comp else arr[:new_size])
+            self._dense[field_name] = new_arr
 
-        new_dense[:new_size] = compacted
-
-        self._sparse = np.full(new_cap, ComponentStorage.NONE, dtype=int)
-        for idx in range(new_size):
-            ent = new_dense[ComponentStorage.entity_field][idx]
-            if self._sparse[ent] == ComponentStorage.NONE:
-                self._sparse[ent] = idx
-
-        self._dense    = new_dense
+        new_sparse = np.full(new_cap, ComponentStorage.NONE, dtype=int)
+        for idx, ent in enumerate(new_entities[:new_size]):
+            if new_sparse[ent] == ComponentStorage.NONE:
+                new_sparse[ent] = idx
+        
         self._capacity = new_cap
+        self._sparse   = new_sparse
+        self._entities = new_entities
         self._size     = new_size
 
     def _add(self, entity: Entity, component: Any) -> None:
@@ -139,29 +129,39 @@ class ComponentStorage:
 
     def _set(self, idx:int, entity:Entity, component:Any) -> None:
         self._entities[idx] = entity
-        rec = self._dense[idx]
         for field in self._fields:
-            rec[field] = getattr(component, field)
+            self._dense[field][idx] = getattr(component, field)
 
     def _relocate_to_end(self, entity: Entity, length: int):
+        """
+        Move the `length`‐sized block of `entity` from wherever it sits
+        to the end of the live region [0:_size], updating head and _size.
+        """
         head = self._sparse[entity]
-        if head == ComponentStorage.NONE or length <= 0:
+        if head == ComponentStorage.NONE:
             return
 
-        old_size = self._size
-        needed   = old_size + length
-        if needed > self.capacity:
+        new_head = self._size
+        needed   = new_head + length
+        if needed > self._capacity:
             self._grow_dense(needed)
 
-        # copy block [head:head+length] → [old_size:old_size+length]
-        self._dense[old_size:old_size+length] = self._dense[head:head+length]
+        new_block = slice(new_head, needed)
+        old_block = slice(head, head + length)
 
-        # mark holes
-        self._entities[head:head+length] = ComponentStorage.NONE
+        # copy entity IDs
+        self._entities[new_block] = self._entities[old_block]
 
-        # update head
-        self._sparse[entity] = old_size
-        self._size = old_size + length
+        # copy each field
+        for arr in self._dense.values():
+            arr[new_block] = arr[old_block]
+
+        # mark the old slots as holes
+        self._entities[old_block] = ComponentStorage.NONE
+
+        # update head & size
+        self._sparse[entity] = new_head
+        self._size = needed
 
     # NOTE: bool return tells ecs to update entity_masks for this entity
     def _remove(self, component : ComponentProxy) -> bool:
@@ -174,7 +174,8 @@ class ComponentStorage:
             # swap-pop last into head
             last = self._size - 1
             if head != last:
-                self._dense[head] = self._dense[last]
+                for arr in self._dense.values(): 
+                    arr[head] = arr[last]
                 moved = self._entities[head]
                 self._sparse[moved] = head
             self._sparse[entity] = ComponentStorage.NONE
@@ -220,7 +221,7 @@ class ComponentStorage:
             get_vector(f1, f2, ...)                 # only f1,f2,..., for all entities
             get_vector(f1, f2, ..., entities_array) # f1,f2,... for given entities
         """
-        # 1) Parse args
+        # Parse args
         entities = None
         fields = []
         if args:
@@ -230,15 +231,20 @@ class ComponentStorage:
             else:
                 fields = list(args)
 
-        # 2) Default to all fields (minus the entity column) if none specified
+        # Default to all fields if none specified
         if not fields:
             fields = self._fields
 
+        arrays = [ self._dense[f] for f in fields ]
         if entities is None:
-            return np.stack([ self._dense[field][:self._size] for field in fields ], axis=1)
-        
-        rows = self._sparse[entities]
-        return np.stack([ self._dense[field][rows] for field in fields ], axis=1)
+            # only live range [0:_size]
+            mats = [arr[:self._size] for arr in arrays]
+        else:
+            rows = self._sparse[np.atleast_1d(entities).astype(int)]
+            mats = [arr[rows] for arr in arrays]
+
+        # stack into an (N × len(fields)) array
+        return np.stack(mats, axis=1)
 
     def set_vector(self, entities: np.ndarray, vector: np.ndarray) -> None:
         """
@@ -273,6 +279,10 @@ class ECS:
         self.entity_masks = np.zeros((0,), dtype=np.uint64)
         self._free_entities: List[Entity] = []
         self._next_entity_id = 0
+
+    @property
+    def count(self) -> int:
+        return self._next_entity_id - len(self._free_entities)
     
     @property
     def entity_masks_size(self) -> int:
@@ -372,12 +382,7 @@ class ECS:
 
     def where(self, *args) -> np.ndarray:
         """
-        Usage:
-          ecs.where(C1, C2, ..., predicate_fn)   # filter by predicate
-          ecs.where(C1, C2, ...)                 # no predicate → all entities with those comps
-
-        If the last argument is a callable, it’s used as a filter on the unpacked components;
-        otherwise every entity that has all of the listed component types is returned.
+        Usage: ecs.where(C1, C2, ...) # → all entities with those comps
         """
 
         # detect whether the last arg is a predicate or a component class
@@ -396,12 +401,7 @@ class ECS:
         
         ents = np.nonzero((self.entity_masks & mask) == mask)[0]
         
-        if predicate is None: return ents
-
-        # apply predicate
-        stores = tuple([self.get_store(cls) for cls in comp_clss])
-        flags = [predicate(*[s.get(e) for s in stores]) for e in ents]
-        return ents[np.array(flags, dtype=bool)]    
+        return ents
 
 
 
