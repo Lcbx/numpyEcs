@@ -1,5 +1,6 @@
 import argparse
 import sys
+from glob import glob
 
 parser = argparse.ArgumentParser(
     prog='python game engine',
@@ -19,13 +20,13 @@ if args.test:
 # run whole test suite using pytest
 if args.tests:
     import pytest
-    ret = pytest.main("-q tests.py".split())
+    ret = pytest.main(['-q'] + glob('./tests/*.py') )
     sys.exit(ret)
 
 # runs the scene
 if args.scene:
     if args.compile:
         import subprocess
-        subprocess.run( f'py -m nuitka --standalone --onefile --follow-imports {args.scene} --output-dir=build'.split(' ') )
+        subprocess.run( f'py -m nuitka --output-dir=build --standalone {args.scene}'.split(' ') )
     else:
-        __import__( args.scene )
+        __import__( args.scene.replace('/', '.') )
