@@ -1,6 +1,6 @@
 import argparse
 import sys
-from glob import glob
+from pathlib import Path as path 
 
 parser = argparse.ArgumentParser(
     prog='python game engine',
@@ -12,21 +12,31 @@ parser.add_argument('-s', '--scene', help='set scene script (to run or compile)'
 parser.add_argument('-c', '--compile', action='store_true', help='compile scene into standalone executable')
 args = parser.parse_args()
 
+normalize_path = lambda p: path(p).as_posix()
+to_module = lambda p: p.replace('/', '.').replace('.py', '')
+
+if args.test or args.tests:
+    from glob import glob
+    test_paths = list(map(normalize_path, glob('./tests/*.py')))
+    test_paths.remove('tests/__init__.py')
+
 # run particular test
 if args.test:
-    import tests
-    getattr(tests, args.test)()
+    from importlib import import_module
+    for test_path in test_paths:
+        module = import_module( to_module(test_path) )
+        if hasattr(module, args.test): getattr(module, args.test)()
 
 # run whole test suite using pytest
 if args.tests:
     import pytest
-    ret = pytest.main(['-q'] + glob('./tests/*.py') )
+    ret = pytest.main(['-q'] + test_paths )
     sys.exit(ret)
 
-# runs the scene
+# run or compile the scene
 if args.scene:
     if args.compile:
         import subprocess
         subprocess.run( f'py -m nuitka --output-dir=build --standalone {args.scene}'.split(' ') )
     else:
-        __import__( args.scene.replace('/', '.') )
+        __import__( to_module(normalize_path(args.scene)) )
