@@ -16,6 +16,7 @@ class Velocity:
 @component
 class Mesh:
     color : Color
+#    color : (np.uint8,np.uint8,np.uint8,np.uint8)
     
 @component
 class BoundingBox:
@@ -36,6 +37,7 @@ ground = world.create_entity(
 
 rnd_uint8 = lambda : get_random_value(0, 255)
 rnd_color = lambda : Color(rnd_uint8(),rnd_uint8(),rnd_uint8(),255)
+#rnd_color = lambda : (rnd_uint8(),rnd_uint8(),rnd_uint8(),255)
 
 SPACE_SIZE = 30
 CUBE_MAX = 7
@@ -71,6 +73,7 @@ init_window(800, 450, "Hello")
 set_target_fps(60)
 
 positions = world.get_store(Position)
+velocities = world.get_store(Velocity)
 meshes = world.get_store(Mesh)
 bboxes = world.get_store(BoundingBox)
 
@@ -81,7 +84,7 @@ while not window_should_close():
     frameTime = get_frame_time()
 
     pv = world.where(Position, Velocity)
-    p_vec, v_vec = world.get_vectors(Position, Velocity, pv)
+    p_vec, v_vec = (positions.get_vector(pv), velocities.get_vector(pv))
     p_vec += v_vec * frameTime
     positions.set_vector(pv, p_vec)
     
@@ -91,15 +94,15 @@ while not window_should_close():
     
 
     ents = world.where(Position, Mesh, BoundingBox)
-    pos_arr, mesh_ar, bb_arr, = world.get_vectors(Position, Mesh, BoundingBox, ents)
-    bmins = bb_arr[:,:3] # entity (int), bounding box (6 floats)
-    bmaxs = bb_arr[:,3:]
+    pos_vec, mesh_vec, bb_vec, = (positions.get_vector(ents), meshes.get_vector(ents), bboxes.get_vector(ents))
+    bmins = bb_vec[:,:3] # entity (int), bounding box (6 floats)
+    bmaxs = bb_vec[:,3:]
     sizes = bmaxs - bmins
-    centers = (bmaxs + bmins) * 0.5
+    centers = pos_vec + (bmaxs + bmins) * 0.5
 
-    for pos, mesh, center, size in zip(pos_arr, mesh_ar, centers, sizes ):
+    for center, size, mesh in zip(centers, sizes, mesh_vec):
         draw_cube(
-            tuple(pos + center),
+            tuple(center),
             size[0], # x
             size[1], # y
             size[2], # z
