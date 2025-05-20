@@ -1,10 +1,8 @@
-from raylib import *
+import raylib as rl
 from pyray import Vector2, Vector3, Color, Camera3D, rl_load_texture, RenderTexture
 from ecs import *
+import shader_util
 
-#import raylib as rl
-#print(dir(rl))
-#exit(0)
 
 @component
 class Position:
@@ -33,14 +31,14 @@ bboxes = world.get_store(BoundingBox)
 
 ground = world.create_entity(
     Position(0,-0.51,0),
-    Mesh(LIGHTGRAY),
+    Mesh(rl.LIGHTGRAY),
     BoundingBox(
         -25,0,-25,
         25,1,25
     )
 )
 
-rnd_uint8 = lambda : GetRandomValue(0, 255)
+rnd_uint8 = lambda : rl.GetRandomValue(0, 255)
 rnd_color = lambda : Color(rnd_uint8(),rnd_uint8(),rnd_uint8(),255)
 
 SPACE_SIZE = 30
@@ -49,44 +47,37 @@ CUBE_MAX = 7
 for e in world.create_entities(15):
     world.add_component(e,
         Position(
-            GetRandomValue(-SPACE_SIZE, SPACE_SIZE),
-            GetRandomValue(0, 25),
-            GetRandomValue(-SPACE_SIZE, SPACE_SIZE) ),
+            rl.GetRandomValue(-SPACE_SIZE, SPACE_SIZE),
+            rl.GetRandomValue(0, 20),
+            rl.GetRandomValue(-SPACE_SIZE, SPACE_SIZE) ),
         Velocity(
-            GetRandomValue(-4, 4),
+            rl.GetRandomValue(-4, 4),
             0,
-            GetRandomValue(-4, 4) ),
+            rl.GetRandomValue(-4, 4) ),
         BoundingBox(
-            GetRandomValue(-CUBE_MAX, 0), GetRandomValue(-CUBE_MAX, 0), GetRandomValue(-CUBE_MAX, 0),
-            GetRandomValue(1, CUBE_MAX), GetRandomValue(1, CUBE_MAX), GetRandomValue(1, CUBE_MAX) ),
+            rl.GetRandomValue(-CUBE_MAX, 0), rl.GetRandomValue(-CUBE_MAX, 0), rl.GetRandomValue(-CUBE_MAX, 0),
+            rl.GetRandomValue(1, CUBE_MAX),  rl.GetRandomValue(1, CUBE_MAX),  rl.GetRandomValue(1, CUBE_MAX) ),
         Mesh(rnd_color()),
     )
 
-
+camera_nearFar = (0.1, 1000.0)
 camera = Camera3D(
     Vector3(30, 70,-25),
     Vector3(0,0,-25),
     Vector3(0,1,0),
     60.0,
-    CAMERA_PERSPECTIVE
+    rl.CAMERA_PERSPECTIVE
 )
 
-light_camera = Camera3D(
-    Vector3(-20, 30, 5),
-    Vector3(0,0,0),
-    Vector3(0,1,0),
-    90.0,
-    CAMERA_ORTHOGRAPHIC
-)
 
 WINDOW_SIZE = Vector2(800, 450) 
-InitWindow(int(WINDOW_SIZE.x), int(WINDOW_SIZE.y), b"Hello")
-SetTargetFPS(60)
+rl.InitWindow(int(WINDOW_SIZE.x), int(WINDOW_SIZE.y), b"Hello")
+rl.SetTargetFPS(60)
 
 
 def load_shaders():
     global sceneShader
-    newShader = LoadShader(b"scenes/lightmap.vs", b"scenes/lightmap.fs")
+    newShader = rl.LoadShader(b"scenes/lightmap.vs", b"scenes/lightmap.fs")
     if newShader.id > 0: sceneShader = newShader
 
 sceneShader = None
@@ -97,40 +88,49 @@ def shadow_buffer(width : int, height:int, withColorBuffer:bool=False) -> Render
     #target = LoadRenderTexture(width, height)
 
     target = RenderTexture()
-    target.id = rlLoadFramebuffer()
+    target.id = rl.rlLoadFramebuffer()
     
     if target.id > 0:
-        rlEnableFramebuffer(target.id)
+        rl.rlEnableFramebuffer(target.id)
         
         if withColorBuffer:
-            target.texture.id = rl_load_texture(None, width, height, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, 1)
-            target.texture.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8
+            target.texture.id = rl_load_texture(None, width, height, rl.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, 1)
+            target.texture.format = rl.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8
             target.texture.mipmaps = 1
-            rlFramebufferAttach(target.id, target.texture.id, RL_ATTACHMENT_COLOR_CHANNEL0, RL_ATTACHMENT_TEXTURE2D, 0)
+            rl.rlFramebufferAttach(target.id, target.texture.id, rl.RL_ATTACHMENT_COLOR_CHANNEL0, rl.RL_ATTACHMENT_TEXTURE2D, 0)
 
         target.texture.width = width
         target.texture.height = height
 
-        target.depth.id = rlLoadTextureDepth(width, height, False)
+        target.depth.id = rl.rlLoadTextureDepth(width, height, False)
         target.depth.width = width
         target.depth.height = height
         target.depth.format = 19 # ?
         target.depth.mipmaps = 1
 
-        rlFramebufferAttach(target.id, target.depth.id, RL_ATTACHMENT_DEPTH, RL_ATTACHMENT_TEXTURE2D, 0)
-        rlDisableFramebuffer()
+        rl.rlFramebufferAttach(target.id, target.depth.id, rl.RL_ATTACHMENT_DEPTH, rl.RL_ATTACHMENT_TEXTURE2D, 0)
+        rl.rlDisableFramebuffer()
 
     return target
 
+
+light_nearFar = (5,70)
+light_camera = Camera3D(
+    Vector3(-20, 30, 5),
+    Vector3(0,0,0),
+    Vector3(0,1,0),
+    90.0,
+    rl.CAMERA_ORTHOGRAPHIC
+)
 shadowmap = shadow_buffer(1024,1024,withColorBuffer=True)
 
 
 def run():
-    while not WindowShouldClose():
+    while not rl.WindowShouldClose():
         
-        frameTime = GetFrameTime()
+        frameTime = rl.GetFrameTime()
 
-        if IsKeyPressed(KEY_R): load_shaders()
+        if rl.IsKeyPressed(rl.KEY_R): load_shaders()
 
         pv = world.where(Position, Velocity)
         p_vec, v_vec = (positions.get_vector(pv), velocities.get_vector(pv))
@@ -145,24 +145,50 @@ def run():
         positions.set_vector(pv, p_vec)
         velocities.set_vector(pv, v_vec)
         
-        BeginDrawing()
-        BeginMode3D(camera)
-        ClearBackground(WHITE)
+        rl.BeginTextureMode(shadowmap)
+        rl.rlSetClipPlanes(light_nearFar[0], light_nearFar[1])
+        rl.BeginMode3D(light_camera)
+        rl.ClearBackground(rl.WHITE)
+        rl.rlSetCullFace(rl.RL_CULL_FACE_FRONT)
         
+        lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
+    
         draw_scene()
         
-        EndMode3D()
+        rl.rlSetCullFace(rl.RL_CULL_FACE_BACK)
+        rl.EndMode3D()
+        rl.EndTextureMode()
+
+
+        rl.BeginDrawing()
+        rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
+        rl.BeginMode3D(camera)
+        rl.ClearBackground(rl.WHITE)
+
+        rl.BeginShaderMode(sceneShader)
+        
+        lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
+        shader_util.SetShaderValue(rl.GetShaderLocation(sceneShader,b"lightDir"),lightDir)
+        rl.SetShaderValueMatrix(sceneShader,rl.GetShaderLocation(sceneShader,b"lightVP"),lightVP)
+        rl.SetShaderValueTexture(sceneShader,rl.GetShaderLocation(sceneShader,b"texture_shadowmap"),shadowmap.depth)
+        
+        draw_scene()
+
+        rl.EndShaderMode()
+        rl.EndMode3D()
+        
         draw_shadowmap()
-        DrawText(f"fps {GetFPS()} cubes {world.count} ".encode('utf-8'), 10, 10, 20, LIGHTGRAY)
-        EndDrawing()
-    CloseWindow()
+        rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count} ".encode('utf-8'), 10, 10, 20, rl.LIGHTGRAY)
+        
+        rl.EndDrawing()
+    rl.CloseWindow()
 
 
 def draw_shadowmap():
     display_size = WINDOW_SIZE.x / 5.0
     display_scale = display_size / float(shadowmap.depth.width)
-    DrawTextureEx(shadowmap.texture, Vector2(WINDOW_SIZE.x - display_size, 0.0), 0.0, display_scale, RAYWHITE)
-    DrawTextureEx(shadowmap.depth, Vector2(WINDOW_SIZE.x - display_size, display_size), 0.0, display_scale, RAYWHITE)
+    rl.DrawTextureEx(shadowmap.texture, Vector2(WINDOW_SIZE.x - display_size, 0.0), 0.0, display_scale, rl.RAYWHITE)
+    rl.DrawTextureEx(shadowmap.depth, Vector2(WINDOW_SIZE.x - display_size, display_size), 0.0, display_scale, rl.RAYWHITE)
 
 def draw_scene():
     ents = world.where(Position, Mesh, BoundingBox)
@@ -173,7 +199,7 @@ def draw_scene():
     centers = pos_vec + (bmaxs + bmins) * 0.5
 
     for center, size, mesh in zip(centers, sizes, mesh_vec):
-        DrawCube(
+        rl.DrawCube(
             tuple(center),
             size[0], # x
             size[1], # y
