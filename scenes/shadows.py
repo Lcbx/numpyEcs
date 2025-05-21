@@ -92,8 +92,9 @@ light_camera = Camera3D(
     90.0,
     rl.CAMERA_ORTHOGRAPHIC
 )
-shadowmap = shader_util.shadow_buffer(1024,1024)
+shadowmap = shader_util.shadow_buffer(1024,1024, colorFormat=rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32)
 
+shadowBlurShader = rl.LoadShader(b'', b'scenes/lightmap.compute');
 
 def run():
     while not rl.WindowShouldClose():
@@ -101,6 +102,18 @@ def run():
         frameTime = rl.GetFrameTime()
 
         if rl.IsKeyPressed(rl.KEY_R): load_shaders()
+        if rl.IsKeyPressed(rl.KEY_P):
+            light_camera.projection = (rl.CAMERA_ORTHOGRAPHIC
+                if light_camera.projection == rl.CAMERA_PERSPECTIVE
+                else rl.CAMERA_PERSPECTIVE
+            )
+
+        scrollspeed = 3.0
+        mw = scrollspeed * rl.GetMouseWheelMove()
+        if mw != 0 and ( camera.position.y > scrollspeed + 0.5 or mw > 0.0):
+            camera.position = rl.Vector3Add(camera.position,
+                rl.Vector3Scale(rl.Vector3Normalize(camera.position), mw))
+            camera.target = rl.Vector3Subtract(camera.target, camera.position)
 
         pv = world.where(Position, Velocity)
         p_vec, v_vec = (positions.get_vector(pv), velocities.get_vector(pv))
@@ -123,10 +136,21 @@ def run():
         
         lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
     
-        draw_scene()
+        draw_scene(randomize_color=True)
         
         rl.rlSetCullFace(rl.RL_CULL_FACE_BACK)
         rl.EndMode3D()
+
+        rl.BeginShaderMode(shadowBlurShader);
+        shader_util.SetShaderValue(rl.GetShaderLocation(shadowBlurShader,b"uTexelSize"),Vector2(1./float(shadowmap.texture.width),1./float(shadowmap.texture.height)))
+        
+        for i in range(1,3):
+            shader_util.SetShaderValue(rl.GetShaderLocation(shadowBlurShader,b"uStep"), float(i) )
+            # screen-wide rectangle, y-flipped due to default OpenGL coordinates
+            rl.DrawTextureRec(shadowmap.texture,
+                (0, 0, shadowmap.texture.width, -shadowmap.texture.height), (0, 0), rl.WHITE);
+        
+        rl.EndShaderMode();
         rl.EndTextureMode()
 
 
@@ -140,7 +164,8 @@ def run():
         lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
         shader_util.SetShaderValue(rl.GetShaderLocation(sceneShader,b"lightDir"),lightDir)
         rl.SetShaderValueMatrix(sceneShader,rl.GetShaderLocation(sceneShader,b"lightVP"),lightVP)
-        rl.SetShaderValueTexture(sceneShader,rl.GetShaderLocation(sceneShader,b"texture_shadowmap"),shadowmap.depth)
+        rl.SetShaderValueTexture(sceneShader,rl.GetShaderLocation(sceneShader,b"shadowDepthMap"),shadowmap.depth)
+        rl.SetShaderValueTexture(sceneShader,rl.GetShaderLocation(sceneShader,b"shadowPenumbraMap"),shadowmap.texture)
         
         draw_scene()
 
@@ -160,7 +185,7 @@ def draw_shadowmap():
     rl.DrawTextureEx(shadowmap.texture, Vector2(WINDOW_SIZE.x - display_size, 0.0), 0.0, display_scale, rl.RAYWHITE)
     rl.DrawTextureEx(shadowmap.depth, Vector2(WINDOW_SIZE.x - display_size, display_size), 0.0, display_scale, rl.RAYWHITE)
 
-def draw_scene():
+def draw_scene(randomize_color=False):
     ents = world.where(Position, Mesh, BoundingBox)
     pos_vec, mesh_vec, bb_vec, = (positions.get_vector(ents), meshes.get_vector(ents), bboxes.get_vector(ents))
     bmins = bb_vec[:,:3] # entity (int), bounding box (6 floats)
@@ -174,7 +199,7 @@ def draw_scene():
             size[0], # x
             size[1], # y
             size[2], # z
-            mesh[meshes.color_id]
+            Color(rl.GetRandomValue(0, 255),255,255,255) if randomize_color else mesh[meshes.color_id]
         )
 
 

@@ -1,0 +1,21 @@
+#version 330 core
+
+in  vec2 fragTexCoord;
+
+uniform sampler2D texture0;    // R=meshID, G/B=curr distance‐vector (pixels)
+uniform float     uStep;       // current hop‐size in *pixels*
+uniform vec2      uTexelSize;  // = vec2(1.0/width, 1.0/height)
+
+out vec4 finalColor ;
+
+void main() {
+    // read current
+    vec4 src = texture(texture0, fragTexCoord);
+    float meshID = src.r;
+    vec2  bestDist = src.gb;
+    float bestLen = dot(bestDist,bestDist);
+
+    // TODO: sample around and set bestLen
+
+    finalColor = vec4(meshID, bestDist, 1.0);
+}
