@@ -20,6 +20,10 @@ bool between(vec2 v, vec2 bottomLeft, vec2 topRight) {
     return bool(s.x * s.y);   
 }
 
+float random(vec2 co) {
+    return fract(dot(co, vec2(3,8)) * dot(co.yx, vec2(7,5)) * 0.03);
+}
+
 void main()
 {
     finalColor = fragColor * texture( texture0, fragTexCoord );
@@ -29,16 +33,15 @@ void main()
 
     vec2 shadowTexCoords = projCoords.xy;
 	
-	if( between(shadowTexCoords, vec2(0), vec2(1) ) ){
-		float fragmentDepth = projCoords.z;
-		float shadowDepth = texture(texture_shadowmap, shadowTexCoords).r;
-		
-		// Calculate simple bias based on angle between normal and light
-		float NDotL = dot(fragNormal, lightDir);
-		float bias = 0.001 * (1.5 - NDotL);
-		
-		float shadow = fragmentDepth > shadowDepth + bias ? 0.5 : 1.0;
-		
-		finalColor = vec4( vec3(shadow) * finalColor.rgb, 1);
-	}
+	if( !between(shadowTexCoords, vec2(0), vec2(1) ) ) return;
+	float fragmentDepth = projCoords.z;
+	float shadowDepth = texture(texture_shadowmap, shadowTexCoords).r;
+	
+	// Calculate simple bias based on angle between normal and light
+	float NDotL = dot(fragNormal, lightDir);
+	float bias = 0.001 * (1.5 - NDotL);
+	
+	float shadow = fragmentDepth > shadowDepth + bias ? 0.5 : 1.0;
+	
+	finalColor = vec4( vec3(shadow) * finalColor.rgb, 1);
 }

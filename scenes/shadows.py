@@ -83,36 +83,6 @@ def load_shaders():
 sceneShader = None
 load_shaders()
 
-def shadow_buffer(width : int, height:int, withColorBuffer:bool=False) -> RenderTexture :
-    # has a color buffer by default
-    #target = LoadRenderTexture(width, height)
-
-    target = RenderTexture()
-    target.id = rl.rlLoadFramebuffer()
-    
-    if target.id > 0:
-        rl.rlEnableFramebuffer(target.id)
-        
-        if withColorBuffer:
-            target.texture.id = rl_load_texture(None, width, height, rl.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, 1)
-            target.texture.format = rl.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8
-            target.texture.mipmaps = 1
-            rl.rlFramebufferAttach(target.id, target.texture.id, rl.RL_ATTACHMENT_COLOR_CHANNEL0, rl.RL_ATTACHMENT_TEXTURE2D, 0)
-
-        target.texture.width = width
-        target.texture.height = height
-
-        target.depth.id = rl.rlLoadTextureDepth(width, height, False)
-        target.depth.width = width
-        target.depth.height = height
-        target.depth.format = 19 # ?
-        target.depth.mipmaps = 1
-
-        rl.rlFramebufferAttach(target.id, target.depth.id, rl.RL_ATTACHMENT_DEPTH, rl.RL_ATTACHMENT_TEXTURE2D, 0)
-        rl.rlDisableFramebuffer()
-
-    return target
-
 
 light_nearFar = (5,70)
 light_camera = Camera3D(
@@ -122,7 +92,7 @@ light_camera = Camera3D(
     90.0,
     rl.CAMERA_ORTHOGRAPHIC
 )
-shadowmap = shadow_buffer(1024,1024,withColorBuffer=True)
+shadowmap = shader_util.shadow_buffer(1024,1024)
 
 
 def run():

@@ -1,9 +1,7 @@
 from typing import Any, Sequence
-from raylib import rlSetUniform, \
-	RL_SHADER_UNIFORM_FLOAT, RL_SHADER_UNIFORM_INT, \
-	RL_SHADER_UNIFORM_VEC2, RL_SHADER_UNIFORM_VEC3, RL_SHADER_UNIFORM_VEC4
-from pyray import Vector2, Vector3, Vector4, ffi
-#from weakref import WeakKeyDictionary
+import raylib as rl
+from pyray import Vector2, Vector3, Vector4, ffi, RenderTexture, rl_load_texture
+#
 
 """ # in rlgl.h
 
@@ -48,12 +46,12 @@ def SetShaderValue(loc: int, value: Any) -> None:
 
 	if isinstance(value, int):
 	    c_arr    = ffi.new("int *", value)
-	    uni_type = RL_SHADER_UNIFORM_INT
+	    uni_type = rl.RL_SHADER_UNIFORM_INT
 	    count    = 1
 
 	elif isinstance(value, float):
 	    c_arr    = ffi.new("float *", value)
-	    uni_type = RL_SHADER_UNIFORM_FLOAT
+	    uni_type = rl.RL_SHADER_UNIFORM_FLOAT
 	    count    = 1
 
 	else:
@@ -64,9 +62,9 @@ def SetShaderValue(loc: int, value: Any) -> None:
 		    coords = [getattr(value, axis) for axis in ('x','y','z','w')[:dims]]
 		    c_arr    = ffi.new(f"float[{dims}]", coords)
 		    uni_type = {
-		        2: RL_SHADER_UNIFORM_VEC2,
-		        3: RL_SHADER_UNIFORM_VEC3,
-		        4: RL_SHADER_UNIFORM_VEC4,
+		        2: rl.RL_SHADER_UNIFORM_VEC2,
+		        3: rl.RL_SHADER_UNIFORM_VEC3,
+		        4: rl.RL_SHADER_UNIFORM_VEC4,
 		    }[dims]
 		    count    = 1
 
@@ -78,12 +76,12 @@ def SetShaderValue(loc: int, value: Any) -> None:
 
 			if isinstance(first, int):
 			    c_arr    = ffi.new(f"int[{seq_len}]", value)
-			    uni_type = RL_SHADER_UNIFORM_INT
+			    uni_type = rl.RL_SHADER_UNIFORM_INT
 			    count    = seq_len
 
 			elif isinstance(first, float):
 			    c_arr    = ffi.new(f"float[{seq_len}]", value)
-			    uni_type = RL_SHADER_UNIFORM_FLOAT
+			    uni_type = rl.RL_SHADER_UNIFORM_FLOAT
 			    count    = seq_len
 
 			elif seq_struct_name in ('Vector2', 'Vector3', 'Vector4'):
@@ -95,9 +93,9 @@ def SetShaderValue(loc: int, value: Any) -> None:
 			        flat.extend(getattr(v, axis) for axis in ('x','y','z','w')[:dims])
 			    c_arr    = ffi.new(f"float[{size}]", flat)
 			    uni_type = {
-			        2: RL_SHADER_UNIFORM_VEC2,
-			        3: RL_SHADER_UNIFORM_VEC3,
-			        4: RL_SHADER_UNIFORM_VEC4,
+			        2: rl.RL_SHADER_UNIFORM_VEC2,
+			        3: rl.RL_SHADER_UNIFORM_VEC3,
+			        4: rl.RL_SHADER_UNIFORM_VEC4,
 			    }[dims]
 			    count    = seq_len
 			else:
@@ -105,4 +103,67 @@ def SetShaderValue(loc: int, value: Any) -> None:
 		else:
 			raise TypeError(f"Unsupported uniform value type: {struct_name}")
 
-	rlSetUniform(loc, c_arr, uni_type, count)
+	rl.rlSetUniform(loc, c_arr, uni_type, count)
+
+
+
+""" # in rlgl.h
+# for color :
+PIXELFORMAT_UNCOMPRESSED_GRAYSCALE = 1,     // 8 bit per pixel (no alpha)
+PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA,        // 8*2 bpp (2 channels)
+PIXELFORMAT_UNCOMPRESSED_R5G6B5,            // 16 bpp
+PIXELFORMAT_UNCOMPRESSED_R8G8B8,            // 24 bpp
+PIXELFORMAT_UNCOMPRESSED_R5G5B5A1,          // 16 bpp (1 bit alpha)
+PIXELFORMAT_UNCOMPRESSED_R4G4B4A4,          // 16 bpp (4 bit alpha)
+PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,          // 32 bpp
+PIXELFORMAT_UNCOMPRESSED_R32,               // 32 bpp (1 channel - float)
+PIXELFORMAT_UNCOMPRESSED_R32G32B32,         // 32*3 bpp (3 channels - float)
+PIXELFORMAT_UNCOMPRESSED_R32G32B32A32,      // 32*4 bpp (4 channels - float)
+PIXELFORMAT_UNCOMPRESSED_R16,               // 16 bpp (1 channel - half float)
+PIXELFORMAT_UNCOMPRESSED_R16G16B16,         // 16*3 bpp (3 channels - half float)
+PIXELFORMAT_UNCOMPRESSED_R16G16B16A16,      // 16*4 bpp (4 channels - half float)
+PIXELFORMAT_COMPRESSED_DXT1_RGB,            // 4 bpp (no alpha)
+PIXELFORMAT_COMPRESSED_DXT1_RGBA,           // 4 bpp (1 bit alpha)
+PIXELFORMAT_COMPRESSED_DXT3_RGBA,           // 8 bpp
+PIXELFORMAT_COMPRESSED_DXT5_RGBA,           // 8 bpp
+PIXELFORMAT_COMPRESSED_ETC1_RGB,            // 4 bpp
+PIXELFORMAT_COMPRESSED_ETC2_RGB,            // 4 bpp
+PIXELFORMAT_COMPRESSED_ETC2_EAC_RGBA,       // 8 bpp
+PIXELFORMAT_COMPRESSED_PVRT_RGB,            // 4 bpp
+PIXELFORMAT_COMPRESSED_PVRT_RGBA,           // 4 bpp
+PIXELFORMAT_COMPRESSED_ASTC_4x4_RGBA,       // 8 bpp
+PIXELFORMAT_COMPRESSED_ASTC_8x8_RGBA        // 2 bpp
+
+# for depth raylib lets opengl choose (not easy to set)
+"""
+def shadow_buffer(width : int, height:int,
+    colorFormat:int=rl.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8
+    ) -> RenderTexture :
+    # has a color buffer by default
+    #target = LoadRenderTexture(width, height)
+
+    target = RenderTexture()
+    target.id = rl.rlLoadFramebuffer()
+    
+    if target.id > 0:
+        rl.rlEnableFramebuffer(target.id)
+
+        target.texture.width = width
+        target.texture.height = height
+        
+        if colorFormat:
+            target.texture.id = rl_load_texture(None, width, height, colorFormat, 1)
+            target.texture.format = colorFormat
+            target.texture.mipmaps = 1
+            rl.rlFramebufferAttach(target.id, target.texture.id, rl.RL_ATTACHMENT_COLOR_CHANNEL0, rl.RL_ATTACHMENT_TEXTURE2D, 0)
+
+        target.depth.id = rl.rlLoadTextureDepth(width, height, False)
+        target.depth.width = width
+        target.depth.height = height
+        target.depth.format = 19
+        target.depth.mipmaps = 1
+        rl.rlFramebufferAttach(target.id, target.depth.id, rl.RL_ATTACHMENT_DEPTH, rl.RL_ATTACHMENT_TEXTURE2D, 0)
+        
+        rl.rlDisableFramebuffer()
+
+    return target

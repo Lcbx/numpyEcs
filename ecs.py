@@ -297,7 +297,9 @@ class ECS:
     
     def create_entities(self, n: int) -> List[Entity]:
         """
-        Create `n` new entity IDs, reusing deleted ones when possible.
+        Create `n` new entity IDs
+        NOTE: re-issuing dead entity ids to keep sparse array sizes low
+              however potential bug : a re-issued entity may be mistaken for the previous dead entity
         """
         out : List[Entity] = []
         len_free = len(self._free_entities)
