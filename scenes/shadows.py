@@ -70,17 +70,23 @@ camera = Camera3D(
 )
 
 
-WINDOW_SIZE = Vector2(800, 450) 
+WINDOW_SIZE = Vector2(800, 500) 
 rl.InitWindow(int(WINDOW_SIZE.x), int(WINDOW_SIZE.y), b"Hello")
 rl.SetTargetFPS(60)
 
 
 def load_shaders():
     global sceneShader
+    global shadowBlurShader
+
     newShader = rl.LoadShader(b"scenes/lightmap.vs", b"scenes/lightmap.fs")
     if newShader.id > 0: sceneShader = newShader
 
+    newShader = rl.LoadShader(b'', b'scenes/lightmap.compute');
+    if newShader.id > 0: shadowBlurShader = newShader
+
 sceneShader = None
+shadowBlurShader = None
 load_shaders()
 
 
@@ -92,9 +98,9 @@ light_camera = Camera3D(
     90.0,
     rl.CAMERA_ORTHOGRAPHIC
 )
-shadowmap = shader_util.shadow_buffer(1024,1024, colorFormat=rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32)
 
-shadowBlurShader = rl.LoadShader(b'', b'scenes/lightmap.compute');
+shadowmap = shader_util.create_render_buffer(1024,1024,colorFormat=rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32, depth_map=True)
+shadowmap_blurbuffer = shader_util.create_render_buffer(1024,1024,colorFormat=rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32)
 
 def run():
     while not rl.WindowShouldClose():
@@ -124,10 +130,15 @@ def run():
         mask_z = np.abs(p_vec[:, 2]) > SPACE_SIZE
         v_vec[mask_x, 0] *= -1
         v_vec[mask_z, 2] *= -1
+        # if further than boundary, it would get stuck alternating direction each frame
+        p_vec[mask_x, 0] = np.sign(p_vec[mask_x, 0]) * 0.99 * SPACE_SIZE
+        p_vec[mask_z, 2] = np.sign(p_vec[mask_z, 2]) * 0.99 * SPACE_SIZE
 
         positions.set_vector(pv, p_vec)
         velocities.set_vector(pv, v_vec)
         
+        # write shadowmap
+
         rl.BeginTextureMode(shadowmap)
         rl.rlSetClipPlanes(light_nearFar[0], light_nearFar[1])
         rl.BeginMode3D(light_camera)
@@ -140,19 +151,32 @@ def run():
         
         rl.rlSetCullFace(rl.RL_CULL_FACE_BACK)
         rl.EndMode3D()
-
-        rl.BeginShaderMode(shadowBlurShader);
-        shader_util.SetShaderValue(rl.GetShaderLocation(shadowBlurShader,b"uTexelSize"),Vector2(1./float(shadowmap.texture.width),1./float(shadowmap.texture.height)))
-        
-        for i in range(1,3):
-            shader_util.SetShaderValue(rl.GetShaderLocation(shadowBlurShader,b"uStep"), float(i) )
-            # screen-wide rectangle, y-flipped due to default OpenGL coordinates
-            rl.DrawTextureRec(shadowmap.texture,
-                (0, 0, shadowmap.texture.width, -shadowmap.texture.height), (0, 0), rl.WHITE);
-        
-        rl.EndShaderMode();
         rl.EndTextureMode()
 
+        # blur passes
+
+        read_buffer = shadowmap
+        write_buffer = shadowmap_blurbuffer
+        for i in [8]:
+            rl.BeginTextureMode(write_buffer)
+            rl.BeginShaderMode(shadowBlurShader);
+
+            # problem : uDimensions and uStep stays 0 in shader.
+            # locs are fine.
+            # must be a bug in shader_util.SetShaderValue
+
+            dimensions = Vector2(float(shadowmap.texture.width), float(shadowmap.texture.height))
+            shader_util.SetShaderValue(rl.GetShaderLocation(shadowBlurShader,b"uDimensions"), dimensions)
+            shader_util.SetShaderValue(rl.GetShaderLocation(shadowBlurShader,b"uStep"), i)
+                
+            # screen-wide rectangle, y-flipped due to default OpenGL coordinates
+            rl.DrawTextureRec(read_buffer.texture,
+                (0, 0, shadowmap.texture.width, -shadowmap.texture.height), (0, 0), rl.WHITE);
+
+            rl.EndShaderMode();
+            rl.EndTextureMode()
+            read_buffer, write_buffer = write_buffer, read_buffer
+        
 
         rl.BeginDrawing()
         rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
@@ -164,8 +188,8 @@ def run():
         lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
         shader_util.SetShaderValue(rl.GetShaderLocation(sceneShader,b"lightDir"),lightDir)
         rl.SetShaderValueMatrix(sceneShader,rl.GetShaderLocation(sceneShader,b"lightVP"),lightVP)
-        rl.SetShaderValueTexture(sceneShader,rl.GetShaderLocation(sceneShader,b"shadowDepthMap"),shadowmap.depth)
-        rl.SetShaderValueTexture(sceneShader,rl.GetShaderLocation(sceneShader,b"shadowPenumbraMap"),shadowmap.texture)
+        rl.SetShaderValueTexture(sceneShader,rl.GetShaderLocation(sceneShader,b"shadowDepthMap"), shadowmap.depth)
+        rl.SetShaderValueTexture(sceneShader,rl.GetShaderLocation(sceneShader,b"shadowPenumbraMap"), read_buffer.texture)
         
         draw_scene()
 
@@ -183,7 +207,8 @@ def draw_shadowmap():
     display_size = WINDOW_SIZE.x / 5.0
     display_scale = display_size / float(shadowmap.depth.width)
     rl.DrawTextureEx(shadowmap.texture, Vector2(WINDOW_SIZE.x - display_size, 0.0), 0.0, display_scale, rl.RAYWHITE)
-    rl.DrawTextureEx(shadowmap.depth, Vector2(WINDOW_SIZE.x - display_size, display_size), 0.0, display_scale, rl.RAYWHITE)
+    rl.DrawTextureEx(shadowmap_blurbuffer.texture, Vector2(WINDOW_SIZE.x - display_size, display_size), 0.0, display_scale, rl.RAYWHITE)
+    rl.DrawTextureEx(shadowmap.depth, Vector2(WINDOW_SIZE.x - display_size, 2 * display_size), 0.0, display_scale, rl.RAYWHITE)
 
 def draw_scene(randomize_color=False):
     ents = world.where(Position, Mesh, BoundingBox)
@@ -192,14 +217,15 @@ def draw_scene(randomize_color=False):
     bmaxs = bb_vec[:,3:]
     sizes = bmaxs - bmins
     centers = pos_vec + (bmaxs + bmins) * 0.5
+    meshIds = ents / np.max(ents)
 
-    for center, size, mesh in zip(centers, sizes, mesh_vec):
+    for meshId, center, size, mesh in zip(meshIds, centers, sizes, mesh_vec):
         rl.DrawCube(
             tuple(center),
             size[0], # x
             size[1], # y
             size[2], # z
-            Color(rl.GetRandomValue(0, 255),255,255,255) if randomize_color else mesh[meshes.color_id]
+            (int(255 * meshId),255,255,255) if randomize_color else mesh[meshes.color_id]
         )
 
 

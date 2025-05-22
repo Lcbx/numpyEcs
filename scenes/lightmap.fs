@@ -38,15 +38,16 @@ void main() {
 
     // fetch depth and meshID+distance
     float mapDepth = texture(shadowDepthMap, uv).r;
-    vec2  pen = texture(shadowPenumbraMap, uv).gb;
-    float distToEdgeSq = dot(pen, pen);
+    vec3  penumbra = texture(shadowPenumbraMap, uv).rgb;
+    vec2 penDist = penumbra.gb;
+    float distToEdgeSq = dot(penDist, penDist);
 
     // bias to avoid self‐shadow acne
     float NDotL = max(dot(fragNormal, lightDir), 0.0);
     float bias  = 0.001 * (1.5 - NDotL);
 
     // determine occlusion
-    bool occluded = (proj.z > mapDepth + bias);
+    bool occluded = proj.z > mapDepth + bias;
 
     float shadowFactor = 1.0;
     if (occluded) {
@@ -58,5 +59,4 @@ void main() {
     }
 
     finalColor = vec4(albedo * shadowFactor, 1.0);
-    //finalColor = vec4(distToEdgeSq * 0.1, 0., 0., 1.0);
 }

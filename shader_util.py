@@ -1,7 +1,7 @@
 from typing import Any, Sequence
 import raylib as rl
 from pyray import Vector2, Vector3, Vector4, ffi, RenderTexture, rl_load_texture
-#
+from numpy import ndarray
 
 """ # in rlgl.h
 
@@ -35,6 +35,8 @@ def _struct_info(v):
         return name.replace('struct ', '')
     return None
 
+#_active_uniform_buffers: dict[int, Any] = {}
+
 def SetShaderValue(loc: int, value: Any) -> None:
 	"""
 	Upload `value` to the shader uniform at location `loc`.
@@ -43,18 +45,49 @@ def SetShaderValue(loc: int, value: Any) -> None:
 	  - cffi structs for Vector2, Vector3, Vector4
 	  - homogeneous sequences of ints, floats, or Vector2/3/4 structs
 	"""
-
 	if isinstance(value, int):
-	    c_arr    = ffi.new("int *", value)
+	    c_arr    = ffi.new("int*", value)
 	    uni_type = rl.RL_SHADER_UNIFORM_INT
 	    count    = 1
 
 	elif isinstance(value, float):
-	    c_arr    = ffi.new("float *", value)
+	    c_arr    = ffi.new("float*", value)
 	    uni_type = rl.RL_SHADER_UNIFORM_FLOAT
 	    count    = 1
 
+	elif isinstance(value, Sequence):
+		if not value: raise ValueError("Cannot upload an empty sequence as a uniform")
+		first = value[0]
+		seq_len = len(value)
+
+		if isinstance(first, int):
+		    c_arr    = ffi.new(f"int[{seq_len}]", value)
+		    uni_type = rl.RL_SHADER_UNIFORM_INT
+		    count    = seq_len
+
+		elif isinstance(first, float):
+		    c_arr    = ffi.new(f"float[{seq_len}]", value)
+		    uni_type = rl.RL_SHADER_UNIFORM_FLOAT
+		    count    = seq_len
+
+		elif struct_name := _struct_info(first) in ('Vector2', 'Vector3', 'Vector4'):
+		    dims = int(struct_name[-1])
+		    size = dims * seq_len
+		    flat = []
+		    flat.ensureCapacity(size)
+		    for v in value:
+		        flat.extend(getattr(v, axis) for axis in ('x','y','z','w')[:dims])
+		    c_arr    = ffi.new(f"float[{size}]", flat)
+		    uni_type = {
+		        2: rl.RL_SHADER_UNIFORM_VEC2,
+		        3: rl.RL_SHADER_UNIFORM_VEC3,
+		        4: rl.RL_SHADER_UNIFORM_VEC4,
+		    }[dims]
+		    count    = seq_len
+		else:
+			raise TypeError(f"Unsupported uniform inner array value type: {struct_name}")
 	else:
+		# assuming it's a c struct
 		struct_name = _struct_info(value)
 		if struct_name in ('Vector2', 'Vector3', 'Vector4'):
 		    # extract fields x,y,z,w as needed
@@ -67,42 +100,8 @@ def SetShaderValue(loc: int, value: Any) -> None:
 		        4: rl.RL_SHADER_UNIFORM_VEC4,
 		    }[dims]
 		    count    = 1
-
-		elif isinstance(value, Sequence):
-			if not value: raise ValueError("Cannot upload an empty sequence as a uniform")
-			first = value[0]
-			seq_len = len(value)
-			seq_struct_name = _struct_info(first)
-
-			if isinstance(first, int):
-			    c_arr    = ffi.new(f"int[{seq_len}]", value)
-			    uni_type = rl.RL_SHADER_UNIFORM_INT
-			    count    = seq_len
-
-			elif isinstance(first, float):
-			    c_arr    = ffi.new(f"float[{seq_len}]", value)
-			    uni_type = rl.RL_SHADER_UNIFORM_FLOAT
-			    count    = seq_len
-
-			elif seq_struct_name in ('Vector2', 'Vector3', 'Vector4'):
-			    dims = int(seq_struct_name[-1])
-			    size = dims * seq_len
-			    flat = []
-			    flat.ensureCapacity(size)
-			    for v in value:
-			        flat.extend(getattr(v, axis) for axis in ('x','y','z','w')[:dims])
-			    c_arr    = ffi.new(f"float[{size}]", flat)
-			    uni_type = {
-			        2: rl.RL_SHADER_UNIFORM_VEC2,
-			        3: rl.RL_SHADER_UNIFORM_VEC3,
-			        4: rl.RL_SHADER_UNIFORM_VEC4,
-			    }[dims]
-			    count    = seq_len
-			else:
-				raise TypeError(f"Unsupported uniform inner array value type: {seq_struct_name}")
-		else:
-			raise TypeError(f"Unsupported uniform value type: {struct_name}")
-
+	#ptr = ffi.cast("int*" if uni_type == rl.RL_SHADER_UNIFORM_INT else "float*", c_arr)
+	#_active_uniform_buffers[loc] = c_arr
 	rl.rlSetUniform(loc, c_arr, uni_type, count)
 
 
@@ -136,11 +135,12 @@ PIXELFORMAT_COMPRESSED_ASTC_8x8_RGBA        // 2 bpp
 
 # for depth raylib lets opengl choose (not easy to set)
 """
-def shadow_buffer(width : int, height:int,
-    colorFormat:int=rl.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8
+def create_render_buffer(width : int, height:int,
+    colorFormat:int=rl.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,
+    depth_map:bool=False
     ) -> RenderTexture :
     # has a color buffer by default
-    #target = LoadRenderTexture(width, height)
+    #target = rl.LoadRenderTexture(width, height)
 
     target = RenderTexture()
     target.id = rl.rlLoadFramebuffer()
@@ -157,12 +157,13 @@ def shadow_buffer(width : int, height:int,
             target.texture.mipmaps = 1
             rl.rlFramebufferAttach(target.id, target.texture.id, rl.RL_ATTACHMENT_COLOR_CHANNEL0, rl.RL_ATTACHMENT_TEXTURE2D, 0)
 
-        target.depth.id = rl.rlLoadTextureDepth(width, height, False)
-        target.depth.width = width
-        target.depth.height = height
-        target.depth.format = 19
-        target.depth.mipmaps = 1
-        rl.rlFramebufferAttach(target.id, target.depth.id, rl.RL_ATTACHMENT_DEPTH, rl.RL_ATTACHMENT_TEXTURE2D, 0)
+        if depth_map:
+	        target.depth.id = rl.rlLoadTextureDepth(width, height, False)
+	        target.depth.width = width
+	        target.depth.height = height
+	        target.depth.format = 19
+	        target.depth.mipmaps = 1
+	        rl.rlFramebufferAttach(target.id, target.depth.id, rl.RL_ATTACHMENT_DEPTH, rl.RL_ATTACHMENT_TEXTURE2D, 0)
         
         rl.rlDisableFramebuffer()
 
