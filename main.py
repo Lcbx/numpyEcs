@@ -30,15 +30,16 @@ if args.test:
         if hasattr(module, args.test): getattr(module, args.test)()
 
 # run whole test suite using pytest
-if args.tests:
+elif args.tests:
     import pytest
     ret = pytest.main(['-q'] + test_paths )
     sys.exit(ret)
 
 # run or compile the scene
-if args.scene:
+else:
+    scene = args.scene or 'scenes/shadows.py'
     if args.compile:
         import subprocess
-        subprocess.run( f'py -m nuitka --output-dir=build --standalone {args.scene}'.split(' ') )
+        subprocess.run( f'py -m nuitka --output-dir=build --standalone {scene}'.split(' ') )
     else:
-        __import__( to_module(normalize_path(args.scene)) )
+        __import__( to_module(normalize_path(scene)) )

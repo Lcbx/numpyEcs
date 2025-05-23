@@ -15,12 +15,18 @@ bool between(vec2 v, vec2 bottomLeft, vec2 topRight) {
 }
 
 const int OFFSETS_LEN = 8;
+const float O_ = 0.9;
 const vec2 OFFSETS[OFFSETS_LEN] = vec2[OFFSETS_LEN](
-    vec2( 1,  0),     vec2(-1,  0),
-    vec2( 0,  1),     vec2( 0, -1)
-    ,vec2( 0.8,  0.8), vec2(-0.8,  0.8),
-     vec2( 0.8, -0.8), vec2(-0.8, -0.8)
+    vec2( O_,  0),   vec2(-O_,  0),
+    vec2( 0,  O_),   vec2( 0, -O_)
+    ,vec2( O_,  O_), vec2(-O_,  O_),
+     vec2( O_, -O_), vec2(-O_, -O_)
 );
+
+
+float random(vec2 co) {    
+    return fract(dot(co, vec2(3,8)) * dot(co.yx, vec2(7,5)) * 0.03);
+}
 
 
 void main() {
@@ -31,15 +37,10 @@ void main() {
     bestDir = bestDir * 2.0 - 1.0;
     float bestLen = dot(bestDir,bestDir);
 
-    //float acc = 0.0;
-
     vec2 UV_offset = vec2(uStep);
-    //UV_offset = vec2(8);
     UV_offset /= uDimensions;
-    //UV_offset /= vec2(1024);
-    //UV_offset = vec2(8)/vec2(1024);
 
-    if (bestLen > 0.9){
+    if (bestLen > 0.1){
         for (int i = 0; i < OFFSETS_LEN; ++i) {
             vec2 testOffset = OFFSETS[i] * UV_offset;
             vec2 testUV = fragTexCoord + testOffset;
@@ -49,32 +50,27 @@ void main() {
             float testMeshId = test.r;
             vec2  dir = test.gb;
 
-            //acc += testMeshId / float(OFFSETS_LEN);
-
             float len = dot(testOffset,testOffset);
 
             // different caster, use this offset if better
             if(meshId != testMeshId){
-             if(len < bestLen){
-                 bestLen = len;
-                 bestDir = testOffset;
-             }
-             continue;
+                if(len < bestLen){
+                    bestLen = len;
+                    bestDir = testOffset;
+                }
             }
-            // same caster, use cumulated offset if better
-            vec2 cumulatedOffset = testOffset+dir;
-            len = dot(cumulatedOffset, cumulatedOffset);
-            if(len<bestLen){
-             bestLen = len;
-             bestDir = cumulatedOffset;
+            else
+            //if(meshId == testMeshId)
+            { // same caster, use cumulated offset if better
+                vec2 cumulatedOffset = testOffset+dir;
+                len = dot(cumulatedOffset, cumulatedOffset);
+                if(len<bestLen){
+                     bestLen = len;
+                     bestDir = cumulatedOffset;
+                }
             }
         }
     }
-
     bestDir = bestDir * 0.5 + 0.5;
     finalColor = vec4(meshId, bestDir, 1);
-
-    //finalColor = vec4(meshId, uDimensions/1500.0, 1);
-    //finalColor = vec4(meshId, UV_offset * 64.0, 1);
-    //finalColor = vec4(vec2(acc), 0, 1);
 }

@@ -1,12 +1,11 @@
 from typing import Any, Sequence
 import raylib as rl
-from pyray import Vector2, Vector3, Vector4, ffi, RenderTexture, rl_load_texture
-from numpy import ndarray
+from pyray import Shader, Vector2, Vector3, Vector4, ffi, RenderTexture, rl_load_texture
 
 """ # in rlgl.h
 
-# here value is of type void *
-rlSetUniform(locIndex, value, uniformType, count);
+void SetShaderValue(Shader shader, int locIndex, const void *value, int uniformType);               // Set shader uniform value
+void SetShaderValueV(Shader shader, int locIndex, const void *value, int uniformType, int count);   // Set shader uniform value vector
 
 # uniform types :
 	case RL_SHADER_UNIFORM_FLOAT: glUniform1fv(locIndex, count, (float *)value); break;
@@ -37,7 +36,7 @@ def _struct_info(v):
 
 #_active_uniform_buffers: dict[int, Any] = {}
 
-def SetShaderValue(loc: int, value: Any) -> None:
+def SetShaderValue(shader : Shader, loc: int, value: Any) -> None:
 	"""
 	Upload `value` to the shader uniform at location `loc`.
 	Supports:
@@ -45,17 +44,8 @@ def SetShaderValue(loc: int, value: Any) -> None:
 	  - cffi structs for Vector2, Vector3, Vector4
 	  - homogeneous sequences of ints, floats, or Vector2/3/4 structs
 	"""
-	if isinstance(value, int):
-	    c_arr    = ffi.new("int*", value)
-	    uni_type = rl.RL_SHADER_UNIFORM_INT
-	    count    = 1
 
-	elif isinstance(value, float):
-	    c_arr    = ffi.new("float*", value)
-	    uni_type = rl.RL_SHADER_UNIFORM_FLOAT
-	    count    = 1
-
-	elif isinstance(value, Sequence):
+	if isinstance(value, Sequence):
 		if not value: raise ValueError("Cannot upload an empty sequence as a uniform")
 		first = value[0]
 		seq_len = len(value)
@@ -63,46 +53,46 @@ def SetShaderValue(loc: int, value: Any) -> None:
 		if isinstance(first, int):
 		    c_arr    = ffi.new(f"int[{seq_len}]", value)
 		    uni_type = rl.RL_SHADER_UNIFORM_INT
-		    count    = seq_len
 
 		elif isinstance(first, float):
 		    c_arr    = ffi.new(f"float[{seq_len}]", value)
 		    uni_type = rl.RL_SHADER_UNIFORM_FLOAT
-		    count    = seq_len
 
-		elif struct_name := _struct_info(first) in ('Vector2', 'Vector3', 'Vector4'):
+		elif (struct_name := _struct_info(first)) in ('Vector2', 'Vector3', 'Vector4'):
 		    dims = int(struct_name[-1])
-		    size = dims * seq_len
-		    flat = []
-		    flat.ensureCapacity(size)
-		    for v in value:
-		        flat.extend(getattr(v, axis) for axis in ('x','y','z','w')[:dims])
-		    c_arr    = ffi.new(f"float[{size}]", flat)
+		    c_arr    = ffi.new(f"{struct_name}[{seq_len}]", value)
 		    uni_type = {
 		        2: rl.RL_SHADER_UNIFORM_VEC2,
 		        3: rl.RL_SHADER_UNIFORM_VEC3,
 		        4: rl.RL_SHADER_UNIFORM_VEC4,
 		    }[dims]
-		    count    = seq_len
 		else:
 			raise TypeError(f"Unsupported uniform inner array value type: {struct_name}")
+
+		rl.SetShaderValueV(shader, loc, c_arr, uni_type, seq_len)
+		return
+
+	if isinstance(value, int):
+	    c_arr    = ffi.new("int*", value)
+	    uni_type = rl.RL_SHADER_UNIFORM_INT
+
+	elif isinstance(value, float):
+	    c_arr    = ffi.new("float*", value)
+	    uni_type = rl.RL_SHADER_UNIFORM_FLOAT
+
+	elif (struct_name := _struct_info(value)) in ('Vector2', 'Vector3', 'Vector4'):
+	    dims = int(struct_name[-1])
+	    c_arr    = ffi.new(f"{struct_name} *", value)
+	    uni_type = {
+	        2: rl.RL_SHADER_UNIFORM_VEC2,
+	        3: rl.RL_SHADER_UNIFORM_VEC3,
+	        4: rl.RL_SHADER_UNIFORM_VEC4,
+	    }[dims]
 	else:
-		# assuming it's a c struct
-		struct_name = _struct_info(value)
-		if struct_name in ('Vector2', 'Vector3', 'Vector4'):
-		    # extract fields x,y,z,w as needed
-		    dims = int(struct_name[-1])
-		    coords = [getattr(value, axis) for axis in ('x','y','z','w')[:dims]]
-		    c_arr    = ffi.new(f"float[{dims}]", coords)
-		    uni_type = {
-		        2: rl.RL_SHADER_UNIFORM_VEC2,
-		        3: rl.RL_SHADER_UNIFORM_VEC3,
-		        4: rl.RL_SHADER_UNIFORM_VEC4,
-		    }[dims]
-		    count    = 1
-	#ptr = ffi.cast("int*" if uni_type == rl.RL_SHADER_UNIFORM_INT else "float*", c_arr)
-	#_active_uniform_buffers[loc] = c_arr
-	rl.rlSetUniform(loc, c_arr, uni_type, count)
+		raise TypeError(f"Unsupported uniform inner array value type: {struct_name}")
+
+	rl.SetShaderValue(shader, loc, c_arr, uni_type)
+
 
 
 
@@ -136,7 +126,7 @@ PIXELFORMAT_COMPRESSED_ASTC_8x8_RGBA        // 2 bpp
 # for depth raylib lets opengl choose (not easy to set)
 """
 def create_render_buffer(width : int, height:int,
-    colorFormat:int=rl.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,
+    colorFormat:int=rl.PIXELFORMAT_UNCOMPRESSED_R8G8B8,
     depth_map:bool=False
     ) -> RenderTexture :
     # has a color buffer by default

@@ -2,6 +2,7 @@ import raylib as rl
 from pyray import Vector2, Vector3, Color, Camera3D, rl_load_texture, RenderTexture
 from ecs import *
 import shader_util
+SetShaderValue = shader_util.SetShaderValue
 
 
 @component
@@ -99,8 +100,8 @@ light_camera = Camera3D(
     rl.CAMERA_ORTHOGRAPHIC
 )
 
-shadowmap = shader_util.create_render_buffer(1024,1024,colorFormat=rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32, depth_map=True)
-shadowmap_blurbuffer = shader_util.create_render_buffer(1024,1024,colorFormat=rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32)
+shadowmap = shader_util.create_render_buffer(1024,1024, depth_map=True)
+shadowmap_blurbuffer = shader_util.create_render_buffer(1024,1024)
 
 def run():
     while not rl.WindowShouldClose():
@@ -155,19 +156,16 @@ def run():
 
         # blur passes
 
+        dimensions = Vector2(float(shadowmap.texture.width), float(shadowmap.texture.height))
+        SetShaderValue(shadowBlurShader, rl.GetShaderLocation(shadowBlurShader,b"uDimensions"), dimensions)
+
         read_buffer = shadowmap
         write_buffer = shadowmap_blurbuffer
-        for i in [8]:
+        for i in [8, 5, 3]:
             rl.BeginTextureMode(write_buffer)
             rl.BeginShaderMode(shadowBlurShader);
 
-            # problem : uDimensions and uStep stays 0 in shader.
-            # locs are fine.
-            # must be a bug in shader_util.SetShaderValue
-
-            dimensions = Vector2(float(shadowmap.texture.width), float(shadowmap.texture.height))
-            shader_util.SetShaderValue(rl.GetShaderLocation(shadowBlurShader,b"uDimensions"), dimensions)
-            shader_util.SetShaderValue(rl.GetShaderLocation(shadowBlurShader,b"uStep"), i)
+            SetShaderValue(shadowBlurShader, rl.GetShaderLocation(shadowBlurShader,b"uStep"), i)
                 
             # screen-wide rectangle, y-flipped due to default OpenGL coordinates
             rl.DrawTextureRec(read_buffer.texture,
@@ -186,7 +184,7 @@ def run():
         rl.BeginShaderMode(sceneShader)
         
         lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
-        shader_util.SetShaderValue(rl.GetShaderLocation(sceneShader,b"lightDir"),lightDir)
+        SetShaderValue(sceneShader,rl.GetShaderLocation(sceneShader,b"lightDir"),lightDir)
         rl.SetShaderValueMatrix(sceneShader,rl.GetShaderLocation(sceneShader,b"lightVP"),lightVP)
         rl.SetShaderValueTexture(sceneShader,rl.GetShaderLocation(sceneShader,b"shadowDepthMap"), shadowmap.depth)
         rl.SetShaderValueTexture(sceneShader,rl.GetShaderLocation(sceneShader,b"shadowPenumbraMap"), read_buffer.texture)
