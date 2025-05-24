@@ -1,8 +1,7 @@
 import raylib as rl
 from pyray import Vector2, Vector3, Color, Camera3D, rl_load_texture, RenderTexture
 from ecs import *
-import shader_util
-SetShaderValue = shader_util.SetShaderValue
+import shader_util as su
 
 
 @component
@@ -61,20 +60,6 @@ for e in world.create_entities(15):
         Mesh(rnd_color()),
     )
 
-camera_nearFar = (0.1, 1000.0)
-camera = Camera3D(
-    Vector3(30, 70,-25),
-    Vector3(0,0,-25),
-    Vector3(0,1,0),
-    60.0,
-    rl.CAMERA_PERSPECTIVE
-)
-
-
-WINDOW_SIZE = Vector2(800, 500) 
-rl.InitWindow(int(WINDOW_SIZE.x), int(WINDOW_SIZE.y), b"Hello")
-rl.SetTargetFPS(60)
-
 
 def load_shaders():
     global sceneShader
@@ -86,10 +71,23 @@ def load_shaders():
     newShader = rl.LoadShader(b'', b'scenes/lightmap.compute');
     if newShader.id > 0: shadowBlurShader = newShader
 
+
+WINDOW_SIZE = Vector2(800, 500) 
+rl.InitWindow(int(WINDOW_SIZE.x), int(WINDOW_SIZE.y), b"Hello")
+rl.SetTargetFPS(60)
+
 sceneShader = None
 shadowBlurShader = None
 load_shaders()
 
+camera_nearFar = (0.1, 1000.0)
+camera = Camera3D(
+    Vector3(30, 70,-25),
+    Vector3(0,0,-25),
+    Vector3(0,1,0),
+    60.0,
+    rl.CAMERA_PERSPECTIVE
+)
 
 light_nearFar = (5,70)
 light_camera = Camera3D(
@@ -100,10 +98,14 @@ light_camera = Camera3D(
     rl.CAMERA_ORTHOGRAPHIC
 )
 
-shadowmap = shader_util.create_render_buffer(1024,1024, depth_map=True)
-shadowmap_blurbuffer = shader_util.create_render_buffer(1024,1024)
+unused_camera = None
+
+SM_SIZE = 1024
+shadowmap = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32, depth_map=True)
+shadowmap_blurbuffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32,)
 
 def run():
+    global camera, unused_camera
     while not rl.WindowShouldClose():
         
         frameTime = rl.GetFrameTime()
@@ -114,6 +116,13 @@ def run():
                 if light_camera.projection == rl.CAMERA_PERSPECTIVE
                 else rl.CAMERA_PERSPECTIVE
             )
+        if rl.IsKeyPressed(rl.KEY_L):
+            if unused_camera:
+                camera = unused_camera
+                unused_camera = None
+            else:
+                unused_camera = camera
+                camera = light_camera
 
         scrollspeed = 3.0
         mw = scrollspeed * rl.GetMouseWheelMove()
@@ -157,15 +166,18 @@ def run():
         # blur passes
 
         dimensions = Vector2(float(shadowmap.texture.width), float(shadowmap.texture.height))
-        SetShaderValue(shadowBlurShader, rl.GetShaderLocation(shadowBlurShader,b"uDimensions"), dimensions)
+        su.SetShaderValue(shadowBlurShader, rl.GetShaderLocation(shadowBlurShader,b"uDimensions"), dimensions)
 
         read_buffer = shadowmap
         write_buffer = shadowmap_blurbuffer
-        for i in [8, 5, 3]:
+
+        step = SM_SIZE/32
+        while step !=1:
+            step =  int(step/2)
             rl.BeginTextureMode(write_buffer)
             rl.BeginShaderMode(shadowBlurShader);
 
-            SetShaderValue(shadowBlurShader, rl.GetShaderLocation(shadowBlurShader,b"uStep"), i)
+            su.SetShaderValue(shadowBlurShader, rl.GetShaderLocation(shadowBlurShader,b"uStep"), step)
                 
             # screen-wide rectangle, y-flipped due to default OpenGL coordinates
             rl.DrawTextureRec(read_buffer.texture,
@@ -184,7 +196,7 @@ def run():
         rl.BeginShaderMode(sceneShader)
         
         lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
-        SetShaderValue(sceneShader,rl.GetShaderLocation(sceneShader,b"lightDir"),lightDir)
+        su.SetShaderValue(sceneShader,rl.GetShaderLocation(sceneShader,b"lightDir"),lightDir)
         rl.SetShaderValueMatrix(sceneShader,rl.GetShaderLocation(sceneShader,b"lightVP"),lightVP)
         rl.SetShaderValueTexture(sceneShader,rl.GetShaderLocation(sceneShader,b"shadowDepthMap"), shadowmap.depth)
         rl.SetShaderValueTexture(sceneShader,rl.GetShaderLocation(sceneShader,b"shadowPenumbraMap"), read_buffer.texture)
@@ -204,9 +216,10 @@ def run():
 def draw_shadowmap():
     display_size = WINDOW_SIZE.x / 5.0
     display_scale = display_size / float(shadowmap.depth.width)
-    rl.DrawTextureEx(shadowmap.texture, Vector2(WINDOW_SIZE.x - display_size, 0.0), 0.0, display_scale, rl.RAYWHITE)
-    rl.DrawTextureEx(shadowmap_blurbuffer.texture, Vector2(WINDOW_SIZE.x - display_size, display_size), 0.0, display_scale, rl.RAYWHITE)
-    rl.DrawTextureEx(shadowmap.depth, Vector2(WINDOW_SIZE.x - display_size, 2 * display_size), 0.0, display_scale, rl.RAYWHITE)
+    rotation = 0
+    rl.DrawTextureEx(shadowmap.texture, Vector2(WINDOW_SIZE.x - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
+    rl.DrawTextureEx(shadowmap_blurbuffer.texture, Vector2(WINDOW_SIZE.x - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
+    rl.DrawTextureEx(shadowmap.depth, Vector2(WINDOW_SIZE.x - display_size, 2 * display_size), rotation, display_scale, rl.RAYWHITE)
 
 def draw_scene(randomize_color=False):
     ents = world.where(Position, Mesh, BoundingBox)

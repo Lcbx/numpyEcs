@@ -23,6 +23,10 @@ float random(vec2 co) {
 	return fract(dot(co, vec2(3,8)) * dot(co.yx, vec2(7,5)) * 0.03);
 }
 
+vec2 get_dir(vec2 encoded){
+    return encoded * 2.0 - 1.0;
+}
+
 void main() {
     // basic lambert + texture
     vec3 albedo = fragColor.rgb * texture(texture0, fragTexCoord).rgb;
@@ -40,8 +44,8 @@ void main() {
     float mapDepth = texture(shadowDepthMap, shadowUv).r;
 
     // bias to avoid self‐shadow acne
-    float NDotL = max(dot(fragNormal, lightDir), 0.0);
-    float bias  = 0.001 * (1 - NDotL);
+    float NDotL = dot(fragNormal, lightDir);
+    float bias  = 0.001 * (1 - max(NDotL, 0.0));
 
     // determine occlusion
     bool occluded = proj.z > mapDepth + bias;
@@ -50,10 +54,9 @@ void main() {
     if (occluded) {
         shadowFactor = 0.5;
     }
-    else {
+    else if( NDotL == 0.0 ) {
         vec3  penumbra = texture(shadowPenumbraMap, shadowUv).rgb;
-        vec2 penDir = penumbra.gb;
-        penDir = penDir * 2.0 - 1.0;
+        vec2 penDir = get_dir(penumbra.gb);
         float distToEdgeSq = dot(penDir, penDir);
         float f = distToEdgeSq;
 
@@ -61,14 +64,18 @@ void main() {
         // where to sample though ? midway to dir ? away ?
 
         // sqrt(2) = 1.42
-        f = smoothstep(0, 1.4, f);
+        //f = sqrt(f);
+        f *= 1024.0;
+        f = smoothstep(0, 1, f);
 
         //float noise = random(gl_FragCoord.xy);
         //float noiseStrength = 0.3;
         //if(f < 0.99) f *= (1.0 + noise * noiseStrength - noiseStrength);
         
         shadowFactor = mix(0.5, 1, f);
+        //shadowFactor = f;
+        //albedo = penumbra;
+        //albedo = lightDir;
     }
     finalColor = vec4(albedo * shadowFactor, 1.0);
-    //finalColor = vec4(penumbra * shadowFactor, 1);
 }

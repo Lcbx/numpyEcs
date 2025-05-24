@@ -34,7 +34,14 @@ def _struct_info(v):
         return name.replace('struct ', '')
     return None
 
-#_active_uniform_buffers: dict[int, Any] = {}
+shader_enum = {
+	'int':rl.RL_SHADER_UNIFORM_INT,
+	'float':rl.RL_SHADER_UNIFORM_FLOAT,
+	'Vector2':rl.RL_SHADER_UNIFORM_VEC2,
+	'Vector3':rl.RL_SHADER_UNIFORM_VEC3,
+	'Vector4':rl.RL_SHADER_UNIFORM_VEC4,
+	'Color':rl.RL_SHADER_UNIFORM_VEC4,
+}
 
 def SetShaderValue(shader : Shader, loc: int, value: Any) -> None:
 	"""
@@ -44,56 +51,27 @@ def SetShaderValue(shader : Shader, loc: int, value: Any) -> None:
 	  - cffi structs for Vector2, Vector3, Vector4
 	  - homogeneous sequences of ints, floats, or Vector2/3/4 structs
 	"""
+	tested = value
+	size = 1
 
 	if isinstance(value, Sequence):
 		if not value: raise ValueError("Cannot upload an empty sequence as a uniform")
-		first = value[0]
-		seq_len = len(value)
+		tested = value[0]
+		size = len(value)
 
-		if isinstance(first, int):
-		    c_arr    = ffi.new(f"int[{seq_len}]", value)
-		    uni_type = rl.RL_SHADER_UNIFORM_INT
+	str_type = (
+		 'int'   if isinstance(tested, int)
+	else 'float' if isinstance(tested, float)
+	else _struct_info(tested) )
 
-		elif isinstance(first, float):
-		    c_arr    = ffi.new(f"float[{seq_len}]", value)
-		    uni_type = rl.RL_SHADER_UNIFORM_FLOAT
+	uni_type = shader_enum[str_type]
 
-		elif (struct_name := _struct_info(first)) in ('Vector2', 'Vector3', 'Vector4'):
-		    dims = int(struct_name[-1])
-		    c_arr    = ffi.new(f"{struct_name}[{seq_len}]", value)
-		    uni_type = {
-		        2: rl.RL_SHADER_UNIFORM_VEC2,
-		        3: rl.RL_SHADER_UNIFORM_VEC3,
-		        4: rl.RL_SHADER_UNIFORM_VEC4,
-		    }[dims]
-		else:
-			raise TypeError(f"Unsupported uniform inner array value type: {struct_name}")
-
-		rl.SetShaderValueV(shader, loc, c_arr, uni_type, seq_len)
-		return
-
-	if isinstance(value, int):
-	    c_arr    = ffi.new("int*", value)
-	    uni_type = rl.RL_SHADER_UNIFORM_INT
-
-	elif isinstance(value, float):
-	    c_arr    = ffi.new("float*", value)
-	    uni_type = rl.RL_SHADER_UNIFORM_FLOAT
-
-	elif (struct_name := _struct_info(value)) in ('Vector2', 'Vector3', 'Vector4'):
-	    dims = int(struct_name[-1])
-	    c_arr    = ffi.new(f"{struct_name} *", value)
-	    uni_type = {
-	        2: rl.RL_SHADER_UNIFORM_VEC2,
-	        3: rl.RL_SHADER_UNIFORM_VEC3,
-	        4: rl.RL_SHADER_UNIFORM_VEC4,
-	    }[dims]
+	if size == 1:
+		c_arr = ffi.new(f'{str_type}*', value)
+		rl.SetShaderValue(shader, loc, c_arr, uni_type)
 	else:
-		raise TypeError(f"Unsupported uniform inner array value type: {struct_name}")
-
-	rl.SetShaderValue(shader, loc, c_arr, uni_type)
-
-
+		c_arr = ffi.new(f'{str_type}[{size}]', value)
+		rl.SetShaderValueV(shader, loc, c_arr, uni_type, size)
 
 
 """ # in rlgl.h
