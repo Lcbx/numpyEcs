@@ -62,14 +62,18 @@ for e in world.create_entities(15):
 
 
 def load_shaders():
-    global sceneShader
+    global shadowMeshShader
     global shadowBlurShader
+    global sceneShader
 
-    newShader = rl.LoadShader(b"scenes/lightmap.vs", b"scenes/lightmap.fs")
-    if newShader.id > 0: sceneShader = newShader
+    newShader = rl.LoadShader(b'scenes/shadowmesh.vs', b'scenes/shadowmesh.fs');
+    if newShader.id > 0: shadowMeshShader = newShader
 
     newShader = rl.LoadShader(b'', b'scenes/lightmap.compute');
     if newShader.id > 0: shadowBlurShader = newShader
+
+    newShader = rl.LoadShader(b"scenes/lightmap.vs", b"scenes/lightmap.fs")
+    if newShader.id > 0: sceneShader = newShader
 
 
 WINDOW_SIZE = Vector2(800, 500) 
@@ -77,6 +81,7 @@ rl.InitWindow(int(WINDOW_SIZE.x), int(WINDOW_SIZE.y), b"Hello")
 rl.SetTargetFPS(60)
 
 sceneShader = None
+shadowMeshShader = None
 shadowBlurShader = None
 load_shaders()
 
@@ -153,13 +158,18 @@ def run():
         rl.rlSetClipPlanes(light_nearFar[0], light_nearFar[1])
         rl.BeginMode3D(light_camera)
         rl.ClearBackground(rl.WHITE)
-        rl.rlSetCullFace(rl.RL_CULL_FACE_FRONT)
+        #rl.rlSetCullFace(rl.RL_CULL_FACE_FRONT)
         
+        lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
         lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
+
+        rl.BeginShaderMode(shadowMeshShader)
     
+        su.SetShaderValue(shadowMeshShader,rl.GetShaderLocation(shadowMeshShader,b"lightDir"),lightDir)
         draw_scene(randomize_color=True)
-        
-        rl.rlSetCullFace(rl.RL_CULL_FACE_BACK)
+
+        rl.EndShaderMode()
+        #rl.rlSetCullFace(rl.RL_CULL_FACE_BACK)
         rl.EndMode3D()
         rl.EndTextureMode()
 
@@ -169,9 +179,9 @@ def run():
         su.SetShaderValue(shadowBlurShader, rl.GetShaderLocation(shadowBlurShader,b"uDimensions"), dimensions)
 
         read_buffer = shadowmap
-        write_buffer = shadowmap_blurbuffer
+        write_buffer = shadowmap #shadowmap_blurbuffer
 
-        step = SM_SIZE/32
+        step = SM_SIZE/64
         while step !=1:
             step =  int(step/2)
             rl.BeginTextureMode(write_buffer)
@@ -195,7 +205,6 @@ def run():
 
         rl.BeginShaderMode(sceneShader)
         
-        lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
         su.SetShaderValue(sceneShader,rl.GetShaderLocation(sceneShader,b"lightDir"),lightDir)
         rl.SetShaderValueMatrix(sceneShader,rl.GetShaderLocation(sceneShader,b"lightVP"),lightVP)
         rl.SetShaderValueTexture(sceneShader,rl.GetShaderLocation(sceneShader,b"shadowDepthMap"), shadowmap.depth)
