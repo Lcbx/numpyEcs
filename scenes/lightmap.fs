@@ -31,10 +31,11 @@ float get_shadow(vec3 proj){
 
     // determine occlusion
     float fragmentDepth = proj.z;
+
     float occluderDepth = texture(shadowDepthMap, proj.xy).r;
     float localOcclusionDist = fragmentDepth - occluderDepth;
 
-    if(localOcclusionDist < 0) return 1.0;
+    if(localOcclusionDist > 0) return 0;
 
     vec3 penumbra = texture(shadowPenumbraMap, proj.xy).rgb;
     vec2 penDir = get_dir(penumbra.gb);
@@ -44,20 +45,18 @@ float get_shadow(vec3 proj){
     float remoteOccluderDepth = texture(shadowDepthMap, remoteCoord).r;
     float remoteOcclusionDist = fragmentDepth - remoteOccluderDepth;
 
-    if(remoteOcclusionDist > 0) return 0;
+    if(remoteOcclusionDist < 0) return 1;
 
     float distToEdgeSq = dot(penDir, penDir);
-    float f = distToEdgeSq * 1024 * 50;
+    float f = distToEdgeSq * 512;
 
-    f *= 1 + localOcclusionDist;
-    //f *= 1 + localOcclusionDist;
-    //f *= 1 + remoteOcclusionDist;
+    f *= 1 - localOcclusionDist * 1024;
 
     //float noise = random(gl_FragCoord.xy);
-    //float noiseStrength = 0.35;
+    //float noiseStrength = 0.3;
     //f *= (1.0 + noise * noiseStrength - noiseStrength);
 
-    return 1 - f;
+    return f;
 }
 
 

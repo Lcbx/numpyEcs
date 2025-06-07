@@ -181,7 +181,7 @@ def run():
         read_buffer = shadowmap
         write_buffer = shadowmap_blurbuffer
 
-        step = 64
+        step = SM_SIZE/64
         while step !=1:
             step =  int(step/2)
             rl.BeginTextureMode(write_buffer)
