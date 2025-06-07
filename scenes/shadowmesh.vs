@@ -16,8 +16,8 @@ void main(){
     fragColor = vertexColor;
     vec4 vertex = vec4(vertexPosition, 1);
     vec3 fragNormal = normalize(mat3(matModel) * vertexNormal);
-    vertex.xyz -= fragNormal * 0.1;
-    //vertex.xyz -= lightDir * 0.1;
+    //vertex.xyz -= fragNormal * 0.01;
+    vertex.xyz -= lightDir * 0.01;
     vertex = mvp*vertex;
     gl_Position = vertex;
 }

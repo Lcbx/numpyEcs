@@ -158,7 +158,7 @@ def run():
         rl.rlSetClipPlanes(light_nearFar[0], light_nearFar[1])
         rl.BeginMode3D(light_camera)
         rl.ClearBackground(rl.WHITE)
-        #rl.rlSetCullFace(rl.RL_CULL_FACE_FRONT)
+        rl.rlSetCullFace(rl.RL_CULL_FACE_FRONT)
         
         lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
         lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
@@ -169,7 +169,7 @@ def run():
         draw_scene(randomize_color=True)
 
         rl.EndShaderMode()
-        #rl.rlSetCullFace(rl.RL_CULL_FACE_BACK)
+        rl.rlSetCullFace(rl.RL_CULL_FACE_BACK)
         rl.EndMode3D()
         rl.EndTextureMode()
 
@@ -179,9 +179,9 @@ def run():
         su.SetShaderValue(shadowBlurShader, rl.GetShaderLocation(shadowBlurShader,b"uDimensions"), dimensions)
 
         read_buffer = shadowmap
-        write_buffer = shadowmap #shadowmap_blurbuffer
+        write_buffer = shadowmap_blurbuffer
 
-        step = SM_SIZE/64
+        step = 64
         while step !=1:
             step =  int(step/2)
             rl.BeginTextureMode(write_buffer)

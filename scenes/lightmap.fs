@@ -27,55 +27,52 @@ vec2 get_dir(vec2 encoded){
     return encoded * 2.0 - 1.0;
 }
 
+float get_shadow(vec3 proj){
+
+    // determine occlusion
+    float fragmentDepth = proj.z;
+    float occluderDepth = texture(shadowDepthMap, proj.xy).r;
+    float localOcclusionDist = fragmentDepth - occluderDepth;
+
+    if(localOcclusionDist < 0) return 1.0;
+
+    vec3 penumbra = texture(shadowPenumbraMap, proj.xy).rgb;
+    vec2 penDir = get_dir(penumbra.gb);
+
+    vec2 remoteCoord = proj.xy + penDir;
+
+    float remoteOccluderDepth = texture(shadowDepthMap, remoteCoord).r;
+    float remoteOcclusionDist = fragmentDepth - remoteOccluderDepth;
+
+    if(remoteOcclusionDist > 0) return 0;
+
+    float distToEdgeSq = dot(penDir, penDir);
+    float f = distToEdgeSq * 1024 * 50;
+
+    f *= 1 + localOcclusionDist;
+    //f *= 1 + localOcclusionDist;
+    //f *= 1 + remoteOcclusionDist;
+
+    //float noise = random(gl_FragCoord.xy);
+    //float noiseStrength = 0.35;
+    //f *= (1.0 + noise * noiseStrength - noiseStrength);
+
+    return 1 - f;
+}
+
+
 void main() {
     vec3 albedo = fragColor.rgb * texture(texture0, fragTexCoord).rgb;
 
     // project into shadow‐map UV
     vec3 proj = fragShadowClipSpace.xyz / fragShadowClipSpace.w;
     proj = proj*0.5 + 0.5;
-    vec2 shadowUv = proj.xy;
-    if (!between(shadowUv, vec2(0.0), vec2(1.0))) {
+    if (!between(proj.xy, vec2(0.0), vec2(1.0))) {
         finalColor = vec4(albedo, 1.0);
         return;
     }
 
-    float shadowFactor = 1;
-
-    // determine occlusion
-    float fragmentDepth = proj.z;
-    float occluderDepth = texture(shadowDepthMap, shadowUv).r;
-
-    //float NDotL = dot(fragNormal, lightDir);
-    float occlusionDistance = fragmentDepth - occluderDepth;
-    if(occlusionDistance > 0.001) shadowFactor = 0.5;
-    else {
-        vec3 penumbra = texture(shadowPenumbraMap, shadowUv).rgb;
-        vec2 penDir = get_dir(penumbra.gb);
-        
-        float distToEdgeSq = dot(penDir, penDir);
-
-        if(distToEdgeSq < 0.99){
-            vec2 occluderCoord = shadowUv + penDir;
-            float f = distToEdgeSq;
-
-            // multiply by shadowmap size / max pixel depth 
-            // TODO : passs it as uniform
-            f *= 1024;
-
-            occluderDepth = texture(shadowDepthMap, occluderCoord).r;
-            float fragmentDepth     = proj.z;
-            float occlusionDistance = occluderDepth - fragmentDepth;
-            f *= 1 + occlusionDistance;
-
-            // sharpening factor
-            f *= 30;
-            
-            f = clamp(0, 1, f);
-            shadowFactor *= f;
-        }
-    }
-
-    shadowFactor = clamp(0.5, 1, shadowFactor);
+    float shadow = 0.5 + clamp(0, 1, get_shadow(proj) ) * 0.5;
     
-    finalColor = vec4(albedo *shadowFactor, 1);
+    finalColor = vec4(albedo*shadow, 1);
 }
