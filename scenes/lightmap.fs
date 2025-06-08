@@ -48,12 +48,14 @@ float get_shadow(vec3 proj){
     if(remoteOcclusionDist < 0) return 1;
 
     float distToEdgeSq = dot(penDir, penDir);
-    float f = distToEdgeSq * 512;
+    float f = distToEdgeSq * 1024;
+
+    if(remoteOcclusionDist < f) return 1;
 
     f *= 1 - localOcclusionDist * 1024;
 
     //float noise = random(gl_FragCoord.xy);
-    //float noiseStrength = 0.3;
+    //float noiseStrength = 0.25;
     //f *= (1.0 + noise * noiseStrength - noiseStrength);
 
     return f;
