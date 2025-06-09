@@ -3,7 +3,6 @@ from pyray import Vector2, Vector3, Color, Camera3D, rl_load_texture, RenderText
 from ecs import *
 import shader_util as su
 
-
 @component
 class Position:
     x: float; y: float; z: float
@@ -79,6 +78,7 @@ def load_shaders():
 WINDOW_SIZE = Vector2(800, 500) 
 rl.InitWindow(int(WINDOW_SIZE.x), int(WINDOW_SIZE.y), b"Hello")
 rl.SetTargetFPS(60)
+
 
 sceneShader = None
 shadowMeshShader = None
@@ -162,6 +162,14 @@ def run():
         
         lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
         lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
+        
+        test = su.Shader('scenes/lightmap.shader')
+        print(test.vertex_glsl)
+        print("__________________________________________________")
+        print(test.fragment_glsl)
+        print("__________________________________________________")
+        test.lightVP = lightVP
+        exit(0)
 
         rl.BeginShaderMode(shadowMeshShader)
     
