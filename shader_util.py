@@ -46,13 +46,6 @@ shader_enum = {
 }
 
 def SetShaderValue(shader : Shader, loc: int, value: Any) -> None:
-	"""
-	Upload `value` to the shader uniform at location `loc`.
-	Supports:
-	  - int or float scalars
-	  - cffi structs for Vector2, Vector3, Vector4
-	  - homogeneous sequences of ints, floats, or Vector2/3/4 structs
-	"""
 	tested = value
 	size = 1
 
@@ -65,6 +58,13 @@ def SetShaderValue(shader : Shader, loc: int, value: Any) -> None:
 		 'int'   if isinstance(tested, int)
 	else 'float' if isinstance(tested, float)
 	else _struct_info(tested) )
+
+	if str_type == 'Matrix':
+		rl.SetShaderValueMatrix(shader,loc,value)
+		return
+	elif str_type == 'Texture':
+		rl.SetShaderValueTexture(shader,loc,value)
+		return
 
 	uni_type = shader_enum[str_type]
 
@@ -141,13 +141,13 @@ def create_render_buffer(width : int, height:int,
 
 
 
-class Shader:
+class BetterShader:
 	"""
 	Parses a shader definition file containing two functions: vertex() and fragment().
 	Extracts uniforms, varying, in, and out variables, then generates GLSL code for both stages.
 	"""
 	# Regex to capture qualifier, type, and name from declarations
-	_decl_pattern = re.compile(r"\b(uniform|in|out|varying)\s+(\w+)\s+(\w+)\s*;")
+	_decl_pattern = re.compile(r"\n(uniform|in|out|varying|const)\s+(\S+)\s+([^;]+).*?;")
 	# Regex to extract function bodies
 	_func_pattern = re.compile(
 		r'\n'                            # start at a newline
@@ -158,7 +158,6 @@ class Shader:
 		r'([\s\S]*?)'                    # function body (non-greedy)
 		r'\n\}'                          # closing brace at column 0
 	)
-	_const_pattern = re.compile(r'\n(const[\s\S]*?;)')
 
 	_opengl_version = '#version 420'
 	_vertex_start = 'void vertex()'
@@ -172,9 +171,10 @@ class Shader:
 		self.varyings = []		# list of varying names
 		self.ins = []			# list of in-variable names
 		self.outs = []			# list of out-variable names
+		self.consts = []		# list of constants
 		self.functions = []	   	# list of function definitions
 		self.vertex_glsl = ''	# Generated GLSL code for vertex shader
-		self.fragment_glsl = ''  # Generated GLSL code for fragment shader
+		self.fragment_glsl = ''	# Generated GLSL code for fragment shader
 
 		self._parse_file()
 		self._generate_glsl()
@@ -187,7 +187,7 @@ class Shader:
 		for type, name in self.uniforms:
 			self.uniform_locs[name] = rl.GetShaderLocation(self.shader, name.encode('utf-8'))
 
-		self.__setattr__ = self.__setattr__impl
+		BetterShader.__setattr__ = self.__setattr__impl
 
 	def __setattr__impl(self, name: str, value: Any):
 		SetShaderValue(self.shader, self.uniform_locs[name], value)
@@ -206,13 +206,15 @@ class Shader:
 				self.ins.append((typ, name))
 			elif qual == 'out':
 				self.outs.append((typ, name))
+			elif qual == 'const':
+				self.consts.append((typ, name))
 
-		self.consts = self._const_pattern.findall(text)
 		self.functions = [ m.group(0).strip() for m in self._func_pattern.finditer(text) ]
 
 		for i, f in enumerate(self.functions):
 			if f.startswith(self._vertex_start): self._vertex_body = i
 			if f.startswith(self._fragment_start): self._fragment_body = i
+
 
 	def _generate_glsl(self):
 		# Vertex Shader

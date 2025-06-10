@@ -71,8 +71,8 @@ def load_shaders():
     newShader = rl.LoadShader(b'', b'scenes/lightmap.compute');
     if newShader.id > 0: shadowBlurShader = newShader
 
-    newShader = rl.LoadShader(b"scenes/lightmap.vs", b"scenes/lightmap.fs")
-    if newShader.id > 0: sceneShader = newShader
+    newShader = su.BetterShader('scenes/lightmap.shader')
+    if newShader.shader.id > 0: sceneShader = newShader
 
 
 WINDOW_SIZE = Vector2(800, 500) 
@@ -162,14 +162,6 @@ def run():
         
         lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
         lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
-        
-        test = su.Shader('scenes/lightmap.shader')
-        print(test.vertex_glsl)
-        print("__________________________________________________")
-        print(test.fragment_glsl)
-        print("__________________________________________________")
-        test.lightVP = lightVP
-        exit(0)
 
         rl.BeginShaderMode(shadowMeshShader)
     
@@ -211,12 +203,12 @@ def run():
         rl.BeginMode3D(camera)
         rl.ClearBackground(rl.WHITE)
 
-        rl.BeginShaderMode(sceneShader)
+        rl.BeginShaderMode(sceneShader.shader)
         
-        su.SetShaderValue(sceneShader,rl.GetShaderLocation(sceneShader,b"lightDir"),lightDir)
-        rl.SetShaderValueMatrix(sceneShader,rl.GetShaderLocation(sceneShader,b"lightVP"),lightVP)
-        rl.SetShaderValueTexture(sceneShader,rl.GetShaderLocation(sceneShader,b"shadowDepthMap"), shadowmap.depth)
-        rl.SetShaderValueTexture(sceneShader,rl.GetShaderLocation(sceneShader,b"shadowPenumbraMap"), read_buffer.texture)
+        sceneShader.lightDir = lightDir
+        sceneShader.lightVP = lightVP
+        sceneShader.shadowDepthMap = read_buffer.depth
+        sceneShader.shadowPenumbraMap = shadowmap.texture
         
         draw_scene()
 
