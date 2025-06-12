@@ -34,6 +34,10 @@ uniform sampler2D shadowPenumbraMap;   // RGB: [meshID, distX, distY]
 
 out vec4 finalColor;
 
+float random(vec2 co) {
+    return fract(dot(co, vec2(3,8)) * dot(co.yx, vec2(7,5)) * 0.03);
+}
+
 bool between(vec2 v, vec2 bottomLeft, vec2 topRight){
     vec2 s = step(bottomLeft, v) - step(topRight, v);             
 	return bool(s.x * s.y);
@@ -64,18 +68,35 @@ float get_shadow(vec3 proj){
     if(remoteOcclusionDist < 0) return 1.0;
 
     float distToEdgeSq = dot(penDir, penDir);
-    float f = distToEdgeSq * 1024;
+    float f = distToEdgeSq;
+
+    /// all different ways soft shadow strength/delimitations
+    //f *= 1500;
+    //f = pow(f, 0.8) * 256;
+    //f = sqrt(f) * 30;
+    
+    f = sqrt(f) * 25 - f * 200;
 
     if(remoteOcclusionDist < f) return 1.0;
 
-    f *= 1 - localOcclusionDist * 1024;
+    f *= 1 - localOcclusionDist * 128;
 
-    //float noise = random(gl_FragCoord.xy);
-    //float noiseStrength = 0.25;
-    //f *= (1.0 + noise * noiseStrength - noiseStrength);
+    //if(f < 0.8)
+    //{
+    //    float noise = random(gl_FragCoord.xy);
+    //    float noiseStrength = 0.2;
+    //    f *= (1.0 + noise * noiseStrength - noiseStrength * 0.5);
+    //}
 
     return f;
 }
+
+const float CENTER_WEIGHT = 2;
+const int OFFSETS_LEN = 4;
+const vec2 OFFSETS[OFFSETS_LEN] = vec2[OFFSETS_LEN](
+    vec2( 0.7,  -0.7),  vec2(0.7,  0.7),
+    vec2( -0.7,  0.7),  vec2( -0.7, -0.7)
+);
 
 void fragment() {
     vec3 albedo = fragColor.rgb * texture(texture0, fragTexCoord).rgb;
@@ -88,7 +109,16 @@ void fragment() {
         return;
     }
 
-    float shadow = 0.5 + clamp(0, 1, get_shadow(proj) ) * 0.5;
+    float avgShadow = get_shadow(proj);
+    float filterRadius = 1.0/float(1024);
+    avgShadow *= CENTER_WEIGHT;
+    for (int i = 0; i < OFFSETS_LEN; ++i) {
+        vec2 offs = OFFSETS[i] * filterRadius;
+        avgShadow += get_shadow(vec3(proj.xy + offs, proj.z));
+    }
+    avgShadow /= float(OFFSETS_LEN + CENTER_WEIGHT);
+
+    float shadow = 0.5 + clamp(0, 1, avgShadow) * 0.5;
 
     finalColor = vec4(albedo*shadow, 1);
 }

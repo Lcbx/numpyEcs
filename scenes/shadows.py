@@ -65,14 +65,23 @@ def load_shaders():
     global shadowBlurShader
     global sceneShader
 
-    newShader = su.BetterShader(b'scenes/shadowmesh.shader');
-    if newShader.valid(): shadowMeshShader = newShader
+    try:
+        newShader = su.BetterShader('scenes/shadowmesh.shader');
+        if newShader.valid(): shadowMeshShader = newShader
+        else: raise Exception('shadowmesh.shader')
 
-    newShader = su.BetterShader('scenes/lightmap.compute');
-    if newShader.valid(): shadowBlurShader = newShader
+        newShader = su.BetterShader('scenes/lightmap.compute');
+        if newShader.valid(): shadowBlurShader = newShader
+        else: raise Exception('lightmap.compute')
 
-    newShader = su.BetterShader('scenes/lightmap.shader')
-    if newShader.valid(): sceneShader = newShader
+        newShader = su.BetterShader('scenes/lightmap.shader')
+        if newShader.valid(): sceneShader = newShader
+        else: raise Exception('lightmap.shader')
+
+    except:
+        print(newShader.functions[newShader._vertex_body])
+        print('______________________')
+        print(newShader.functions[newShader._fragment_body])
 
 
 WINDOW_SIZE = Vector2(800, 500) 
@@ -106,8 +115,8 @@ light_camera = Camera3D(
 unused_camera = None
 
 SM_SIZE = 1024
-shadowmap = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32, depth_map=True)
-shadowmap_blurbuffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32,)
+shadowmap = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=rl.PIXELFORMAT_UNCOMPRESSED_R16G16B16, depth_map=True)
+shadowmap_blurbuffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=rl.PIXELFORMAT_UNCOMPRESSED_R16G16B16,)
 
 def run():
     global camera, unused_camera
@@ -163,40 +172,29 @@ def run():
         lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
         lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
 
-        rl.BeginShaderMode(shadowMeshShader.shader)
-    
-        shadowMeshShader.lightDir = lightDir
+        with shadowMeshShader:    
+            shadowMeshShader.lightDir = lightDir
+            draw_scene(randomize_color=True)
 
-        draw_scene(randomize_color=True)
-
-        rl.EndShaderMode()
         rl.rlSetCullFace(rl.RL_CULL_FACE_BACK)
         rl.EndMode3D()
         rl.EndTextureMode()
 
         # blur passes
-
-        dimensions = Vector2(float(shadowmap.texture.width), float(shadowmap.texture.height))
-        shadowBlurShader.uDimensions = dimensions
-
         read_buffer = shadowmap
         write_buffer = shadowmap_blurbuffer
-
-        step = SM_SIZE/64
-        while step !=1:
-            step =  int(step/2)
-            rl.BeginTextureMode(write_buffer)
-            rl.BeginShaderMode(shadowBlurShader.shader);
-
-            shadowBlurShader.uStep = step
-                
-            # screen-wide rectangle, y-flipped due to default OpenGL coordinates
-            rl.DrawTextureRec(read_buffer.texture,
-                (0, 0, shadowmap.texture.width, -shadowmap.texture.height), (0, 0), rl.WHITE);
-
-            rl.EndShaderMode();
-            rl.EndTextureMode()
-            read_buffer, write_buffer = write_buffer, read_buffer
+        step = 16.0/float(SM_SIZE)
+        last = 1.0 /float(SM_SIZE)
+        with shadowBlurShader:
+            while step > last:
+                step /= 2.0
+                rl.BeginTextureMode(write_buffer)
+                shadowBlurShader.stepSize = step    
+                # screen-wide rectangle, y-flipped due to default OpenGL coordinates
+                rl.DrawTextureRec(read_buffer.texture,
+                    (0, 0, shadowmap.texture.width, -shadowmap.texture.height), (0, 0), rl.WHITE);
+                rl.EndTextureMode()
+                read_buffer, write_buffer = write_buffer, read_buffer
         
 
         rl.BeginDrawing()
@@ -204,16 +202,13 @@ def run():
         rl.BeginMode3D(camera)
         rl.ClearBackground(rl.WHITE)
 
-        rl.BeginShaderMode(sceneShader.shader)
-        
-        sceneShader.lightDir = lightDir
-        sceneShader.lightVP = lightVP
-        sceneShader.shadowDepthMap = read_buffer.depth
-        sceneShader.shadowPenumbraMap = shadowmap.texture
-        
-        draw_scene()
+        with sceneShader:
+            sceneShader.lightDir = lightDir
+            sceneShader.lightVP  = lightVP
+            sceneShader.shadowDepthMap = shadowmap.depth
+            sceneShader.shadowPenumbraMap = read_buffer.texture
+            draw_scene()
 
-        rl.EndShaderMode()
         rl.EndMode3D()
         
         draw_shadowmap()

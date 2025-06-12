@@ -18,9 +18,8 @@ void vertex(){
 
 varying vec2 fragTexCoord;
 
-uniform sampler2D texture0;  // R=meshID, G/B=curr distance‐vector in UV coordinates
-uniform vec2 uDimensions;    // render texture dimensions
-uniform int uStep;           // current step size in pixels
+uniform sampler2D texture0; // R=meshID, G/B=curr distance‐vector in UV coordinates
+uniform float stepSize;     // current step size in uv
 
 out vec4 finalColor;
 
@@ -50,8 +49,7 @@ void fragment() {
     vec2  bestDir = get_dir(original.gb);
     float bestLen = dot(bestDir,bestDir);
 
-    vec2 UV_offset = vec2(uStep);
-    UV_offset /= uDimensions;
+    vec2 UV_offset = vec2(stepSize);
 
     for (int i = 0; i < OFFSETS_LEN; ++i) {
         vec2 testOffset = OFFSETS[i] * UV_offset;

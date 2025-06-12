@@ -192,6 +192,13 @@ class BetterShader:
 	def valid(self) -> bool:
 		return self.shader.id > 0
 
+	def __enter__(self) -> None:
+		rl.BeginShaderMode(self.shader)
+
+	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
+		rl.EndShaderMode();
+
+
 	def __setattr__(self, name: str, value: Any):
 		if hasattr(self, 'uniform_locs') and name in self.uniform_locs:
 			SetShaderValue(self.shader, self.uniform_locs[name], value)
