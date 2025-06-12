@@ -21,7 +21,6 @@ class ComponentStorage:
       - optional multi-component support (contiguous blocks per entity)
     """
     NONE = -1
-    entity_field = 'entity'
 
     def __init__(self,
                  component_cls: Type,
@@ -266,11 +265,14 @@ class ComponentStorage:
 
 class ECS:
     """
-    Fully optimized ECS with:
-      - float-only numeric arrays for vectorized ops
+    ECS with:
+      - compact component arrays for vectorized ops
       - preallocated component storage to avoid frequent reallocation
       - per-entity bitmask for fast component queries
       - entity ID recycling via free list
+
+    NOTE: if you need to tag entities, just use a Set of entity ids
+    (don't use an empty component, component types are costly/limited)
     """
     def __init__(self):
         self._stores: Dict[Type, ComponentStorage] = {}
@@ -360,7 +362,7 @@ class ECS:
     def remove_component(self, component: ComponentProxy) -> None:
         if entity >= entity_masks_size: return
         store = self._stores.get(comp_cls)
-        # _remove return true if there are no components of that type left in entity
+        # _remove returns True if there are no components of that type left in entity
         if store and store._remove(entity):
             bit = self._comp_bits.get(comp_cls, 0)
             self.entity_masks[entity] &= ~bit
@@ -373,7 +375,7 @@ class ECS:
         returns numeric blocks of N component types associated with entities
 
         Usage:
-            ecs.get_blocks(C1, C2, …, entities)
+            ecs.get_vectors(C1, C2, …, entities)
 
         - C1…Cn are component classes
         - entities: 1D array of entity IDs
@@ -382,26 +384,18 @@ class ECS:
         es = np.atleast_1d(entities).astype(int)
         return [self._stores.get(cls).get_vector(es) for cls in comp_clss]
 
-    def where(self, *args) -> np.ndarray:
+    def where(self, *comp_clss) -> np.ndarray:
         """
         Usage: ecs.where(C1, C2, ...) # → all entities with those comps
         """
-
-        # detect whether the last arg is a predicate or a component class
-        last = args[-1]
-        if callable(last) and not inspect.isclass(last) and len(args) >= 2:
-            *comp_clss, predicate = args
-        else:
-            comp_clss = args
-            predicate = None
         
         mask = 0
         for cls in comp_clss:
             mask |= self._comp_bits.get(cls, 0)
-        if mask == 0:
-            return []
-        
-        ents = np.nonzero((self.entity_masks & mask) == mask)[0]
+        if mask == 0: return []
+
+        criteria = self.entity_masks & mask == mask
+        ents = np.nonzero(criteria)[0]
         
         return ents
 
@@ -412,17 +406,20 @@ class ComponentProxy:
     Lazy proxy for one component instance in a structured‐array storage.
     Wraps ComponentStorage, holds the entity ID and the record‐index in its _dense array.
     """
+
     def __init__(self, store: ComponentStorage, entity: Entity, dense_index: int):
         self._store = store
         self._idx = dense_index
         self._entity = entity
-        self.__setattr__ = self.__setattr__impl
 
     def __getattr__(self, name: str):
         return self._store._dense[name][self._idx]
 
-    def __setattr__impl(self, name: str, value: Any):
-        self._store._dense[name][self.q] = value
+    def __setattr__(self, name: str, value: Any):
+        if name.startswith('_'):
+            object.__setattr__(self, name, value)
+        else:
+            self._store._dense[name][self._idx] = value
 
     def __repr__(self):
         store = self._store

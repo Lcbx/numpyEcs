@@ -1,6 +1,22 @@
-#version 330 core
 
-in  vec2 fragTexCoord;
+
+in vec3 vertexPosition;
+in vec2 vertexTexCoord;
+in vec3 vertexNormal;
+in vec4 vertexColor;
+
+uniform mat4 mvp;
+
+uniform vec3 lightDir;
+
+void vertex(){
+    fragTexCoord = vertexTexCoord;
+    vec4 vertex = vec4(vertexPosition, 1);
+    vertex = mvp*vertex;
+    gl_Position = vertex;
+}
+
+varying vec2 fragTexCoord;
 
 uniform sampler2D texture0;  // R=meshID, G/B=curr distance‐vector in UV coordinates
 uniform vec2 uDimensions;    // render texture dimensions
@@ -27,7 +43,7 @@ vec2 get_dir(vec2 encoded){
 }
 
 
-void main() {
+void fragment() {
     // read current
     vec4 original = texture(texture0, fragTexCoord);
     float meshId = original.r;

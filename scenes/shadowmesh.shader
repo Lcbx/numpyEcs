@@ -1,4 +1,4 @@
-#version 330
+
 
 in vec3 vertexPosition;
 in vec2 vertexTexCoord;
@@ -10,9 +10,9 @@ uniform mat4 mvp;
 
 uniform vec3 lightDir;
 
-out vec4 fragColor;
+varying vec4 fragColor;
 
-void main(){
+void vertex(){
     fragColor = vertexColor;
     vec4 vertex = vec4(vertexPosition, 1);
     vec3 fragNormal = normalize(mat3(matModel) * vertexNormal);
@@ -20,4 +20,9 @@ void main(){
     vertex.xyz -= lightDir * 0.01;
     vertex = mvp*vertex;
     gl_Position = vertex;
+}
+
+out vec4 finalColor;
+void fragment() {
+    finalColor = fragColor;
 }

@@ -81,6 +81,15 @@ def test_single_component_storage_basic():
     assert pytest.approx(proxy.a) == 0.12
     assert proxy.b == "fourth"
 
+    # rebuild component (not useful, JIC)
+    obj = proxy.build()
+    assert pytest.approx(obj.a) == 0.12
+    assert obj.b == "fourth"
+
+    # check __setattr__ modifies the store 
+    proxy.a = 0.69
+    assert pytest.approx(s.get(3).a) == 0.69
+
     s._remove(s.get(2))
     assert s.get(2) is None
 
@@ -307,7 +316,6 @@ def test_ecs_multicomp_reassignment():
     
     ecs.add_component(e, MultiComp(6.6))
     proxies = store.get(e)
-    print(proxies)
     assert len(proxies) == 3
     assert proxies[0].val == pytest.approx(1.1)
     assert proxies[1].val == pytest.approx(6.6)

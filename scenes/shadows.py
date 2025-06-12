@@ -65,14 +65,14 @@ def load_shaders():
     global shadowBlurShader
     global sceneShader
 
-    newShader = rl.LoadShader(b'scenes/shadowmesh.vs', b'scenes/shadowmesh.fs');
-    if newShader.id > 0: shadowMeshShader = newShader
+    newShader = su.BetterShader(b'scenes/shadowmesh.shader');
+    if newShader.valid(): shadowMeshShader = newShader
 
-    newShader = rl.LoadShader(b'', b'scenes/lightmap.compute');
-    if newShader.id > 0: shadowBlurShader = newShader
+    newShader = su.BetterShader('scenes/lightmap.compute');
+    if newShader.valid(): shadowBlurShader = newShader
 
     newShader = su.BetterShader('scenes/lightmap.shader')
-    if newShader.shader.id > 0: sceneShader = newShader
+    if newShader.valid(): sceneShader = newShader
 
 
 WINDOW_SIZE = Vector2(800, 500) 
@@ -163,9 +163,10 @@ def run():
         lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
         lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
 
-        rl.BeginShaderMode(shadowMeshShader)
+        rl.BeginShaderMode(shadowMeshShader.shader)
     
-        su.SetShaderValue(shadowMeshShader,rl.GetShaderLocation(shadowMeshShader,b"lightDir"),lightDir)
+        shadowMeshShader.lightDir = lightDir
+
         draw_scene(randomize_color=True)
 
         rl.EndShaderMode()
@@ -176,7 +177,7 @@ def run():
         # blur passes
 
         dimensions = Vector2(float(shadowmap.texture.width), float(shadowmap.texture.height))
-        su.SetShaderValue(shadowBlurShader, rl.GetShaderLocation(shadowBlurShader,b"uDimensions"), dimensions)
+        shadowBlurShader.uDimensions = dimensions
 
         read_buffer = shadowmap
         write_buffer = shadowmap_blurbuffer
@@ -185,9 +186,9 @@ def run():
         while step !=1:
             step =  int(step/2)
             rl.BeginTextureMode(write_buffer)
-            rl.BeginShaderMode(shadowBlurShader);
+            rl.BeginShaderMode(shadowBlurShader.shader);
 
-            su.SetShaderValue(shadowBlurShader, rl.GetShaderLocation(shadowBlurShader,b"uStep"), step)
+            shadowBlurShader.uStep = step
                 
             # screen-wide rectangle, y-flipped due to default OpenGL coordinates
             rl.DrawTextureRec(read_buffer.texture,

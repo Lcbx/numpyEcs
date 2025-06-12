@@ -176,7 +176,7 @@ class BetterShader:
 		self.vertex_glsl = ''	# Generated GLSL code for vertex shader
 		self.fragment_glsl = ''	# Generated GLSL code for fragment shader
 
-		self._parse_file()
+		self._parse_file(filepath)
 		self._generate_glsl()
 
 		self.shader = rl.LoadShaderFromMemory(
@@ -187,13 +187,19 @@ class BetterShader:
 		for type, name in self.uniforms:
 			self.uniform_locs[name] = rl.GetShaderLocation(self.shader, name.encode('utf-8'))
 
-		BetterShader.__setattr__ = self.__setattr__impl
+		#BetterShader.__setattr__ = self.__setattr__impl
 
-	def __setattr__impl(self, name: str, value: Any):
-		SetShaderValue(self.shader, self.uniform_locs[name], value)
+	def valid(self) -> bool:
+		return self.shader.id > 0
 
-	def _parse_file(self):
-		with open(self.filepath, 'r', encoding="utf8") as f:
+	def __setattr__(self, name: str, value: Any):
+		if hasattr(self, 'uniform_locs') and name in self.uniform_locs:
+			SetShaderValue(self.shader, self.uniform_locs[name], value)
+		else:
+			object.__setattr__(self, name, value)
+
+	def _parse_file(self, filepath):
+		with open(filepath, 'r', encoding="utf8") as f:
 			text = f.read()
 
 		decls = self._decl_pattern.findall(text)
@@ -219,36 +225,29 @@ class BetterShader:
 	def _generate_glsl(self):
 		# Vertex Shader
 		v_lines = [
-		self._opengl_version,
-		'',
-		*map(lambda kv: f'in {kv[0]} {kv[1]};', self.ins),
-		'',
-		*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms),
-		'',
-		*map(lambda kv: f'out {kv[0]} {kv[1]};', self.varyings),
-		'',
-		*self.consts,
-		'',
-		*self.functions[:self._vertex_body],
-		'',
+		self._opengl_version, '',
+		*map(lambda kv: f'in {kv[0]} {kv[1]};', self.ins), '',
+		*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms), '',
+		*map(lambda kv: f'out {kv[0]} {kv[1]};', self.varyings), '',
+		*map(lambda kv: f'const {kv[0]} {kv[1]};', self.consts), '',
+		*self.functions[:self._vertex_body], '',
 		self.functions[self._vertex_body].replace(self._vertex_start, self._main_start)
 		]
 		self.vertex_glsl = '\n'.join(v_lines)
 
+		functions_after_vertex_but_not_fragment = [
+		  self.functions[i] for i in range(self._vertex_body+1,len(self.functions))
+		  if i != self._fragment_body
+		]
+
 		# Fragment Shader
 		f_lines = [
-		self._opengl_version,
-		'',
-		*map(lambda kv: f'in {kv[0]} {kv[1]};', self.varyings),
-		'',
-		*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms),
-		'',
-		*map(lambda kv: f'out {kv[0]} {kv[1]};', self.outs),
-		'',
-		*self.consts,
-		'',
-		*[ self.functions[i] for i in range(self._vertex_body+1,len(self.functions)) if i != self._fragment_body ],
-		'',
+		self._opengl_version, '',
+		*map(lambda kv: f'in {kv[0]} {kv[1]};', self.varyings), '',
+		*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms), '',
+		*map(lambda kv: f'out {kv[0]} {kv[1]};', self.outs), '',
+		*map(lambda kv: f'const {kv[0]} {kv[1]};', self.consts), '',
+		*functions_after_vertex_but_not_fragment, '',
 		self.functions[self._fragment_body].replace(self._fragment_start, self._main_start)
 		]
 		self.fragment_glsl = '\n'.join(f_lines)
