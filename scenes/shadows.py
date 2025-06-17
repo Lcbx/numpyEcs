@@ -84,7 +84,8 @@ def load_shaders():
         print(newShader.functions[newShader._fragment_body])
 
 
-WINDOW_SIZE = Vector2(800, 500) 
+WINDOW_SIZE = Vector2(800, 500)
+#rl.SetConfigFlags(rl.FLAG_MSAA_4X_HINT) #|rl.FLAG_WINDOW_RESIZABLE)
 rl.InitWindow(int(WINDOW_SIZE.x), int(WINDOW_SIZE.y), b"Hello")
 rl.SetTargetFPS(60)
 
@@ -103,7 +104,7 @@ camera = Camera3D(
     rl.CAMERA_PERSPECTIVE
 )
 
-light_nearFar = (5,70)
+light_nearFar = (5,100)
 light_camera = Camera3D(
     Vector3(-20, 30, 5),
     Vector3(0,0,0),
@@ -114,53 +115,30 @@ light_camera = Camera3D(
 
 unused_camera = None
 
-SM_SIZE = 1024
-shadowmap = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=rl.PIXELFORMAT_UNCOMPRESSED_R16G16B16, depth_map=True)
-shadowmap_blurbuffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=rl.PIXELFORMAT_UNCOMPRESSED_R16G16B16,)
+SM_SIZE = 2048
+SHADOW_FORMAT = rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32
+shadowmap = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT, depth_map=True)
+shadowmap_blurbuffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT)
+
+# model
+model_root = b'C:/Users/User/Desktop/mixamo_toon_girl/'
+model = rl.LoadModel(model_root + b'mixamo_toon_girl.glb')
+model_albedo = rl.LoadTexture(model_root + b'mixamo_toon_girl_Ch29_1001_Diffuse.png')
+su.SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
+
+#anims = su.LoadModelAnimations(model_root + b'mixamo_toon_girl.glb')
+#animFrameCounter = 0
+
 
 def run():
     global camera, unused_camera
     while not rl.WindowShouldClose():
-        
+
         frameTime = rl.GetFrameTime()
-
-        if rl.IsKeyPressed(rl.KEY_R): load_shaders()
-        if rl.IsKeyPressed(rl.KEY_P):
-            light_camera.projection = (rl.CAMERA_ORTHOGRAPHIC
-                if light_camera.projection == rl.CAMERA_PERSPECTIVE
-                else rl.CAMERA_PERSPECTIVE
-            )
-        if rl.IsKeyPressed(rl.KEY_L):
-            if unused_camera:
-                camera = unused_camera
-                unused_camera = None
-            else:
-                unused_camera = camera
-                camera = light_camera
-
-        scrollspeed = 3.0
-        mw = scrollspeed * rl.GetMouseWheelMove()
-        if mw != 0 and ( camera.position.y > scrollspeed + 0.5 or mw > 0.0):
-            camera.position = rl.Vector3Add(camera.position,
-                rl.Vector3Scale(rl.Vector3Normalize(camera.position), mw))
-            camera.target = rl.Vector3Subtract(camera.target, camera.position)
-
-        pv = world.where(Position, Velocity)
-        p_vec, v_vec = (positions.get_vector(pv), velocities.get_vector(pv))
-        p_vec += v_vec * frameTime
-
-        # bounce when out of bounds
-        mask_x = np.abs(p_vec[:, 0]) > SPACE_SIZE
-        mask_z = np.abs(p_vec[:, 2]) > SPACE_SIZE
-        v_vec[mask_x, 0] *= -1
-        v_vec[mask_z, 2] *= -1
-        # if further than boundary, it would get stuck alternating direction each frame
-        p_vec[mask_x, 0] = np.sign(p_vec[mask_x, 0]) * 0.99 * SPACE_SIZE
-        p_vec[mask_z, 2] = np.sign(p_vec[mask_z, 2]) * 0.99 * SPACE_SIZE
-
-        positions.set_vector(pv, p_vec)
-        velocities.set_vector(pv, v_vec)
         
+        inputs()
+        update(frameTime)
+
         # write shadowmap
 
         rl.BeginTextureMode(shadowmap)
@@ -226,7 +204,59 @@ def draw_shadowmap():
     rl.DrawTextureEx(shadowmap_blurbuffer.texture, Vector2(WINDOW_SIZE.x - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
     rl.DrawTextureEx(shadowmap.depth, Vector2(WINDOW_SIZE.x - display_size, 2 * display_size), rotation, display_scale, rl.RAYWHITE)
 
+def inputs():
+    global camera
+    global unused_camera
+
+    if rl.IsKeyPressed(rl.KEY_R): load_shaders()
+    if rl.IsKeyPressed(rl.KEY_P):
+        light_camera.projection = (rl.CAMERA_ORTHOGRAPHIC
+            if light_camera.projection == rl.CAMERA_PERSPECTIVE
+            else rl.CAMERA_PERSPECTIVE
+        )
+    if rl.IsKeyPressed(rl.KEY_L):
+        if unused_camera:
+            camera = unused_camera
+            unused_camera = None
+        else:
+            unused_camera = camera
+            camera = light_camera
+
+    scrollspeed = 3.0
+    mw = scrollspeed * rl.GetMouseWheelMove()
+    if mw != 0 and ( camera.position.y > scrollspeed + 0.5 or mw > 0.0):
+        camera.position = rl.Vector3Add(camera.position,
+            rl.Vector3Scale(rl.Vector3Normalize(camera.position), mw))
+        camera.target = rl.Vector3Subtract(camera.target, camera.position)
+
+def update(frameTime):
+    #global animFrameCounter
+    #rl.UpdateModelAnimation(model, anims[0], animFrameCounter)
+    #animFrameCounter += 1
+    #if animFrameCounter >= anims[0].frameCount: animFrameCounter = 0
+
+    pv = world.where(Position, Velocity)
+    p_vec, v_vec = (positions.get_vector(pv), velocities.get_vector(pv))
+    p_vec += v_vec * frameTime
+
+    # bounce when out of bounds
+    mask_x = np.abs(p_vec[:, 0]) > SPACE_SIZE
+    mask_z = np.abs(p_vec[:, 2]) > SPACE_SIZE
+    v_vec[mask_x, 0] *= -1
+    v_vec[mask_z, 2] *= -1
+    # if further than boundary, it would get stuck alternating direction each frame
+    p_vec[mask_x, 0] = np.sign(p_vec[mask_x, 0]) * 0.99 * SPACE_SIZE
+    p_vec[mask_z, 2] = np.sign(p_vec[mask_z, 2]) * 0.99 * SPACE_SIZE
+
+    positions.set_vector(pv, p_vec)
+    velocities.set_vector(pv, v_vec)
+
+
 def draw_scene(randomize_color=False):
+
+    # model, position, rotation axis, rotation (deg), scale, tint
+    rl.DrawModelEx(model, Vector3(0,0.5,0), Vector3(1,0,0), -90.0, Vector3(800,800,800), rl.WHITE)
+
     ents = world.where(Position, Mesh, BoundingBox)
     pos_vec, mesh_vec, bb_vec, = (positions.get_vector(ents), meshes.get_vector(ents), bboxes.get_vector(ents))
     bmins = bb_vec[:,:3] # entity (int), bounding box (6 floats)

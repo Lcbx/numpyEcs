@@ -1,5 +1,7 @@
 import raylib as rl
-from pyray import Shader, Vector2, Vector3, Vector4, ffi, RenderTexture, rl_load_texture
+from pyray import Shader, Vector2, Vector3, Vector4, \
+	Material, Texture, RenderTexture, \
+	 ffi, rl_load_texture
 
 import re
 from typing import Any, Sequence
@@ -138,6 +140,15 @@ def create_render_buffer(width : int, height:int,
 		rl.rlDisableFramebuffer()
 
 	return target
+
+def SetMaterialTexture(mat : Material, loc : int, tex : Texture):
+	mat_ptr = ffi.new(f'Material*', mat)
+	rl.SetMaterialTexture(mat_ptr, loc, tex)
+
+def LoadModelAnimations(path : str):
+	anims_cnt = ffi.new(f'int*', 0)
+	anims = rl.LoadModelAnimations(path, anims_cnt)
+	return [anims[i] for i in range(anims_cnt[0])]
 
 
 

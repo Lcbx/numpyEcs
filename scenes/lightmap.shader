@@ -70,16 +70,19 @@ float get_shadow(vec3 proj){
     float distToEdgeSq = dot(penDir, penDir);
     float f = distToEdgeSq;
 
-    /// all different ways soft shadow strength/delimitations
-    //f *= 1500;
-    //f = pow(f, 0.8) * 256;
-    //f = sqrt(f) * 30;
-    
-    f = sqrt(f) * 25 - f * 200;
+    /// all different soft shadow strength/delimitations
+    //f *= 5000;
+    //f = pow(f, 0.8) * 500;
+    f = sqrt(f);
 
-    if(remoteOcclusionDist < f) return 1.0;
+    // causes artifacts
+    //if(remoteOcclusionDist < f) return 1.0;
 
-    f *= 1 - localOcclusionDist * 128;
+    float occlusionFactor = 1.5 - remoteOcclusionDist * 2;
+    f *= occlusionFactor;
+    //f *= occlusionFactor;
+
+    f *= 150; // pass the inverse of this as uniform named blur ?
 
     //if(f < 0.8)
     //{
@@ -91,7 +94,7 @@ float get_shadow(vec3 proj){
     return f;
 }
 
-const float CENTER_WEIGHT = 2;
+const float CENTER_WEIGHT = 3;
 const int OFFSETS_LEN = 4;
 const vec2 OFFSETS[OFFSETS_LEN] = vec2[OFFSETS_LEN](
     vec2( 0.7,  -0.7),  vec2(0.7,  0.7),
@@ -110,7 +113,8 @@ void fragment() {
     }
 
     float avgShadow = get_shadow(proj);
-    float filterRadius = 1.0/float(1024);
+
+    float filterRadius = 1.0/float(2048); // TODO: add shadowmap resolution
     avgShadow *= CENTER_WEIGHT;
     for (int i = 0; i < OFFSETS_LEN; ++i) {
         vec2 offs = OFFSETS[i] * filterRadius;
