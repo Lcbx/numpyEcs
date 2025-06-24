@@ -102,13 +102,13 @@ const vec2 OFFSETS[OFFSETS_LEN] = vec2[OFFSETS_LEN](
 );
 
 void fragment() {
-    vec3 albedo = fragColor.rgb * texture(texture0, fragTexCoord).rgb;
+    vec4 albedo = fragColor * texture(texture0, fragTexCoord);
 
     // project into shadow‐map UV
     vec3 proj = fragShadowClipSpace.xyz / fragShadowClipSpace.w;
     proj = proj*0.5 + 0.5;
     if (!between(proj.xy, vec2(0.0), vec2(1.0))) {
-        finalColor = vec4(albedo, 1.0);
+        finalColor = albedo;
         return;
     }
 
@@ -124,5 +124,6 @@ void fragment() {
 
     float shadow = 0.5 + clamp(0, 1, avgShadow) * 0.5;
 
-    finalColor = vec4(albedo*shadow, 1);
+    finalColor = vec4(albedo.rgb*shadow, albedo.a);
+    //finalColor = vec4(vec3(1)*shadow, 1);
 }

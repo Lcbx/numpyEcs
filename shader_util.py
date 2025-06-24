@@ -237,21 +237,27 @@ class BetterShader:
 
 		for i, f in enumerate(self.functions):
 			if f.startswith(self._vertex_start): self._vertex_body = i
-			if f.startswith(self._fragment_start): self._fragment_body = i
+			elif f.startswith(self._fragment_start): self._fragment_body = i
 
 
 	def _generate_glsl(self):
 		# Vertex Shader
-		v_lines = [
-		self._opengl_version, '',
-		*map(lambda kv: f'in {kv[0]} {kv[1]};', self.ins), '',
-		*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms), '',
-		*map(lambda kv: f'out {kv[0]} {kv[1]};', self.varyings), '',
-		*map(lambda kv: f'const {kv[0]} {kv[1]};', self.consts), '',
-		*self.functions[:self._vertex_body], '',
-		self.functions[self._vertex_body].replace(self._vertex_start, self._main_start)
-		]
-		self.vertex_glsl = '\n'.join(v_lines)
+		if hasattr(self, '_vertex_body'):
+			v_lines = [
+			self._opengl_version, '',
+			*map(lambda kv: f'in {kv[0]} {kv[1]};', self.ins), '',
+			*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms), '',
+			*map(lambda kv: f'out {kv[0]} {kv[1]};', self.varyings), '',
+			*map(lambda kv: f'const {kv[0]} {kv[1]};', self.consts), '',
+			*self.functions[:self._vertex_body], '',
+			self.functions[self._vertex_body].replace(self._vertex_start, self._main_start)
+			]
+			self.vertex_glsl = '\n'.join(v_lines)
+		
+		# will use the default vertex shader
+		else:
+			self.vertex_glsl = ''
+			self._vertex_body = -1
 
 		functions_after_vertex_but_not_fragment = [
 		  self.functions[i] for i in range(self._vertex_body+1,len(self.functions))

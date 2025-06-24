@@ -97,8 +97,8 @@ load_shaders()
 
 camera_nearFar = (0.1, 1000.0)
 camera = Camera3D(
-    Vector3(30, 70,-25),
-    Vector3(0,0,-25),
+    Vector3(-20, 70,25),
+    Vector3(0,0,25),
     Vector3(0,1,0),
     60.0,
     rl.CAMERA_PERSPECTIVE
@@ -106,8 +106,8 @@ camera = Camera3D(
 
 light_nearFar = (5,100)
 light_camera = Camera3D(
-    Vector3(-20, 30, 5),
-    Vector3(0,0,0),
+    Vector3(30, 30, 25),
+    Vector3(0,0,-20),
     Vector3(0,1,0),
     90.0,
     rl.CAMERA_ORTHOGRAPHIC
@@ -123,8 +123,10 @@ shadowmap_blurbuffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADO
 # model
 model_root = b'C:/Users/User/Desktop/mixamo_toon_girl/'
 model = rl.LoadModel(model_root + b'mixamo_toon_girl.glb')
-model_albedo = rl.LoadTexture(model_root + b'mixamo_toon_girl_Ch29_1001_Diffuse.png')
-su.SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
+#model_albedo = rl.LoadTexture(model_root + b'mixamo_toon_girl_Ch29_1001_Diffuse.png')
+#su.SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
+#for i in range(model.materialCount):
+#    model.materials[i].shader = shader.shader
 
 #anims = su.LoadModelAnimations(model_root + b'mixamo_toon_girl.glb')
 #animFrameCounter = 0
@@ -151,8 +153,8 @@ def run():
         lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
 
         with shadowMeshShader:    
-            shadowMeshShader.lightDir = lightDir
-            draw_scene(randomize_color=True)
+            shadowMeshShader.bias = rl.Vector3Scale(lightDir, 0.00001)
+            draw_scene(shadowMeshShader,randomize_color=True)
 
         rl.rlSetCullFace(rl.RL_CULL_FACE_BACK)
         rl.EndMode3D()
@@ -185,7 +187,7 @@ def run():
             sceneShader.lightVP  = lightVP
             sceneShader.shadowDepthMap = shadowmap.depth
             sceneShader.shadowPenumbraMap = read_buffer.texture
-            draw_scene()
+            draw_scene(sceneShader)
 
         rl.EndMode3D()
         
@@ -252,27 +254,30 @@ def update(frameTime):
     velocities.set_vector(pv, v_vec)
 
 
-def draw_scene(randomize_color=False):
+def draw_scene(shader:su.BetterShader, randomize_color=False):
+    global model
+    with shader:
+        for i in range(model.materialCount):
+            model.materials[i].shader = shader.shader
+        # model, position, rotation axis, rotation (deg), scale, tint
+        rl.DrawModelEx(model, Vector3(0,0.5,0), Vector3(1,0,0), -90.0, Vector3(800,800,800), rl.WHITE)
 
-    # model, position, rotation axis, rotation (deg), scale, tint
-    rl.DrawModelEx(model, Vector3(0,0.5,0), Vector3(1,0,0), -90.0, Vector3(800,800,800), rl.WHITE)
+        ents = world.where(Position, Mesh, BoundingBox)
+        pos_vec, mesh_vec, bb_vec, = (positions.get_vector(ents), meshes.get_vector(ents), bboxes.get_vector(ents))
+        bmins = bb_vec[:,:3] # entity (int), bounding box (6 floats)
+        bmaxs = bb_vec[:,3:]
+        sizes = bmaxs - bmins
+        centers = pos_vec + (bmaxs + bmins) * 0.5
+        meshIds = ents / np.max(ents)
 
-    ents = world.where(Position, Mesh, BoundingBox)
-    pos_vec, mesh_vec, bb_vec, = (positions.get_vector(ents), meshes.get_vector(ents), bboxes.get_vector(ents))
-    bmins = bb_vec[:,:3] # entity (int), bounding box (6 floats)
-    bmaxs = bb_vec[:,3:]
-    sizes = bmaxs - bmins
-    centers = pos_vec + (bmaxs + bmins) * 0.5
-    meshIds = ents / np.max(ents)
-
-    for meshId, center, size, mesh in zip(meshIds, centers, sizes, mesh_vec):
-        rl.DrawCube(
-            tuple(center),
-            size[0], # x
-            size[1], # y
-            size[2], # z
-            (int(255 * meshId),255,255,255) if randomize_color else mesh[meshes.color_id]
-        )
+        for meshId, center, size, mesh in zip(meshIds, centers, sizes, mesh_vec):
+            rl.DrawCube(
+                tuple(center),
+                size[0], # x
+                size[1], # y
+                size[2], # z
+                (int(255 * meshId),255,255,255) if randomize_color else mesh[meshes.color_id]
+            )
 
 
 run()
