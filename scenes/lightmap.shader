@@ -12,6 +12,7 @@ uniform mat4 lightVP;
 
 varying vec2 fragTexCoord;
 varying vec4 fragColor;
+varying vec4 fragPos;
 varying vec3 fragNormal;
 varying vec4 fragShadowClipSpace;
 
@@ -21,7 +22,8 @@ void vertex(){
     fragNormal = normalize(mat3(matModel) * vertexNormal);
     
     vec4 vertex = vec4(vertexPosition, 1.0);
-    gl_Position = mvp*vertex;
+    fragPos = mvp*vertex;
+    gl_Position = fragPos;
     
     fragShadowClipSpace = lightVP*matModel*vertex;
 }
@@ -112,18 +114,41 @@ void fragment() {
         return;
     }
 
-    float avgShadow = get_shadow(proj);
+    float shadow = get_shadow(proj);
 
     float filterRadius = 1.0/float(2048); // TODO: add shadowmap resolution
-    avgShadow *= CENTER_WEIGHT;
+    shadow *= CENTER_WEIGHT;
     for (int i = 0; i < OFFSETS_LEN; ++i) {
         vec2 offs = OFFSETS[i] * filterRadius;
-        avgShadow += get_shadow(vec3(proj.xy + offs, proj.z));
+        shadow += get_shadow(vec3(proj.xy + offs, proj.z));
     }
-    avgShadow /= float(OFFSETS_LEN + CENTER_WEIGHT);
+    shadow /= float(OFFSETS_LEN + CENTER_WEIGHT);
 
-    float shadow = 0.5 + clamp(0, 1, avgShadow) * 0.5;
+    // blinn-phong (in view-space)
+    float AmbientOcclusion = 1.0; // TODO: calculate AO
+    vec3 ambient = vec3(0.3 * albedo * AmbientOcclusion); // here we add occlusion factor
+    vec3 lighting = ambient; 
+    
+    // TODO : accumulate per light
+    // TODO: tonemapping
 
-    finalColor = vec4(albedo.rgb*shadow, albedo.a);
+    // diffuse
+    //vec3 lightDir = normalize(light.Position - FragPos);
+    float diffuse = max(dot(fragNormal, lightDir), 0.0); // * albedo * light.Color;
+    diffuse = min(shadow, diffuse);
+    diffuse = mix(0.5, 1, clamp(0, 1, diffuse));
+
+    // specular
+    vec3 viewDir  = normalize(-fragPos.xyz);
+    vec3 halfwayDir = normalize(lightDir + viewDir);  
+    float specular = pow(max(dot(fragNormal, halfwayDir), 0.0), 8.0);
+
+    // attenuation
+    //float dist = length(light.Position - FragPos);
+    //float attenuation = 1.0 / (1.0 + light.Linear * dist + light.Quadratic * dist * dist);
+    lighting += diffuse * albedo.rgb; // = diffuse * light.Color * attenuation;
+    lighting += vec3(specular) * 0.5; // = light.Color * specular * attenuation;
+
+    finalColor = vec4(lighting, albedo.a);
     //finalColor = vec4(vec3(1)*shadow, 1);
 }

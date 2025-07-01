@@ -98,7 +98,7 @@ load_shaders()
 camera_nearFar = (0.1, 1000.0)
 camera = Camera3D(
     Vector3(-20, 70,25),
-    Vector3(0,0,25),
+    Vector3(0,10,0),
     Vector3(0,1,0),
     60.0,
     rl.CAMERA_PERSPECTIVE
@@ -227,11 +227,14 @@ def inputs():
     scrollspeed = 3.0
     mw = scrollspeed * rl.GetMouseWheelMove()
     if mw != 0 and ( camera.position.y > scrollspeed + 0.5 or mw > 0.0):
-        camera.position = rl.Vector3Add(camera.position,
-            rl.Vector3Scale(rl.Vector3Normalize(camera.position), mw))
-        camera.target = rl.Vector3Subtract(camera.target, camera.position)
+        pos = np.array([camera.position.x, camera.position.y, camera.position.z])
+        tar = np.array([camera.target.x, camera.target.y, camera.target.z])
+        pos -= mw * tar * 0.1;
+        new_pos = pos + (tar - pos) / np.linalg.norm(pos + 0.1) * mw
+        camera.position = Vector3(new_pos[0], new_pos[1], new_pos[2])
 
 def update(frameTime):
+
     #global animFrameCounter
     #rl.UpdateModelAnimation(model, anims[0], animFrameCounter)
     #animFrameCounter += 1

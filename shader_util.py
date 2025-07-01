@@ -1,7 +1,7 @@
 import raylib as rl
 from pyray import Shader, Vector2, Vector3, Vector4, \
 	Material, Texture, RenderTexture, \
-	 ffi, rl_load_texture
+	ffi, rl_load_texture
 
 import re
 from typing import Any, Sequence
