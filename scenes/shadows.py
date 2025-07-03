@@ -85,7 +85,7 @@ def load_shaders():
 
 
 WINDOW_SIZE = Vector2(800, 500)
-#rl.SetConfigFlags(rl.FLAG_MSAA_4X_HINT) #|rl.FLAG_WINDOW_RESIZABLE)
+rl.SetConfigFlags(rl.FLAG_MSAA_4X_HINT) #|rl.FLAG_WINDOW_RESIZABLE)
 rl.InitWindow(int(WINDOW_SIZE.x), int(WINDOW_SIZE.y), b"Hello")
 rl.SetTargetFPS(60)
 
@@ -95,9 +95,10 @@ shadowMeshShader = None
 shadowBlurShader = None
 load_shaders()
 
+camera_dist = 30
 camera_nearFar = (0.1, 1000.0)
 camera = Camera3D(
-    Vector3(-20, 70,25),
+    Vector3(-20, 70, 25),
     Vector3(0,10,0),
     Vector3(0,1,0),
     60.0,
@@ -208,6 +209,7 @@ def draw_shadowmap():
 
 def inputs():
     global camera
+    global camera_dist
     global unused_camera
 
     if rl.IsKeyPressed(rl.KEY_R): load_shaders()
@@ -227,13 +229,19 @@ def inputs():
     scrollspeed = 3.0
     mw = scrollspeed * rl.GetMouseWheelMove()
     if mw != 0 and ( camera.position.y > scrollspeed + 0.5 or mw > 0.0):
-        pos = np.array([camera.position.x, camera.position.y, camera.position.z])
+        cam_pos = np.array([camera.position.x, camera.position.y, camera.position.z])
         tar = np.array([camera.target.x, camera.target.y, camera.target.z])
-        pos -= mw * tar * 0.1;
-        new_pos = pos + (tar - pos) / np.linalg.norm(pos + 0.1) * mw
-        camera.position = Vector3(new_pos[0], new_pos[1], new_pos[2])
+        camera_dist -= mw * 0.3;
+        cam_pos[1] += (tar[1] - cam_pos[1]) / np.linalg.norm(cam_pos[1] + 0.1) * mw
+        camera.position = Vector3(cam_pos[0], cam_pos[1], cam_pos[2])
 
 def update(frameTime):
+    global camera
+    time = rl.GetTime()
+    camera.position = Vector3(
+        np.cos(time) * camera_dist,
+        camera.position.y,
+        np.sin(time) * camera_dist)
 
     #global animFrameCounter
     #rl.UpdateModelAnimation(model, anims[0], animFrameCounter)
