@@ -1,0 +1,67 @@
+**uniforms:
+highp vec3 m_color;
+highp float m_roughness;
+highp float m_specular;
+highp float m_displacement_str;
+highp float m_displacement_speed;
+highp float m_displacement_dimming;
+highp float m_erosion_scale;
+highp float m_mist_transparency;
+highp float m_shadow_coverage;
+highp float m_shadow_max;
+
+
+**vertex_globals:
+layout(set = 3, binding = 1) uniform highp texture2D m_erosion_curve;
+layout(set = 3, binding = 2) uniform highp texture2D m_noise;
+layout(location=14) out highp float m_dimming;
+layout(location=15) flat out highp float m_instance_id;
+layout(location=16) flat out highp float m_lifetime_percent;
+
+
+**fragment_globals:
+layout(set = 3, binding = 1) uniform highp texture2D m_erosion_curve;
+layout(set = 3, binding = 2) uniform highp texture2D m_noise;
+layout(location=14) in highp float m_dimming;
+layout(location=15) flat in highp float m_instance_id;
+layout(location=16) flat in highp float m_lifetime_percent;
+
+
+**compute_globals:
+layout(set = 3, binding = 1) uniform highp texture2D m_erosion_curve;
+layout(set = 3, binding = 2) uniform highp texture2D m_noise;
+
+
+**code vertex:
+        {
+                m_lifetime_percent=instance_custom.y;
+                m_instance_id=(float(gl_InstanceIndex) * 0.10000000149012);
+                float m_displacement=texture(sampler2D(m_noise, SAMPLER_LINEAR_WITH_MIPMAPS_REPEAT), (uv_interp + vec2(0.0, ((m_instance_id + (global_shader_uniforms.data[(instances.data[instance_index_interp].instance_uniforms_ofs+0u)].x)) + (global_time * material.m_displacement_speed))))).r;
+                vertex+=(((m_displacement * material.m_displacement_str) - material.m_displacement_str) * normal_highp);
+                m_dimming=m_displacement;
+        }
+
+
+**code fragment:
+        {
+                albedo_highp=(material.m_color * mix(1.0, m_dimming, material.m_displacement_dimming));
+                float m_erosion=texture(sampler2D(m_noise, SAMPLER_LINEAR_WITH_MIPMAPS_REPEAT), ((uv_interp * material.m_erosion_scale) + vec2(((global_shader_uniforms.data[(instances.data[instance_index_interp].instance_uniforms_ofs+0u)].x) + m_instance_id)))).r;
+                float m_erosion_strength=texture(sampler2D(m_erosion_curve, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec2(m_lifetime_percent)).r;
+                float m_mixed=smoothstep(0.0, (m_erosion * 2.0), m_erosion_strength);
+                float m_applied_erosion=max(round(m_mixed), (m_mixed * material.m_mist_transparency));
+                alpha_highp*=m_applied_erosion;
+                roughness_highp=material.m_roughness;
+                specular=material.m_specular;
+        }
+
+
+**code light:
+        {
+                float m_NdotL=((dot(normal_highp, light_highp) + material.m_shadow_coverage) * attenuation_highp);
+                m_NdotL=clamp(m_NdotL, 0.0, 1.0);
+                vec3 m_diffuse=(light_color_highp / 3.14159265358979);
+                float m_t=m_NdotL;
+                m_t=max(m_t, material.m_shadow_max);
+                m_diffuse*=m_t;
+                diffuse_light_highp+=m_diffuse;
+        }

@@ -1,0 +1,74 @@
+**uniforms:
+highp vec4 m_albedo;
+highp float m_point_size;
+highp float m_roughness;
+highp vec4 m_metallic_texture_channel;
+highp float m_specular;
+highp float m_metallic;
+highp float m_normal_scale;
+highp vec3 m_uv1_scale;
+highp vec3 m_uv1_offset;
+highp vec3 m_uv2_scale;
+highp vec3 m_uv2_offset;
+highp float m_shadow_coverage;
+highp float m_rim_coverage;
+highp vec3 m_rim_color;
+highp float m_cloak_visibility;
+highp float m_cloak_rim_strength;
+highp float m_cloak_colors;
+
+
+**vertex_globals:
+layout(set = 3, binding = 1) uniform highp texture2D m_texture_albedo;
+layout(set = 3, binding = 2) uniform highp texture2D m_texture_metallic;
+layout(set = 3, binding = 4) uniform highp texture2D m_texture_normal;
+layout(set = 3, binding = 3) uniform highp texture2D m_texture_roughness;
+
+
+**fragment_globals:
+layout(set = 3, binding = 1) uniform highp texture2D m_texture_albedo;
+layout(set = 3, binding = 2) uniform highp texture2D m_texture_metallic;
+layout(set = 3, binding = 4) uniform highp texture2D m_texture_normal;
+layout(set = 3, binding = 3) uniform highp texture2D m_texture_roughness;
+
+
+**compute_globals:
+layout(set = 3, binding = 1) uniform highp texture2D m_texture_albedo;
+layout(set = 3, binding = 2) uniform highp texture2D m_texture_metallic;
+layout(set = 3, binding = 4) uniform highp texture2D m_texture_normal;
+layout(set = 3, binding = 3) uniform highp texture2D m_texture_roughness;
+
+
+**code vertex:
+        {
+                uv_interp=((uv_interp * material.m_uv1_scale.xy) + material.m_uv1_offset.xy);
+        }
+
+
+**code fragment:
+        {
+                vec2 m_base_uv=uv_interp;
+                vec4 m_albedo_tex=texture(sampler2D(m_texture_albedo, SAMPLER_LINEAR_WITH_MIPMAPS_REPEAT), m_base_uv);
+                vec3 m_base_color=(material.m_albedo.rgb * m_albedo_tex.rgb);
+                float m_NdotV=abs(dot(normal_highp, view_highp));
+                float m_NdotV_inv=(1.0 - m_NdotV);
+                vec3 m_rim_light=((m_NdotV_inv + material.m_rim_coverage) * material.m_rim_color);
+                albedo_highp=((m_base_color + m_rim_light) * min(1.0, (material.m_cloak_colors + material.m_cloak_visibility)));
+                float m_metallic_tex=dot(texture(sampler2D(m_texture_metallic, SAMPLER_LINEAR_WITH_MIPMAPS_REPEAT), m_base_uv), material.m_metallic_texture_channel);
+                metallic_highp=(m_metallic_tex * material.m_metallic);
+                normal_map=texture(sampler2D(m_texture_normal, SAMPLER_LINEAR_WITH_MIPMAPS_REPEAT), m_base_uv).rgb;
+                normal_map_depth=material.m_normal_scale;
+                alpha_highp=clamp((material.m_cloak_visibility + (m_NdotV_inv * material.m_cloak_rim_strength)), 0.0, 1.0);
+        }
+
+
+**code light:
+        {
+                float m_NdotL=((dot(normal_highp, light_highp) + material.m_shadow_coverage) * attenuation_highp);
+                m_NdotL=clamp(m_NdotL, 0.0, 1.0);
+                vec3 m_diffuse=(light_color_highp / 3.14159265358979);
+                float m_t=m_NdotL;
+                m_t-=(mod(m_NdotL, 0.60000002384186) * 0.20000000298023);
+                m_diffuse*=m_t;
+                diffuse_light_highp+=m_diffuse;
+        }

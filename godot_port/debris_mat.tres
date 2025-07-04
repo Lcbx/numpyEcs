@@ -1,0 +1,28 @@
+[gd_resource type="ShaderMaterial" load_steps=5 format=3 uid="uid://cl4dqyweflllj"]
+
+[ext_resource type="Shader" path="res://src/bullet_impact/impact.gdshader" id="1_6aioa"]
+[ext_resource type="Texture2D" uid="uid://l2ludw03gpvs" path="res://src/bullet_impact/noise.tres" id="2_3cff3"]
+
+[sub_resource type="Curve" id="Curve_kg7as"]
+bake_resolution = 16
+_data = [Vector2(0, 1), 0.0, 0.0, 0, 0, Vector2(0.735294, 0.188775), -3.64286, -3.64286, 0, 0, Vector2(0.756303, 0.173469), 0.0, 0.0, 0, 0, Vector2(1, 0), -1.4011, 0.0, 0, 0]
+point_count = 4
+
+[sub_resource type="CurveTexture" id="CurveTexture_25gji"]
+curve = SubResource("Curve_kg7as")
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_6aioa")
+shader_parameter/color = Color(0.310987, 0.335231, 0.40449, 1)
+shader_parameter/roughness = 1.0
+shader_parameter/specular = 0.0
+shader_parameter/displacement_str = 0.07
+shader_parameter/displacement_speed = 0.6
+shader_parameter/displacement_dimming = 0.5
+shader_parameter/erosion_scale = 2.0
+shader_parameter/mist_transparency = 0.3
+shader_parameter/shadow_coverage = 0.1
+shader_parameter/shadow_max = 0.2
+shader_parameter/erosion_curve = SubResource("CurveTexture_25gji")
+shader_parameter/noise = ExtResource("2_3cff3")
