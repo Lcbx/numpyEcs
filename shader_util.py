@@ -186,6 +186,7 @@ class BetterShader:
 		self.functions = []	   	# list of function definitions
 		self.vertex_glsl = ''	# Generated GLSL code for vertex shader
 		self.fragment_glsl = ''	# Generated GLSL code for fragment shader
+		
 
 		self._parse_file(filepath)
 		self._generate_glsl()
@@ -194,11 +195,9 @@ class BetterShader:
 			self.vertex_glsl.encode('utf-8'),
 			self.fragment_glsl.encode('utf-8')
 		)
-
+		
 		for type, name in self.uniforms:
 			self.uniform_locs[name] = rl.GetShaderLocation(self.shader, name.encode('utf-8'))
-
-		#BetterShader.__setattr__ = self.__setattr__impl
 
 	def valid(self) -> bool:
 		return self.shader.id > 0

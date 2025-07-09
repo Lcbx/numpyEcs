@@ -80,11 +80,11 @@ float get_shadow(vec3 proj){
     // causes artifacts
     //if(remoteOcclusionDist < f) return 1.0;
 
-    float occlusionFactor = 1.5 - remoteOcclusionDist * 2;
+    float occlusionFactor = 1.5 - remoteOcclusionDist * 2.0;
     f *= occlusionFactor;
     //f *= occlusionFactor;
 
-    f *= 150; // pass the inverse of this as uniform named blur ?
+    f *= 150.0; // pass the inverse of this as uniform named blur ?
 
     //if(f < 0.8)
     //{
@@ -116,7 +116,7 @@ void fragment() {
 
     float shadow = get_shadow(proj);
 
-    float filterRadius = 1.0/float(2048); // TODO: add shadowmap resolution
+    vec2 filterRadius = vec2(1.0)/textureSize(shadowDepthMap,0);
     shadow *= CENTER_WEIGHT;
     for (int i = 0; i < OFFSETS_LEN; ++i) {
         vec2 offs = OFFSETS[i] * filterRadius;
@@ -136,7 +136,7 @@ void fragment() {
     //vec3 lightDir = normalize(light.Position - FragPos);
     float diffuse = max(dot(fragNormal, lightDir), 0.0); // * albedo * light.Color;
     diffuse = min(shadow, diffuse);
-    diffuse = mix(0.5, 1, clamp(0, 1, diffuse));
+    diffuse = mix(0.4, 0.8, clamp(diffuse, 0.0, 1.0));
 
     // specular
     vec3 viewDir  = normalize(-fragPos.xyz);
@@ -147,7 +147,7 @@ void fragment() {
     //float dist = length(light.Position - FragPos);
     //float attenuation = 1.0 / (1.0 + light.Linear * dist + light.Quadratic * dist * dist);
     lighting += diffuse * albedo.rgb; // = diffuse * light.Color * attenuation;
-    lighting += vec3(specular) * 0.5; // = light.Color * specular * attenuation;
+    lighting += vec3(specular) * 0.1; // = light.Color * specular * attenuation;
 
     finalColor = vec4(lighting, albedo.a);
     //finalColor = vec4(vec3(1)*shadow, 1);

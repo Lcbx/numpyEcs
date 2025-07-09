@@ -64,6 +64,7 @@ def load_shaders():
     global shadowMeshShader
     global shadowBlurShader
     global sceneShader
+    global prepassShader
 
     try:
         newShader = su.BetterShader('scenes/shadowmesh.shader');
@@ -78,7 +79,12 @@ def load_shaders():
         if newShader.valid(): sceneShader = newShader
         else: raise Exception('lightmap.shader')
 
-    except:
+        newShader = su.BetterShader('scenes/prepass.shader')
+        if newShader.valid(): prepassShader = newShader
+        else: raise Exception('prepass.shader')
+
+    except Exception as ex:
+        print('--------------> failed compiling', ex.args[0])
         print(newShader.functions[newShader._vertex_body])
         print('______________________')
         print(newShader.functions[newShader._fragment_body])
@@ -93,6 +99,7 @@ rl.SetTargetFPS(60)
 sceneShader = None
 shadowMeshShader = None
 shadowBlurShader = None
+prepassShader = None
 load_shaders()
 
 camera_dist = 30
@@ -122,16 +129,16 @@ shadowmap = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT, d
 shadowmap_blurbuffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT)
 
 # model
-model_root = b'C:/Users/User/Desktop/mixamo_toon_girl/'
-model = rl.LoadModel(model_root + b'mixamo_toon_girl.glb')
-#model_albedo = rl.LoadTexture(model_root + b'mixamo_toon_girl_Ch29_1001_Diffuse.png')
-#su.SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
-#for i in range(model.materialCount):
-#    model.materials[i].shader = shader.shader
+model_root = b'C:/Users/lucco/Desktop/pythonEngine/scenes/resources/'
+model = rl.LoadModel(model_root + b'turret.obj')
+model_albedo = rl.LoadTexture(model_root + b'turret_diffuse.png')
+su.SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
 
 #anims = su.LoadModelAnimations(model_root + b'mixamo_toon_girl.glb')
 #animFrameCounter = 0
 
+
+ambientOcclusion_buffer = rl.LoadRenderTexture(int(WINDOW_SIZE.x/2), int(WINDOW_SIZE.y/2))
 
 def run():
     global camera, unused_camera
@@ -153,7 +160,7 @@ def run():
         lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
         lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
 
-        with shadowMeshShader:    
+        with shadowMeshShader:
             shadowMeshShader.bias = rl.Vector3Scale(lightDir, 0.00001)
             draw_scene(shadowMeshShader,randomize_color=True)
 
@@ -170,17 +177,26 @@ def run():
             while step > last:
                 step /= 2.0
                 rl.BeginTextureMode(write_buffer)
-                shadowBlurShader.stepSize = step    
+                shadowBlurShader.stepSize = step
                 # screen-wide rectangle, y-flipped due to default OpenGL coordinates
                 rl.DrawTextureRec(read_buffer.texture,
                     (0, 0, shadowmap.texture.width, -shadowmap.texture.height), (0, 0), rl.WHITE);
                 rl.EndTextureMode()
                 read_buffer, write_buffer = write_buffer, read_buffer
         
-
         rl.BeginDrawing()
         rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
         rl.BeginMode3D(camera)
+        rl.ClearBackground(rl.WHITE)
+
+        with prepassShader:
+            dir = rl.Vector3Normalize(rl.Vector3Subtract(camera.position, camera.target))
+            prepassShader.bias = rl.Vector3Scale(dir, - 0.001)
+            draw_scene(prepassShader)
+
+        # TODO: use preprass to compute AO in ambientOcclusion_buffer
+
+
         rl.ClearBackground(rl.WHITE)
 
         with sceneShader:
@@ -192,7 +208,7 @@ def run():
 
         rl.EndMode3D()
         
-        draw_shadowmap()
+        #draw_shadowmap()
         rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count} ".encode('utf-8'), 10, 10, 20, rl.LIGHTGRAY)
         
         rl.EndDrawing()
@@ -207,12 +223,16 @@ def draw_shadowmap():
     rl.DrawTextureEx(shadowmap_blurbuffer.texture, Vector2(WINDOW_SIZE.x - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
     rl.DrawTextureEx(shadowmap.depth, Vector2(WINDOW_SIZE.x - display_size, 2 * display_size), rotation, display_scale, rl.RAYWHITE)
 
+orbit = True
 def inputs():
     global camera
     global camera_dist
     global unused_camera
+    global orbit
 
     if rl.IsKeyPressed(rl.KEY_R): load_shaders()
+    if rl.IsKeyPressed(rl.KEY_O):
+        orbit = not orbit
     if rl.IsKeyPressed(rl.KEY_P):
         light_camera.projection = (rl.CAMERA_ORTHOGRAPHIC
             if light_camera.projection == rl.CAMERA_PERSPECTIVE
@@ -237,11 +257,15 @@ def inputs():
 
 def update(frameTime):
     global camera
+    
     time = rl.GetTime()
-    camera.position = Vector3(
-        np.cos(time) * camera_dist,
-        camera.position.y,
-        np.sin(time) * camera_dist)
+    
+    if orbit:
+        cam_ang = time * 0.5
+        camera.position = Vector3(
+            np.cos(cam_ang) * camera_dist,
+            camera.position.y,
+            np.sin(cam_ang) * camera_dist)
 
     #global animFrameCounter
     #rl.UpdateModelAnimation(model, anims[0], animFrameCounter)
@@ -271,7 +295,7 @@ def draw_scene(shader:su.BetterShader, randomize_color=False):
         for i in range(model.materialCount):
             model.materials[i].shader = shader.shader
         # model, position, rotation axis, rotation (deg), scale, tint
-        rl.DrawModelEx(model, Vector3(0,0.5,0), Vector3(1,0,0), -90.0, Vector3(800,800,800), rl.WHITE)
+        rl.DrawModelEx(model, Vector3(0,0.5,0), Vector3(1,0,0), 0.0, Vector3(1.0,1.0,1.0), rl.WHITE)
 
         ents = world.where(Position, Mesh, BoundingBox)
         pos_vec, mesh_vec, bb_vec, = (positions.get_vector(ents), meshes.get_vector(ents), bboxes.get_vector(ents))
