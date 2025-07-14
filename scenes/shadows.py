@@ -138,7 +138,10 @@ su.SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
 #animFrameCounter = 0
 
 
-ambientOcclusion_buffer = rl.LoadRenderTexture(int(WINDOW_SIZE.x/2), int(WINDOW_SIZE.y/2))
+AO_buffer = su.create_render_buffer(int(WINDOW_SIZE.x/2), int(WINDOW_SIZE.y/2))
+main_fbo_id = 0
+rl.rlFramebufferAttach(main_fbo_id, AO_buffer.texture.id, rl.RL_ATTACHMENT_COLOR_CHANNEL0, rl.RL_ATTACHMENT_RENDERBUFFER, 0)
+rl.rlActiveDrawBuffers(2)
 
 def run():
     global camera, unused_camera
@@ -187,15 +190,11 @@ def run():
         rl.BeginDrawing()
         rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
         rl.BeginMode3D(camera)
-        rl.ClearBackground(rl.WHITE)
 
         with prepassShader:
-            dir = rl.Vector3Normalize(rl.Vector3Subtract(camera.position, camera.target))
-            prepassShader.bias = rl.Vector3Scale(dir, - 0.001)
             draw_scene(prepassShader)
 
         # TODO: use preprass to compute AO in ambientOcclusion_buffer
-
 
         rl.ClearBackground(rl.WHITE)
 
@@ -209,6 +208,7 @@ def run():
         rl.EndMode3D()
         
         #draw_shadowmap()
+        draw_AO()
         rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count} ".encode('utf-8'), 10, 10, 20, rl.LIGHTGRAY)
         
         rl.EndDrawing()
@@ -222,6 +222,12 @@ def draw_shadowmap():
     rl.DrawTextureEx(shadowmap.texture, Vector2(WINDOW_SIZE.x - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
     rl.DrawTextureEx(shadowmap_blurbuffer.texture, Vector2(WINDOW_SIZE.x - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
     rl.DrawTextureEx(shadowmap.depth, Vector2(WINDOW_SIZE.x - display_size, 2 * display_size), rotation, display_scale, rl.RAYWHITE)
+
+def draw_AO():
+    display_size = WINDOW_SIZE.x / 5.0
+    display_scale = display_size / float(AO_buffer.texture.width)
+    rotation = 0
+    rl.DrawTextureEx(AO_buffer.texture, Vector2(WINDOW_SIZE.x - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
 
 orbit = True
 def inputs():

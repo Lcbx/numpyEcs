@@ -8,19 +8,19 @@ in vec4 vertexColor;
 uniform mat4 matModel;
 uniform mat4 mvp;
 
-uniform vec3 bias; // - dir_to_camera * bias_value
 
 varying vec2 fragNormal;
 
 void vertex(){
-    vec4 vertex = vec4(vertexPosition, 1.0);
     fragNormal = normalize(mat3(matModel) * vertexNormal).xy;
-    vertex.xyz += bias;
+    vec4 vertex = vec4(vertexPosition, 1.0);
     gl_Position = mvp*vertex;
 }
 
-
+//layout(location = 1) out vec4 outAO;
 out vec4 finalColor;
+out vec4 outAO;
 void fragment() {
-    finalColor = vec4(fragNormal, gl_FragCoord.z, 1);
+    finalColor = vec4(1);
+    outAO = vec4(fragNormal, gl_FragCoord.z, 1);
 }
