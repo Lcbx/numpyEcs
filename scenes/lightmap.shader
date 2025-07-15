@@ -17,138 +17,138 @@ varying vec3 fragNormal;
 varying vec4 fragShadowClipSpace;
 
 void vertex(){
-    fragTexCoord = vertexTexCoord;
-    fragColor = vertexColor;
-    fragNormal = normalize(mat3(matModel) * vertexNormal);
-    
-    vec4 vertex = vec4(vertexPosition, 1.0);
-    fragPos = mvp*vertex;
-    gl_Position = fragPos;
-    
-    fragShadowClipSpace = lightVP*matModel*vertex;
+	fragTexCoord = vertexTexCoord;
+	fragColor = vertexColor;
+	fragNormal = normalize(mat3(matModel) * vertexNormal);
+	
+	vec4 vertex = vec4(vertexPosition, 1.0);
+	fragPos = mvp*vertex;
+	gl_Position = fragPos;
+	
+	fragShadowClipSpace = lightVP*matModel*vertex;
 }
 
-uniform sampler2D texture0;            // diffuse
+uniform sampler2D texture0;			// diffuse
 
 uniform vec3 lightDir;
-uniform sampler2D shadowDepthMap;      // classic depth map (R channel)
+uniform sampler2D shadowDepthMap;	  // classic depth map (R channel)
 uniform sampler2D shadowPenumbraMap;   // RGB: [meshID, distX, distY]
 
 out vec4 finalColor;
 
 float random(vec2 co) {
-    return fract(dot(co, vec2(3,8)) * dot(co.yx, vec2(7,5)) * 0.03);
+	return fract(dot(co, vec2(3,8)) * dot(co.yx, vec2(7,5)) * 0.03);
 }
 
 bool between(vec2 v, vec2 bottomLeft, vec2 topRight){
-    vec2 s = step(bottomLeft, v) - step(topRight, v);             
+	vec2 s = step(bottomLeft, v) - step(topRight, v);			 
 	return bool(s.x * s.y);
 }
 
 vec2 get_dir(vec2 encoded){
-    return encoded * 2.0 - 1.0;
+	return encoded * 2.0 - 1.0;
 }
 
 float get_shadow(vec3 proj){
 
-    // determine occlusion
-    float fragmentDepth = proj.z;
+	// determine occlusion
+	float fragmentDepth = proj.z;
 
-    float occluderDepth = texture(shadowDepthMap, proj.xy).r;
-    float localOcclusionDist = fragmentDepth - occluderDepth;
+	float occluderDepth = texture(shadowDepthMap, proj.xy).r;
+	float localOcclusionDist = fragmentDepth - occluderDepth;
 
-    if(localOcclusionDist > 0) return 0.0;
+	if(localOcclusionDist > 0) return 0.0;
 
-    vec3 penumbra = texture(shadowPenumbraMap, proj.xy).rgb;
-    vec2 penDir = get_dir(penumbra.gb);
+	vec3 penumbra = texture(shadowPenumbraMap, proj.xy).rgb;
+	vec2 penDir = get_dir(penumbra.gb);
 
-    vec2 remoteCoord = proj.xy + penDir;
+	vec2 remoteCoord = proj.xy + penDir;
 
-    float remoteOccluderDepth = texture(shadowDepthMap, remoteCoord).r;
-    float remoteOcclusionDist = fragmentDepth - remoteOccluderDepth;
+	float remoteOccluderDepth = texture(shadowDepthMap, remoteCoord).r;
+	float remoteOcclusionDist = fragmentDepth - remoteOccluderDepth;
 
-    if(remoteOcclusionDist < 0) return 1.0;
+	if(remoteOcclusionDist < 0) return 1.0;
 
-    float distToEdgeSq = dot(penDir, penDir);
-    float f = distToEdgeSq;
+	float distToEdgeSq = dot(penDir, penDir);
+	float f = distToEdgeSq;
 
-    /// all different soft shadow strength/delimitations
-    //f *= 5000;
-    //f = pow(f, 0.8) * 500;
-    f = sqrt(f);
+	/// all different soft shadow strength/delimitations
+	//f *= 5000;
+	//f = pow(f, 0.8) * 500;
+	f = sqrt(f);
 
-    // causes artifacts
-    //if(remoteOcclusionDist < f) return 1.0;
+	// causes artifacts
+	//if(remoteOcclusionDist < f) return 1.0;
 
-    float occlusionFactor = 1.5 - remoteOcclusionDist * 2.0;
-    f *= occlusionFactor;
-    //f *= occlusionFactor;
+	float occlusionFactor = 1.5 - remoteOcclusionDist * 2.0;
+	f *= occlusionFactor;
+	//f *= occlusionFactor;
 
-    f *= 150.0; // pass the inverse of this as uniform named blur ?
+	f *= 150.0; // pass the inverse of this as uniform named blur ?
 
-    //if(f < 0.8)
-    //{
-    //    float noise = random(gl_FragCoord.xy);
-    //    float noiseStrength = 0.2;
-    //    f *= (1.0 + noise * noiseStrength - noiseStrength * 0.5);
-    //}
+	//if(f < 0.8)
+	//{
+	//	float noise = random(gl_FragCoord.xy);
+	//	float noiseStrength = 0.2;
+	//	f *= (1.0 + noise * noiseStrength - noiseStrength * 0.5);
+	//}
 
-    return f;
+	return f;
 }
 
 const float CENTER_WEIGHT = 3;
 const int OFFSETS_LEN = 4;
 const vec2 OFFSETS[OFFSETS_LEN] = vec2[OFFSETS_LEN](
-    vec2( 0.7,  -0.7),  vec2(0.7,  0.7),
-    vec2( -0.7,  0.7),  vec2( -0.7, -0.7)
+	vec2( 0.7,  -0.7),  vec2(0.7,  0.7),
+	vec2( -0.7,  0.7),  vec2( -0.7, -0.7)
 );
 
 void fragment() {
-    vec4 albedo = fragColor * texture(texture0, fragTexCoord);
+	vec4 albedo = fragColor * texture(texture0, fragTexCoord);
 
-    // project into shadow‐map UV
-    vec3 proj = fragShadowClipSpace.xyz / fragShadowClipSpace.w;
-    proj = proj*0.5 + 0.5;
-    if (!between(proj.xy, vec2(0.0), vec2(1.0))) {
-        finalColor = albedo;
-        return;
-    }
+	// project into shadow‐map UV
+	vec3 proj = fragShadowClipSpace.xyz / fragShadowClipSpace.w;
+	proj = proj*0.5 + 0.5;
+	if (!between(proj.xy, vec2(0.0), vec2(1.0))) {
+		finalColor = albedo;
+		return;
+	}
 
-    float shadow = get_shadow(proj);
+	float shadow = get_shadow(proj);
 
-    vec2 filterRadius = vec2(1.0)/textureSize(shadowDepthMap,0);
-    shadow *= CENTER_WEIGHT;
-    for (int i = 0; i < OFFSETS_LEN; ++i) {
-        vec2 offs = OFFSETS[i] * filterRadius;
-        shadow += get_shadow(vec3(proj.xy + offs, proj.z));
-    }
-    shadow /= float(OFFSETS_LEN + CENTER_WEIGHT);
+	vec2 filterRadius = vec2(1.0)/textureSize(shadowDepthMap,0);
+	shadow *= CENTER_WEIGHT;
+	for (int i = 0; i < OFFSETS_LEN; ++i) {
+		vec2 offs = OFFSETS[i] * filterRadius;
+		shadow += get_shadow(vec3(proj.xy + offs, proj.z));
+	}
+	shadow /= float(OFFSETS_LEN + CENTER_WEIGHT);
 
-    // blinn-phong (in view-space)
-    float AmbientOcclusion = 1.0; // TODO: calculate AO
-    vec3 ambient = vec3(0.3 * albedo * AmbientOcclusion); // here we add occlusion factor
-    vec3 lighting = ambient; 
-    
-    // TODO : accumulate per light
-    // TODO: tonemapping
+	// blinn-phong (in view-space)
+	float AmbientOcclusion = 1.0; // TODO: calculate AO
+	vec3 ambient = vec3(0.3 * albedo * AmbientOcclusion); // here we add occlusion factor
+	vec3 lighting = ambient; 
+	
+	// TODO : accumulate per light
+	// TODO: tonemapping
 
-    // diffuse
-    //vec3 lightDir = normalize(light.Position - FragPos);
-    float diffuse = max(dot(fragNormal, lightDir), 0.0); // * albedo * light.Color;
-    diffuse = min(shadow, diffuse);
-    diffuse = mix(0.4, 0.8, clamp(diffuse, 0.0, 1.0));
+	// diffuse
+	//vec3 lightDir = normalize(light.Position - FragPos);
+	float diffuse = max(dot(fragNormal, lightDir), 0.0); // * albedo * light.Color;
+	diffuse = min(shadow, diffuse);
+	diffuse = mix(0.4, 0.8, clamp(diffuse, 0.0, 1.0));
 
-    // specular
-    vec3 viewDir  = normalize(-fragPos.xyz);
-    vec3 halfwayDir = normalize(lightDir + viewDir);  
-    float specular = pow(max(dot(fragNormal, halfwayDir), 0.0), 8.0);
+	// specular
+	vec3 viewDir  = normalize(-fragPos.xyz);
+	vec3 halfwayDir = normalize(lightDir + viewDir);  
+	float specular = pow(max(dot(fragNormal, halfwayDir), 0.0), 8.0);
 
-    // attenuation
-    //float dist = length(light.Position - FragPos);
-    //float attenuation = 1.0 / (1.0 + light.Linear * dist + light.Quadratic * dist * dist);
-    lighting += diffuse * albedo.rgb; // = diffuse * light.Color * attenuation;
-    lighting += vec3(specular) * 0.1; // = light.Color * specular * attenuation;
+	// attenuation
+	//float dist = length(light.Position - FragPos);
+	//float attenuation = 1.0 / (1.0 + light.Linear * dist + light.Quadratic * dist * dist);
+	lighting += diffuse * albedo.rgb; // = diffuse * light.Color * attenuation;
+	lighting += vec3(specular) * 0.1; // = light.Color * specular * attenuation;
 
-    finalColor = vec4(lighting, albedo.a);
-    //finalColor = vec4(vec3(1)*shadow, 1);
+	finalColor = vec4(lighting, albedo.a);
+	//finalColor = vec4(vec3(1)*shadow, 1);
 }
