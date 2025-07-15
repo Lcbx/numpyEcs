@@ -1,7 +1,15 @@
 import raylib as rl
-from pyray import Shader, Vector2, Vector3, Vector4, \
-	Material, Texture, RenderTexture, \
+from pyray import ( Vector2, Vector3, Vector4,
+	Shader, Material, Texture, RenderTexture,
 	ffi, rl_load_texture
+)
+from OpenGL.GL import (
+	glBindFramebuffer, glBlitFramebuffer,
+	glClear, glEnable, glDisable, glPolygonOffset,
+	GL_READ_FRAMEBUFFER, GL_DRAW_FRAMEBUFFER,
+	GL_DEPTH_BUFFER_BIT, GL_COLOR_BUFFER_BIT, GL_NEAREST,
+	GL_POLYGON_OFFSET_FILL, GL_MULTISAMPLE
+)
 
 import re
 from typing import Any, Sequence
@@ -151,6 +159,31 @@ def LoadModelAnimations(path : str):
 	anims = rl.LoadModelAnimations(path, anims_cnt)
 	return [anims[i] for i in range(anims_cnt[0])]
 
+# NOTE: putting a smaller texture into a bigger one is not allowed
+def TransferDepth(from_fbo:int, f_w:int, f_h:int, to_fbo:int, t_w:int, t_h:int):
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, from_fbo)
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, to_fbo)
+	glBlitFramebuffer(
+		0, 0, f_w, f_h,
+		0, 0, t_w, t_h,
+		#GL_COLOR_BUFFER_BIT,
+		GL_DEPTH_BUFFER_BIT,
+		GL_NEAREST
+	)
+
+def ClearColorBuffer():
+	glClear(GL_COLOR_BUFFER_BIT)
+
+def SetPolygonOffset(value:float):
+	glEnable(GL_POLYGON_OFFSET_FILL)
+	glPolygonOffset(value, value)
+def DisablePolygonOffset():
+	glDisable(GL_POLYGON_OFFSET_FILL)
+
+def EnableMultisampling():
+	glEnable(GL_MULTISAMPLE)
+def DisableMultisampling():
+	glEnable(GL_MULTISAMPLE)
 
 
 class BetterShader:

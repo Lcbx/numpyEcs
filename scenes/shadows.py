@@ -91,11 +91,13 @@ def load_shaders():
 
 
 WINDOW_w, WINDOW_h = 800, 500
-rl.SetConfigFlags(rl.FLAG_MSAA_4X_HINT) #|rl.FLAG_WINDOW_RESIZABLE)
+# NOTE: using MSAA with prepass generate z-artifacts
+#rl.SetConfigFlags(rl.FLAG_MSAA_4X_HINT) #|rl.FLAG_WINDOW_RESIZABLE)
 rl.InitWindow(WINDOW_w, WINDOW_h, b"Hello")
 rl.SetTargetFPS(60)
 
-AO_buffer = su.create_render_buffer(int(WINDOW_w), int(WINDOW_h), depth_map=True)
+AO_w, AO_h = WINDOW_w, WINDOW_h # 400, 250
+AO_buffer = su.create_render_buffer(AO_w, AO_h, depth_map=True)
 
 sceneShader = None
 shadowMeshShader = None
@@ -189,27 +191,28 @@ def run():
 		rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
 		rl.BeginMode3D(camera)
 		rl.ClearBackground(rl.WHITE)
+		su.SetPolygonOffset(1)
 		with prepassShader:
 			draw_scene(prepassShader)
 		# TODO : compute AO
-		rl.EndTextureMode()
 		rl.EndMode3D()
-
-		#rlBlitFramebuffer(int srcX, int srcY, int srcWidth, int srcHeight, int dstX, int dstY, int dstWidth, int dstHeight, int bufferMask)
-		rl.rlBlitFramebuffer(0, 0, WINDOW_w, WINDOW_h, 0, 0, WINDOW_w, WINDOW_h, 32768) # GL_DEPTH_BUFFER_BIT
-
+		rl.EndTextureMode()
+		
+		su.TransferDepth(AO_buffer.id, AO_w, AO_h, 0, WINDOW_w, WINDOW_h)
+		
 		rl.BeginDrawing()
 		rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
 		rl.BeginMode3D(camera)
-		rl.ClearBackground(rl.WHITE)
-
+		su.DisablePolygonOffset()
+		su.ClearColorBuffer() # do not clear depth !
+		
 		with sceneShader:
 			sceneShader.lightDir = lightDir
 			sceneShader.lightVP  = lightVP
 			sceneShader.shadowDepthMap = shadowmap.depth
 			sceneShader.shadowPenumbraMap = read_buffer.texture
 			draw_scene(sceneShader)
-
+		
 		rl.EndMode3D()
 		
 		#draw_shadowmap()
