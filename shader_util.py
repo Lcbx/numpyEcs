@@ -116,6 +116,7 @@ def create_render_buffer(width : int, height:int,
 
 	target = RenderTexture()
 	target.id = rl.rlLoadFramebuffer()
+	#print('FRAMEBUFFER ID : ', target.id)
 	
 	if target.id > 0:
 		rl.rlEnableFramebuffer(target.id)
@@ -158,7 +159,7 @@ class BetterShader:
 	Extracts uniforms, varying, in, and out variables, then generates GLSL code for both stages.
 	"""
 	# Regex to capture qualifier, type, and name from declarations
-	_decl_pattern = re.compile(r"\n(uniform|in|out|varying|const)\s+(\S+)\s+([^;]+).*?;")
+	_decl_pattern = re.compile(r"\n(?>layout\(location = ([0-9])\) )?(uniform|in|out|varying|const)\s+(\S+)\s+([^;]+).*?;")
 	# Regex to extract function bodies
 	_func_pattern = re.compile(
 		r'\n'                            # start at a newline
@@ -218,17 +219,18 @@ class BetterShader:
 	def _parse_file(self, filepath):
 		with open(filepath, 'r', encoding="utf8") as f:
 			text = f.read()
-
+		
 		decls = self._decl_pattern.findall(text)
-		for qual, typ, name in decls:
+		for loc, qual, typ, name in decls:
+			#print(loc, qual, type, name)
 			if qual == 'uniform':
 				self.uniforms.append((typ, name))
 			elif qual == 'varying':
 				self.varyings.append((typ, name))
 			elif qual == 'in':
-				self.ins.append((typ, name))
+				self.ins.append( (loc, typ, name) )
 			elif qual == 'out':
-				self.outs.append((typ, name))
+				self.outs.append( (loc, typ, name) )
 			elif qual == 'const':
 				self.consts.append((typ, name))
 
@@ -237,20 +239,29 @@ class BetterShader:
 		for i, f in enumerate(self.functions):
 			if f.startswith(self._vertex_start): self._vertex_body = i
 			elif f.startswith(self._fragment_start): self._fragment_body = i
+	
 
 
 	def _generate_glsl(self):
+		
+		def inoutFmt(loc, typ, name, inoutStr):
+			return (f'layout(location = {loc}) ' if loc else '') + f'{inoutStr} {typ} {name};'
+		def inStr(input):
+			return inoutFmt(*input, 'in')
+		def outStr(input):
+			return inoutFmt(*input, 'out')
+		
 		# Vertex Shader
 		if hasattr(self, '_vertex_body'):
-			v_lines = [
+			v_lines = (
 			self._opengl_version, '',
-			*map(lambda kv: f'in {kv[0]} {kv[1]};', self.ins), '',
+			*map(inStr, self.ins), '',
 			*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms), '',
 			*map(lambda kv: f'out {kv[0]} {kv[1]};', self.varyings), '',
 			*map(lambda kv: f'const {kv[0]} {kv[1]};', self.consts), '',
 			*self.functions[:self._vertex_body], '',
 			self.functions[self._vertex_body].replace(self._vertex_start, self._main_start)
-			]
+			)
 			self.vertex_glsl = '\n'.join(v_lines)
 		
 		# will use the default vertex shader
@@ -262,15 +273,18 @@ class BetterShader:
 		  self.functions[i] for i in range(self._vertex_body+1,len(self.functions))
 		  if i != self._fragment_body
 		]
+		
 
 		# Fragment Shader
 		f_lines = [
 		self._opengl_version, '',
 		*map(lambda kv: f'in {kv[0]} {kv[1]};', self.varyings), '',
 		*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms), '',
-		*map(lambda kv: f'out {kv[0]} {kv[1]};', self.outs), '',
+		*map(outStr, self.outs), '',
 		*map(lambda kv: f'const {kv[0]} {kv[1]};', self.consts), '',
 		*functions_after_vertex_but_not_fragment, '',
 		self.functions[self._fragment_body].replace(self._fragment_start, self._main_start)
 		]
 		self.fragment_glsl = '\n'.join(f_lines)
+		
+		#print(self.vertex_glsl, self.fragment_glsl)

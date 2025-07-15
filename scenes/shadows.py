@@ -90,11 +90,12 @@ def load_shaders():
         print(newShader.functions[newShader._fragment_body])
 
 
-WINDOW_SIZE = Vector2(800, 500)
+WINDOW_w, WINDOW_h = 800, 500
 rl.SetConfigFlags(rl.FLAG_MSAA_4X_HINT) #|rl.FLAG_WINDOW_RESIZABLE)
-rl.InitWindow(int(WINDOW_SIZE.x), int(WINDOW_SIZE.y), b"Hello")
+rl.InitWindow(WINDOW_w, WINDOW_h, b"Hello")
 rl.SetTargetFPS(60)
 
+AO_buffer = su.create_render_buffer(int(WINDOW_w), int(WINDOW_h), depth_map=True)
 
 sceneShader = None
 shadowMeshShader = None
@@ -136,12 +137,6 @@ su.SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
 
 #anims = su.LoadModelAnimations(model_root + b'mixamo_toon_girl.glb')
 #animFrameCounter = 0
-
-
-AO_buffer = su.create_render_buffer(int(WINDOW_SIZE.x/2), int(WINDOW_SIZE.y/2))
-main_fbo_id = 0
-rl.rlFramebufferAttach(main_fbo_id, AO_buffer.texture.id, rl.RL_ATTACHMENT_COLOR_CHANNEL0, rl.RL_ATTACHMENT_RENDERBUFFER, 0)
-rl.rlActiveDrawBuffers(2)
 
 def run():
     global camera, unused_camera
@@ -186,16 +181,26 @@ def run():
                     (0, 0, shadowmap.texture.width, -shadowmap.texture.height), (0, 0), rl.WHITE);
                 rl.EndTextureMode()
                 read_buffer, write_buffer = write_buffer, read_buffer
+
+        # main camera
         
+        # z prepass / AO
+        rl.BeginTextureMode(AO_buffer)
+        rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
+        rl.BeginMode3D(camera)
+        rl.ClearBackground(rl.WHITE)
+        with prepassShader:
+            draw_scene(prepassShader)
+        # TODO : compute AO
+        rl.EndTextureMode()
+        rl.EndMode3D()
+
+        #rlBlitFramebuffer(int srcX, int srcY, int srcWidth, int srcHeight, int dstX, int dstY, int dstWidth, int dstHeight, int bufferMask)
+        rl.rlBlitFramebuffer(0, 0, WINDOW_w, WINDOW_h, 0, 0, WINDOW_w, WINDOW_h, 32768) # GL_DEPTH_BUFFER_BIT
+
         rl.BeginDrawing()
         rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
         rl.BeginMode3D(camera)
-
-        with prepassShader:
-            draw_scene(prepassShader)
-
-        # TODO: use preprass to compute AO in ambientOcclusion_buffer
-
         rl.ClearBackground(rl.WHITE)
 
         with sceneShader:
@@ -215,19 +220,18 @@ def run():
     rl.CloseWindow()
 
 
+rotation = 0
 def draw_shadowmap():
-    display_size = WINDOW_SIZE.x / 5.0
+    display_size = WINDOW_w / 5.0
     display_scale = display_size / float(shadowmap.depth.width)
-    rotation = 0
-    rl.DrawTextureEx(shadowmap.texture, Vector2(WINDOW_SIZE.x - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
-    rl.DrawTextureEx(shadowmap_blurbuffer.texture, Vector2(WINDOW_SIZE.x - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
-    rl.DrawTextureEx(shadowmap.depth, Vector2(WINDOW_SIZE.x - display_size, 2 * display_size), rotation, display_scale, rl.RAYWHITE)
-
+    rl.DrawTextureEx(shadowmap.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
+    rl.DrawTextureEx(shadowmap_blurbuffer.texture, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
+    rl.DrawTextureEx(shadowmap.depth, Vector2(WINDOW_w - display_size, 2 * display_size), rotation, display_scale, rl.RAYWHITE)
 def draw_AO():
-    display_size = WINDOW_SIZE.x / 5.0
+    display_size = WINDOW_w / 5.0
     display_scale = display_size / float(AO_buffer.texture.width)
-    rotation = 0
-    rl.DrawTextureEx(AO_buffer.texture, Vector2(WINDOW_SIZE.x - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
+    rl.DrawTextureEx(AO_buffer.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
+    rl.DrawTextureEx(AO_buffer.depth, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
 
 orbit = True
 def inputs():
