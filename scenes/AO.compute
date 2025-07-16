@@ -1,0 +1,26 @@
+
+
+in vec3 vertexPosition;
+in vec2 vertexTexCoord;
+in vec3 vertexNormal;
+in vec4 vertexColor;
+
+uniform mat4 mvp;
+
+void vertex(){
+	fragTexCoord = vertexTexCoord;
+	vec4 vertex = vec4(vertexPosition, 1);
+	vertex = mvp*vertex;
+	gl_Position = vertex;
+}
+
+varying vec2 fragTexCoord;
+
+uniform sampler2D texture0; // normals
+
+out vec4 finalColor;
+
+void fragment() {
+	vec3 normal = texture(texture0, fragTexCoord).rgb;
+	finalColor = vec4(normal, 0.2);
+}

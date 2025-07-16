@@ -65,6 +65,7 @@ def load_shaders():
 	global shadowBlurShader
 	global sceneShader
 	global prepassShader
+	global AOshader
 
 	try:
 		newShader = su.BetterShader('scenes/shadowmesh.shader');
@@ -82,12 +83,16 @@ def load_shaders():
 		newShader = su.BetterShader('scenes/prepass.shader')
 		if newShader.valid(): prepassShader = newShader
 		else: raise Exception('prepass.shader')
+		
+		newShader = su.BetterShader('scenes/AO.compute')
+		if newShader.valid(): AOshader = newShader
+		else: raise Exception('AO.compute')
 
 	except Exception as ex:
 		print('--------------> failed compiling', ex.args[0])
-		print(newShader.functions[newShader._vertex_body])
+		print(newShader.vertex_glsl)
 		print('______________________')
-		print(newShader.functions[newShader._fragment_body])
+		print(newShader.fragment_glsl)
 
 
 WINDOW_w, WINDOW_h = 800, 500
@@ -98,12 +103,17 @@ rl.SetTargetFPS(60)
 
 prepass_w, prepass_h = WINDOW_w, WINDOW_h # 400, 250
 prepass_buffer = su.create_render_buffer(prepass_w, prepass_h, depth_map=True)
+#prepass_buffer = rl.LoadRenderTexture(prepass_w, prepass_h)
 
 sceneShader = None
 shadowMeshShader = None
 shadowBlurShader = None
 prepassShader = None
+AOshader = None
 load_shaders()
+print(AOshader.vertex_glsl)
+print('______________________')
+print(AOshader.fragment_glsl)
 
 camera_dist = 30
 camera_nearFar = (0.1, 1000.0)
@@ -179,8 +189,7 @@ def run():
 				rl.BeginTextureMode(write_buffer)
 				shadowBlurShader.stepSize = step
 				# screen-wide rectangle, y-flipped due to default OpenGL coordinates
-				rl.DrawTextureRec(read_buffer.texture,
-					(0, 0, shadowmap.texture.width, -shadowmap.texture.height), (0, 0), rl.WHITE);
+				rl.DrawTextureRec(read_buffer.texture, (0, 0, SM_SIZE, -SM_SIZE), (0, 0), rl.WHITE);
 				rl.EndTextureMode()
 				read_buffer, write_buffer = write_buffer, read_buffer
 
@@ -215,7 +224,12 @@ def run():
 		
 		rl.EndMode3D()
 		
-		# TODO : compute AO
+		# AO
+		# NOTE: maybe move it to sceneShader eventually
+		#rl.BeginTextureMode(prepass_buffer)
+		with AOshader:
+			rl.DrawTextureRec(prepass_buffer.texture, (0, 0, prepass_w, -prepass_h), (0, 0), rl.WHITE)
+		#rl.EndTextureMode()
 		
 		#draw_shadowmap()
 		draw_prepass()
