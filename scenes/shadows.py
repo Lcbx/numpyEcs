@@ -96,8 +96,8 @@ WINDOW_w, WINDOW_h = 800, 500
 rl.InitWindow(WINDOW_w, WINDOW_h, b"Hello")
 rl.SetTargetFPS(60)
 
-AO_w, AO_h = WINDOW_w, WINDOW_h # 400, 250
-AO_buffer = su.create_render_buffer(AO_w, AO_h, depth_map=True)
+prepass_w, prepass_h = WINDOW_w, WINDOW_h # 400, 250
+prepass_buffer = su.create_render_buffer(prepass_w, prepass_h, depth_map=True)
 
 sceneShader = None
 shadowMeshShader = None
@@ -185,20 +185,20 @@ def run():
 				read_buffer, write_buffer = write_buffer, read_buffer
 
 		# main camera
+		# TODO : don't do frustum culling twice (prepass + main pass)
 		
 		# z prepass / AO
-		rl.BeginTextureMode(AO_buffer)
+		rl.BeginTextureMode(prepass_buffer)
 		rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
 		rl.BeginMode3D(camera)
 		rl.ClearBackground(rl.WHITE)
 		su.SetPolygonOffset(1)
 		with prepassShader:
 			draw_scene(prepassShader)
-		# TODO : compute AO
 		rl.EndMode3D()
 		rl.EndTextureMode()
 		
-		su.TransferDepth(AO_buffer.id, AO_w, AO_h, 0, WINDOW_w, WINDOW_h)
+		su.TransferDepth(prepass_buffer.id, prepass_w, prepass_h, 0, WINDOW_w, WINDOW_h)
 		
 		rl.BeginDrawing()
 		rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
@@ -215,8 +215,10 @@ def run():
 		
 		rl.EndMode3D()
 		
+		# TODO : compute AO
+		
 		#draw_shadowmap()
-		draw_AO()
+		draw_prepass()
 		rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count} ".encode('utf-8'), 10, 10, 20, rl.LIGHTGRAY)
 		
 		rl.EndDrawing()
@@ -230,11 +232,11 @@ def draw_shadowmap():
 	rl.DrawTextureEx(shadowmap.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
 	rl.DrawTextureEx(shadowmap_blurbuffer.texture, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
 	rl.DrawTextureEx(shadowmap.depth, Vector2(WINDOW_w - display_size, 2 * display_size), rotation, display_scale, rl.RAYWHITE)
-def draw_AO():
+def draw_prepass():
 	display_size = WINDOW_w / 5.0
-	display_scale = display_size / float(AO_buffer.texture.width)
-	rl.DrawTextureEx(AO_buffer.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
-	rl.DrawTextureEx(AO_buffer.depth, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
+	display_scale = display_size / float(prepass_buffer.texture.width)
+	rl.DrawTextureEx(prepass_buffer.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
+	rl.DrawTextureEx(prepass_buffer.depth, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
 
 orbit = True
 def inputs():

@@ -1,0 +1,7 @@
+* implement AO
+* implement msaa
+* add frustum culling
+* batch same shader calls (raylib does so for static meshes under the hood iirc)
+* use openAL for binaural audio
+* use bullet for physics (at first ; maybe migrate to ctypes & jolt later)
+* add a particle system
