@@ -7,6 +7,7 @@ in vec4 vertexColor;
 
 uniform mat4 matModel;
 uniform mat4 mvp;
+uniform vec4 colDiffuse; // tint
 
 uniform mat4 lightVP;
 
@@ -18,7 +19,7 @@ varying vec4 fragShadowClipSpace;
 
 void vertex(){
 	fragTexCoord = vertexTexCoord;
-	fragColor = vertexColor;
+	fragColor = vertexColor * colDiffuse;
 	fragNormal = normalize(mat3(matModel) * vertexNormal);
 	
 	vec4 vertex = vec4(vertexPosition, 1.0);

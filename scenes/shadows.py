@@ -111,9 +111,6 @@ shadowBlurShader = None
 prepassShader = None
 AOshader = None
 load_shaders()
-print(AOshader.vertex_glsl)
-print('______________________')
-print(AOshader.fragment_glsl)
 
 camera_dist = 30
 camera_nearFar = (0.1, 1000.0)
@@ -143,9 +140,9 @@ shadowmap_blurbuffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADO
 
 # model
 model_root = b'C:/Users/lucco/Desktop/pythonEngine/scenes/resources/'
-model = rl.LoadModel(model_root + b'turret.obj')
-model_albedo = rl.LoadTexture(model_root + b'turret_diffuse.png')
-su.SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
+model = rl.LoadModel(model_root + b'teapot.obj')
+#model_albedo = rl.LoadTexture(model_root + b'turret_diffuse.png')
+#su.SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
 
 #anims = su.LoadModelAnimations(model_root + b'mixamo_toon_girl.glb')
 #animFrameCounter = 0
@@ -228,11 +225,12 @@ def run():
 		# NOTE: maybe move it to sceneShader eventually
 		#rl.BeginTextureMode(prepass_buffer)
 		with AOshader:
+			AOshader.DepthMap = prepass_buffer.texture
 			rl.DrawTextureRec(prepass_buffer.texture, (0, 0, prepass_w, -prepass_h), (0, 0), rl.WHITE)
 		#rl.EndTextureMode()
 		
-		#draw_shadowmap()
-		draw_prepass()
+		draw_shadowmap()
+		#draw_prepass()
 		rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count} ".encode('utf-8'), 10, 10, 20, rl.LIGHTGRAY)
 		
 		rl.EndDrawing()
@@ -323,8 +321,9 @@ def draw_scene(shader:su.BetterShader, randomize_color=False):
 	with shader:
 		for i in range(model.materialCount):
 			model.materials[i].shader = shader.shader
+		scale = 0.4
 		# model, position, rotation axis, rotation (deg), scale, tint
-		rl.DrawModelEx(model, Vector3(0,0.5,0), Vector3(1,0,0), 0.0, Vector3(1.0,1.0,1.0), rl.WHITE)
+		rl.DrawModelEx(model, Vector3(0,4,0), Vector3(1,0,0), 0.0, Vector3(scale,scale,scale), rl.BEIGE)
 
 		ents = world.where(Position, Mesh, BoundingBox)
 		pos_vec, mesh_vec, bb_vec, = (positions.get_vector(ents), meshes.get_vector(ents), bboxes.get_vector(ents))
@@ -333,7 +332,7 @@ def draw_scene(shader:su.BetterShader, randomize_color=False):
 		sizes = bmaxs - bmins
 		centers = pos_vec + (bmaxs + bmins) * 0.5
 		meshIds = ents / np.max(ents)
-
+		
 		for meshId, center, size, mesh in zip(meshIds, centers, sizes, mesh_vec):
 			rl.DrawCube(
 				tuple(center),

@@ -17,5 +17,5 @@ void vertex(){
 
 out vec4 outAO;
 void fragment() {
-	outAO = vec4(fragNormal,  1);
+	outAO = vec4(fragNormal * 0.5 + 0.5, 1);
 }
