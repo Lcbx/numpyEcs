@@ -95,15 +95,11 @@ def load_shaders():
 		print(newShader.fragment_glsl)
 
 
-WINDOW_w, WINDOW_h = 800, 500
+WINDOW_w, WINDOW_h = 1000, 650
 # NOTE: using MSAA with prepass generate z-artifacts
 #rl.SetConfigFlags(rl.FLAG_MSAA_4X_HINT) #|rl.FLAG_WINDOW_RESIZABLE)
 rl.InitWindow(WINDOW_w, WINDOW_h, b"Hello")
 rl.SetTargetFPS(60)
-
-prepass_w, prepass_h = WINDOW_w, WINDOW_h # 400, 250
-prepass_buffer = su.create_render_buffer(prepass_w, prepass_h, depth_map=True)
-#prepass_buffer = rl.LoadRenderTexture(prepass_w, prepass_h)
 
 sceneShader = None
 shadowMeshShader = None
@@ -133,10 +129,15 @@ light_camera = Camera3D(
 
 unused_camera = None
 
+prepass_buffer = su.create_render_buffer(WINDOW_w, WINDOW_h, depth_map=True)
+AO_w, AO_h = WINDOW_w, WINDOW_h #WINDOW_w//2, WINDOW_h//2
+AO_buffer = su.create_render_buffer(AO_w, AO_h, rl.PIXELFORMAT_UNCOMPRESSED_R16)
+
 SM_SIZE = 2048
 SHADOW_FORMAT = rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32
-shadowmap = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT, depth_map=True)
-shadowmap_blurbuffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT)
+shadow_buffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT, depth_map=True)
+shadow_buffer2 = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT)
+
 
 # model
 model_root = b'C:/Users/lucco/Desktop/pythonEngine/scenes/resources/'
@@ -156,9 +157,9 @@ def run():
 		inputs()
 		update(frameTime)
 
-		# write shadowmap
+		# write shadow_buffer
 
-		rl.BeginTextureMode(shadowmap)
+		rl.BeginTextureMode(shadow_buffer)
 		rl.rlSetClipPlanes(light_nearFar[0], light_nearFar[1])
 		rl.BeginMode3D(light_camera)
 		rl.ClearBackground(rl.WHITE)
@@ -176,8 +177,8 @@ def run():
 		rl.EndTextureMode()
 
 		# blur passes
-		read_buffer = shadowmap
-		write_buffer = shadowmap_blurbuffer
+		read_buffer = shadow_buffer
+		write_buffer = shadow_buffer2
 		step = 16.0/float(SM_SIZE)
 		last = 1.0 /float(SM_SIZE)
 		with shadowBlurShader:
@@ -197,40 +198,53 @@ def run():
 		rl.BeginTextureMode(prepass_buffer)
 		rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
 		rl.BeginMode3D(camera)
+		proj = rl.rlGetMatrixProjection()
 		rl.ClearBackground(rl.WHITE)
 		su.SetPolygonOffset(1)
 		with prepassShader:
 			draw_scene(prepassShader)
 		rl.EndMode3D()
 		rl.EndTextureMode()
+		su.DisablePolygonOffset()
 		
-		su.TransferDepth(prepass_buffer.id, prepass_w, prepass_h, 0, WINDOW_w, WINDOW_h)
+		# AO
+		# seems to sample only part of prepass ?
+		#rl.BeginTextureMode(AO_buffer)
+		#with AOshader:
+		#	#AOshader.proj = proj
+		#	AOshader.projScale = rl.MatrixToFloatV(proj).v[4+1] # matrix[1][1]
+		#	AOshader.invProj = rl.MatrixInvert(proj)
+		#	AOshader.DepthMap = prepass_buffer.depth
+		#	rl.DrawTextureRec(prepass_buffer.texture, (0, 0, WINDOW_w, -WINDOW_h), (0, 0), rl.WHITE);
+		#	#AOshader.texture0 = prepass_buffer.texture
+		#	#rl.DrawRectangle(0, 0, AO_w, AO_h, rl.WHITE)
+		#rl.EndTextureMode()
+		
+		su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
 		
 		rl.BeginDrawing()
 		rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
 		rl.BeginMode3D(camera)
-		su.DisablePolygonOffset()
 		su.ClearColorBuffer() # do not clear depth !
-		
 		with sceneShader:
 			sceneShader.lightDir = lightDir
 			sceneShader.lightVP  = lightVP
-			sceneShader.shadowDepthMap = shadowmap.depth
+			sceneShader.shadowDepthMap = shadow_buffer.depth
 			sceneShader.shadowPenumbraMap = read_buffer.texture
+			sceneShader.ambientOcclusionMap = AO_buffer.texture
 			draw_scene(sceneShader)
-		
 		rl.EndMode3D()
 		
-		# AO
-		# NOTE: maybe move it to sceneShader eventually
-		#rl.BeginTextureMode(prepass_buffer)
-		with AOshader:
-			AOshader.DepthMap = prepass_buffer.texture
-			rl.DrawTextureRec(prepass_buffer.texture, (0, 0, prepass_w, -prepass_h), (0, 0), rl.WHITE)
-		#rl.EndTextureMode()
 		
-		draw_shadowmap()
-		#draw_prepass()
+		with AOshader:
+			#AOshader.proj = proj
+			AOshader.projScale = rl.MatrixToFloatV(proj).v[4+1] # matrix[1][1]
+			AOshader.invProj = rl.MatrixInvert(proj)
+			AOshader.DepthMap = prepass_buffer.depth
+			rl.DrawTextureRec(prepass_buffer.texture, (0, 0, WINDOW_w, -WINDOW_h), (0, 0), rl.WHITE);
+		
+		#draw_shadow_buffer()
+		draw_prepass()
 		rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count} ".encode('utf-8'), 10, 10, 20, rl.LIGHTGRAY)
 		
 		rl.EndDrawing()
@@ -238,17 +252,18 @@ def run():
 
 
 rotation = 0
-def draw_shadowmap():
+def draw_shadow_buffer():
 	display_size = WINDOW_w / 5.0
-	display_scale = display_size / float(shadowmap.depth.width)
-	rl.DrawTextureEx(shadowmap.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
-	rl.DrawTextureEx(shadowmap_blurbuffer.texture, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
-	rl.DrawTextureEx(shadowmap.depth, Vector2(WINDOW_w - display_size, 2 * display_size), rotation, display_scale, rl.RAYWHITE)
+	display_scale = display_size / float(shadow_buffer.depth.width)
+	rl.DrawTextureEx(shadow_buffer.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
+	rl.DrawTextureEx(shadow_buffer2.texture, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
+	rl.DrawTextureEx(shadow_buffer.depth, Vector2(WINDOW_w - display_size, 2 * display_size), rotation, display_scale, rl.RAYWHITE)
 def draw_prepass():
 	display_size = WINDOW_w / 5.0
 	display_scale = display_size / float(prepass_buffer.texture.width)
 	rl.DrawTextureEx(prepass_buffer.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
-	rl.DrawTextureEx(prepass_buffer.depth, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
+	display_scale = display_size / float(AO_buffer.texture.width)
+	rl.DrawTextureEx(AO_buffer.texture, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
 
 orbit = True
 def inputs():

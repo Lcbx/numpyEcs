@@ -32,8 +32,9 @@ void vertex(){
 uniform sampler2D texture0;			// diffuse
 
 uniform vec3 lightDir;
-uniform sampler2D shadowDepthMap;	  // classic depth map (R channel)
+uniform sampler2D shadowDepthMap;	   // classic depth map (R channel)
 uniform sampler2D shadowPenumbraMap;   // RGB: [meshID, distX, distY]
+uniform sampler2D ambientOcclusionMap; // R: intensity
 
 out vec4 finalColor;
 
@@ -126,7 +127,7 @@ void fragment() {
 	shadow /= float(OFFSETS_LEN + CENTER_WEIGHT);
 
 	// blinn-phong (in view-space)
-	float AmbientOcclusion = 1.0; // TODO: calculate AO
+	float AmbientOcclusion = texture(ambientOcclusionMap, fragTexCoord).r; // TODO : multisample ?
 	vec3 ambient = vec3(0.3 * albedo * AmbientOcclusion); // here we add occlusion factor
 	vec3 lighting = ambient; 
 	
