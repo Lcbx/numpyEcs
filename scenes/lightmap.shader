@@ -100,6 +100,7 @@ float get_shadow(vec3 proj){
 
 const float CENTER_WEIGHT = 3;
 const int OFFSETS_LEN = 4;
+const float INV_WEIGHTS = 1.0 / float(OFFSETS_LEN + CENTER_WEIGHT);
 const vec2 OFFSETS[OFFSETS_LEN] = vec2[OFFSETS_LEN](
 	vec2( 0.7,  -0.7),  vec2(0.7,  0.7),
 	vec2( -0.7,  0.7),  vec2( -0.7, -0.7)
@@ -118,17 +119,26 @@ void fragment() {
 
 	float shadow = get_shadow(proj);
 
-	vec2 filterRadius = vec2(1.0)/textureSize(shadowDepthMap,0);
+	vec2 pixelUvSize = vec2(1)/textureSize(shadowDepthMap,0);
 	shadow *= CENTER_WEIGHT;
 	for (int i = 0; i < OFFSETS_LEN; ++i) {
-		vec2 offs = OFFSETS[i] * filterRadius;
+		vec2 offs = OFFSETS[i] * pixelUvSize;
 		shadow += get_shadow(vec3(proj.xy + offs, proj.z));
 	}
-	shadow /= float(OFFSETS_LEN + CENTER_WEIGHT);
+	shadow *= INV_WEIGHTS;
 
 	// blinn-phong (in view-space)
-	float AmbientOcclusion = texture(ambientOcclusionMap, fragTexCoord).r; // TODO : multisample ?
-	vec3 ambient = vec3(0.3 * albedo * AmbientOcclusion); // here we add occlusion factor
+	pixelUvSize = vec2(1)/textureSize(ambientOcclusionMap,0); // * 0.5; // not sure why I have to divide by 2
+	vec2 viewUV = gl_FragCoord.xy * pixelUvSize;
+	float occlusion = texture(ambientOcclusionMap, viewUV).r;
+	occlusion *= CENTER_WEIGHT;
+	for (int i = 0; i < OFFSETS_LEN; ++i) {
+		vec2 offs = OFFSETS[i] * pixelUvSize;
+		occlusion += texture(ambientOcclusionMap, viewUV + offs).r;
+	}
+	occlusion *= INV_WEIGHTS;
+	
+	vec3 ambient = vec3(0.3 * albedo.rgb * occlusion); // here we add occlusion factor
 	vec3 lighting = ambient; 
 	
 	// TODO : accumulate per light
@@ -151,6 +161,8 @@ void fragment() {
 	lighting += diffuse * albedo.rgb; // = diffuse * light.Color * attenuation;
 	lighting += vec3(specular) * 0.1; // = light.Color * specular * attenuation;
 
-	finalColor = vec4(lighting, albedo.a);
+	//finalColor = vec4(lighting, albedo.a);
+	finalColor = vec4( (0.5 + albedo.rgb) * occlusion * 0.5, albedo.a);
 	//finalColor = vec4(vec3(1)*shadow, 1);
+	//finalColor = vec4(texture(ambientOcclusionMap, viewUV).rgb, 1);
 }
