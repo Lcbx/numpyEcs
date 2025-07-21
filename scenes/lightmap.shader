@@ -43,7 +43,7 @@ float random(vec2 co) {
 }
 
 bool between(vec2 v, vec2 bottomLeft, vec2 topRight){
-	vec2 s = step(bottomLeft, v) - step(topRight, v);			 
+	vec2 s = step(bottomLeft, v) - step(topRight, v);
 	return bool(s.x * s.y);
 }
 
@@ -128,7 +128,8 @@ void fragment() {
 	shadow *= INV_WEIGHTS;
 
 	// blinn-phong (in view-space)
-	pixelUvSize = vec2(1)/textureSize(ambientOcclusionMap,0); // * 0.5; // not sure why I have to divide by 2
+	pixelUvSize = vec2(1)/textureSize(ambientOcclusionMap,0);
+	//pixelUvSize *= 0.5; // not sure why I have to divide by 2
 	vec2 viewUV = gl_FragCoord.xy * pixelUvSize;
 	float occlusion = texture(ambientOcclusionMap, viewUV).r;
 	occlusion *= CENTER_WEIGHT;
@@ -138,7 +139,10 @@ void fragment() {
 	}
 	occlusion *= INV_WEIGHTS;
 	
-	vec3 ambient = vec3(0.3 * albedo.rgb * occlusion); // here we add occlusion factor
+	//occlusion = min(1, 1 / occlusion - 0.5);
+	
+	vec3 ambient = vec3(0.35 * albedo.rgb);
+	ambient *= occlusion;
 	vec3 lighting = ambient; 
 	
 	// TODO : accumulate per light
@@ -160,9 +164,13 @@ void fragment() {
 	//float attenuation = 1.0 / (1.0 + light.Linear * dist + light.Quadratic * dist * dist);
 	lighting += diffuse * albedo.rgb; // = diffuse * light.Color * attenuation;
 	lighting += vec3(specular) * 0.1; // = light.Color * specular * attenuation;
+	
+	//lighting *= occlusion;
 
 	//finalColor = vec4(lighting, albedo.a);
+	
 	finalColor = vec4( (0.5 + albedo.rgb) * occlusion * 0.5, albedo.a);
+	//finalColor = vec4( vec3(occlusion) , albedo.a);
 	//finalColor = vec4(vec3(1)*shadow, 1);
 	//finalColor = vec4(texture(ambientOcclusionMap, viewUV).rgb, 1);
 }

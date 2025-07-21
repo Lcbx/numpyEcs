@@ -98,6 +98,7 @@ def load_shaders():
 WINDOW_w, WINDOW_h = 1000, 650
 # NOTE: using MSAA with prepass generate z-artifacts
 #rl.SetConfigFlags(rl.FLAG_MSAA_4X_HINT) #|rl.FLAG_WINDOW_RESIZABLE)
+rl.SetTraceLogLevel(rl.LOG_WARNING); 
 rl.InitWindow(WINDOW_w, WINDOW_h, b"Hello")
 rl.SetTargetFPS(60)
 
@@ -130,9 +131,9 @@ light_camera = Camera3D(
 unused_camera = None
 
 prepass_buffer = su.create_render_buffer(WINDOW_w, WINDOW_h, depth_map=True)
-AO_w, AO_h = WINDOW_w, WINDOW_h #WINDOW_w//2, WINDOW_h//2
+AO_w, AO_h = WINDOW_w, WINDOW_h
 #AO_w, AO_h = WINDOW_w//2, WINDOW_h//2
-AO_buffer = su.create_render_buffer(AO_w, AO_h) #, rl.PIXELFORMAT_UNCOMPRESSED_R16)
+AO_buffer = su.create_render_buffer(AO_w, AO_h, rl.PIXELFORMAT_UNCOMPRESSED_R16)
 
 SM_SIZE = 2048
 SHADOW_FORMAT = rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32
@@ -144,8 +145,8 @@ shadow_buffer2 = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORM
 model_root = b'C:/Users/lucco/Desktop/pythonEngine/scenes/resources/'
 #model = rl.LoadModel(model_root + b'teapot.obj')
 model = rl.LoadModel(model_root + b'turret.obj')
-model_albedo = rl.LoadTexture(model_root + b'turret_diffuse.png')
-su.SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
+#model_albedo = rl.LoadTexture(model_root + b'turret_diffuse.png')
+#su.SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
 
 #anims = su.LoadModelAnimations(model_root + b'mixamo_toon_girl.glb')
 #animFrameCounter = 0
@@ -210,16 +211,15 @@ def run():
 		su.DisablePolygonOffset()
 		
 		# AO
-		# seems to sample only part of prepass ?
+		su.GenTextureMipmaps(prepass_buffer.depth)
 		rl.BeginTextureMode(AO_buffer)
 		with AOshader:
-			#AOshader.proj = proj
-			AOshader.projScale = rl.MatrixToFloatV(proj).v[4+1] # matrix[1][1]
 			AOshader.invProj = rl.MatrixInvert(proj)
 			AOshader.DepthMap = prepass_buffer.depth
 			rl.DrawTextureRec(prepass_buffer.texture, (0, 0, WINDOW_w, -WINDOW_h), (0, 0), rl.WHITE);
 		rl.EndTextureMode()
 		
+		# transfer depth to main buffer for early z discard
 		su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
 		
 		rl.BeginDrawing()
@@ -336,9 +336,11 @@ def draw_scene(shader:su.BetterShader, randomize_color=False):
 	with shader:
 		for i in range(model.materialCount):
 			model.materials[i].shader = shader.shader
-		scale = 1
+		
 		# model, position, rotation axis, rotation (deg), scale, tint
+		#scale = 0.4
 		#rl.DrawModelEx(model, Vector3(0,4,0), Vector3(1,0,0), 0.0, Vector3(scale,scale,scale), rl.BEIGE)
+		scale = 1
 		rl.DrawModelEx(model, Vector3(0,0,0), Vector3(1,0,0), 0.0, Vector3(scale,scale,scale), rl.BEIGE)
 
 		ents = world.where(Position, Mesh, BoundingBox)

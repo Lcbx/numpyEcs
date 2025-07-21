@@ -159,6 +159,10 @@ def LoadModelAnimations(path : str):
 	anims = rl.LoadModelAnimations(path, anims_cnt)
 	return [anims[i] for i in range(anims_cnt[0])]
 
+def GenTextureMipmaps(texture : Texture):
+	tex_ptr = ffi.new(f'Texture*', texture)
+	rl.GenTextureMipmaps(tex_ptr)
+
 # NOTE: putting a smaller texture into a bigger one is not allowed
 def TransferDepth(from_fbo:int, f_w:int, f_h:int, to_fbo:int, t_w:int, t_h:int):
 	glBindFramebuffer(GL_READ_FRAMEBUFFER, from_fbo)
@@ -204,7 +208,7 @@ class BetterShader:
 		r'\n\}'                          # closing brace at column 0
 	)
 
-	_opengl_version = '#version 420'
+	_opengl_version = '#version 430'
 	_vertex_start = 'void vertex()'
 	_fragment_start = 'void fragment()'
 	_main_start = 'void main()'
