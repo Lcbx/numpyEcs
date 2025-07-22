@@ -103,7 +103,7 @@ def load_shaders():
 WINDOW_w, WINDOW_h = 1000, 650
 # NOTE: using MSAA with prepass generate z-artifacts
 #rl.SetConfigFlags(rl.FLAG_MSAA_4X_HINT) #|rl.FLAG_WINDOW_RESIZABLE)
-rl.SetTraceLogLevel(rl.LOG_WARNING); 
+rl.SetTraceLogLevel(rl.LOG_WARNING)
 rl.InitWindow(WINDOW_w, WINDOW_h, b"Hello")
 rl.SetTargetFPS(60)
 
@@ -151,8 +151,8 @@ shadow_buffer2 = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORM
 model_root = b'C:/Users/lucco/Desktop/pythonEngine/scenes/resources/'
 #model = rl.LoadModel(model_root + b'teapot.obj')
 model = rl.LoadModel(model_root + b'turret.obj')
-#model_albedo = rl.LoadTexture(model_root + b'turret_diffuse.png')
-#su.SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
+model_albedo = rl.LoadTexture(model_root + b'turret_diffuse.png')
+su.SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
 
 #anims = su.LoadModelAnimations(model_root + b'mixamo_toon_girl.glb')
 #animFrameCounter = 0
@@ -163,87 +163,95 @@ def run():
 
 		frameTime = rl.GetFrameTime()
 		
-		inputs()
-		update(frameTime)
-
-		# write shadow_buffer
-
-		rl.BeginTextureMode(shadow_buffer)
-		rl.rlSetClipPlanes(light_nearFar[0], light_nearFar[1])
-		rl.BeginMode3D(light_camera)
-		rl.ClearBackground(rl.WHITE)
-		su.SetPolygonOffset(1)
+		with su.WatchTimer('update'):
+			inputs()
+			update(frameTime)
 		
-		lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
-		lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
-		
-		with shadowMeshShader:
-			draw_scene(shadowMeshShader,randomize_color=True)
-		
-		su.DisablePolygonOffset()
-		rl.EndMode3D()
-		rl.EndTextureMode()
-
-		# blur passes
-		read_buffer = shadow_buffer
-		write_buffer = shadow_buffer2
-		step = 16.0/float(SM_SIZE)
-		last = 1.0 /float(SM_SIZE)
-		with shadowBlurShader:
-			while step > last:
-				step /= 2.0
-				rl.BeginTextureMode(write_buffer)
-				shadowBlurShader.stepSize = step
-				# screen-wide rectangle, y-flipped due to default OpenGL coordinates
-				rl.DrawTextureRec(read_buffer.texture, (0, 0, SM_SIZE, -SM_SIZE), (0, 0), rl.WHITE);
+		with su.WatchTimer('total draw'):
+			
+			with su.WatchTimer('shadow'):
+				# write shadow_buffer
+				rl.BeginTextureMode(shadow_buffer)
+				rl.rlSetClipPlanes(light_nearFar[0], light_nearFar[1])
+				rl.BeginMode3D(light_camera)
+				rl.ClearBackground(rl.WHITE)
+				su.SetPolygonOffset(1)
+				
+				lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
+				lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
+				
+				with shadowMeshShader:
+					draw_scene(shadowMeshShader,randomize_color=True)
+				
+				su.DisablePolygonOffset()
+				rl.EndMode3D()
 				rl.EndTextureMode()
-				read_buffer, write_buffer = write_buffer, read_buffer
 
-		# main camera
-		# TODO : don't do frustum culling twice (prepass + main pass)
+				# blur passes
+				read_buffer = shadow_buffer
+				write_buffer = shadow_buffer2
+				step = 16.0/float(SM_SIZE)
+				last = 1.0 /float(SM_SIZE)
+				with shadowBlurShader:
+					while step > last:
+						step /= 2.0
+						rl.BeginTextureMode(write_buffer)
+						shadowBlurShader.stepSize = step
+						# screen-wide rectangle, y-flipped due to default OpenGL coordinates
+						rl.DrawTextureRec(read_buffer.texture, (0, 0, SM_SIZE, -SM_SIZE), (0, 0), rl.WHITE);
+						rl.EndTextureMode()
+						read_buffer, write_buffer = write_buffer, read_buffer
+
+			# main camera
+			with su.WatchTimer('draw'):
+				# TODO : don't do frustum culling twice (prepass + main pass)
+				
+				# z prepass
+				with su.WatchTimer('prepass'):
+					rl.BeginTextureMode(prepass_buffer)
+					rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
+					rl.BeginMode3D(camera)
+					proj = rl.rlGetMatrixProjection()
+					rl.ClearBackground(rl.WHITE)
+					su.SetPolygonOffset(1)
+					with prepassShader:
+						draw_scene(prepassShader)
+					su.DisablePolygonOffset()
+					rl.EndMode3D()
+					rl.EndTextureMode()
+				
+				# AO
+				with su.WatchTimer('AO'):
+					su.GenTextureMipmaps(prepass_buffer.depth)
+					rl.BeginTextureMode(AO_buffer)
+					with AOshader:
+						AOshader.invProj = rl.MatrixInvert(proj)
+						rl.DrawTextureRec(prepass_buffer.depth, (0, 0, WINDOW_w, -WINDOW_h), (0, 0), rl.WHITE);
+					rl.EndTextureMode()
+					su.GenTextureMipmaps(AO_buffer.texture)
+				
+				with su.WatchTimer('main draw'):
+					# transfer depth to main buffer for early z discard
+					su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
+					
+					rl.BeginDrawing()
+					rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
+					rl.BeginMode3D(camera)
+					su.ClearColorBuffer() # do not clear depth !
+					with sceneShader:
+						sceneShader.lightDir = lightDir
+						sceneShader.lightVP  = lightVP
+						sceneShader.shadowDepthMap = shadow_buffer.depth
+						sceneShader.shadowPenumbraMap = read_buffer.texture
+						sceneShader.ambientOcclusionMap = AO_buffer.texture
+						draw_scene(sceneShader)
+					rl.EndMode3D()
+				
+				#draw_shadow_buffer()
+				draw_prepass()
+				rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count} ".encode('utf-8'), 10, 10, 20, rl.LIGHTGRAY)
 		
-		# z prepass / AO
-		rl.BeginTextureMode(prepass_buffer)
-		rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
-		rl.BeginMode3D(camera)
-		proj = rl.rlGetMatrixProjection()
-		rl.ClearBackground(rl.WHITE)
-		su.SetPolygonOffset(1)
-		with prepassShader:
-			draw_scene(prepassShader)
-		su.DisablePolygonOffset()
-		rl.EndMode3D()
-		rl.EndTextureMode()
-		
-		# AO
-		su.GenTextureMipmaps(prepass_buffer.depth)
-		rl.BeginTextureMode(AO_buffer)
-		with AOshader:
-			AOshader.invProj = rl.MatrixInvert(proj)
-			rl.DrawTextureRec(prepass_buffer.depth, (0, 0, WINDOW_w, -WINDOW_h), (0, 0), rl.WHITE);
-		rl.EndTextureMode()
-		su.GenTextureMipmaps(AO_buffer.texture)
-		
-		# transfer depth to main buffer for early z discard
-		su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
-		
-		rl.BeginDrawing()
-		rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
-		rl.BeginMode3D(camera)
-		su.ClearColorBuffer() # do not clear depth !
-		with sceneShader:
-			sceneShader.lightDir = lightDir
-			sceneShader.lightVP  = lightVP
-			sceneShader.shadowDepthMap = shadow_buffer.depth
-			sceneShader.shadowPenumbraMap = read_buffer.texture
-			sceneShader.ambientOcclusionMap = AO_buffer.texture
-			draw_scene(sceneShader)
-		rl.EndMode3D()
-		
-		#draw_shadow_buffer()
-		draw_prepass()
-		rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count} ".encode('utf-8'), 10, 10, 20, rl.LIGHTGRAY)
-		
+		# sleeps for vsync / target fps
 		rl.EndDrawing()
 	rl.CloseWindow()
 

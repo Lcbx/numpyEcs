@@ -160,7 +160,7 @@ void fragment() {
 
 	finalColor = vec4(lighting, albedo.a);
 	
-	//finalColor = vec4( (0.5 + albedo.rgb) * occlusion * 0.5, albedo.a);
+	//finalColor = vec4( (0.5 + fragColor.rgb) * occlusion * 0.5, albedo.a);
 	//finalColor = vec4( vec3(occlusion) , albedo.a);
 	//finalColor = vec4(vec3(1)*shadow, 1);
 	//finalColor = vec4(texture(ambientOcclusionMap, viewUV).rgb, 1);

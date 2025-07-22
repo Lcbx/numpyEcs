@@ -6,9 +6,10 @@ from pyray import ( Vector2, Vector3, Vector4,
 from OpenGL.GL import (
 	glBindFramebuffer, glBlitFramebuffer,
 	glClear, glEnable, glDisable, glPolygonOffset,
+	glBindTexture, glGenerateMipmap,
 	GL_READ_FRAMEBUFFER, GL_DRAW_FRAMEBUFFER,
 	GL_DEPTH_BUFFER_BIT, GL_COLOR_BUFFER_BIT, GL_NEAREST,
-	GL_POLYGON_OFFSET_FILL, GL_MULTISAMPLE
+	GL_POLYGON_OFFSET_FILL, GL_MULTISAMPLE, GL_TEXTURE_2D
 )
 
 import re
@@ -160,8 +161,9 @@ def LoadModelAnimations(path : str):
 	return [anims[i] for i in range(anims_cnt[0])]
 
 def GenTextureMipmaps(texture : Texture):
-	tex_ptr = ffi.new(f'Texture*', texture)
-	rl.GenTextureMipmaps(tex_ptr)
+	glBindTexture(GL_TEXTURE_2D, texture.id)
+	glGenerateMipmap(GL_TEXTURE_2D)
+	glBindTexture(GL_TEXTURE_2D, 0)
 
 # NOTE: putting a smaller texture into a bigger one is not allowed
 def TransferDepth(from_fbo:int, f_w:int, f_h:int, to_fbo:int, t_w:int, t_h:int):
@@ -325,3 +327,19 @@ class BetterShader:
 		self.fragment_glsl = '\n'.join(f_lines)
 		
 		#print(self.vertex_glsl, self.fragment_glsl)
+
+
+class WatchTimer:
+	nesting : int = 0
+	
+	def __init__(self, region:str):
+		self.region = region
+		self.start = 0
+		WatchTimer.nesting += 1
+	
+	def __enter__(self) -> None:
+		self.start = rl.GetTime()
+
+	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
+		WatchTimer.nesting -= 1
+		rl.TraceLog(rl.LOG_DEBUG, ('  ' * WatchTimer.nesting + f'{self.region} took { (rl.GetTime() - self.start) * 1000.0 :.2f}ms').encode('utf-8') )
