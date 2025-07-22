@@ -129,17 +129,8 @@ void fragment() {
 
 	// blinn-phong (in view-space)
 	pixelUvSize = vec2(1)/textureSize(ambientOcclusionMap,0);
-	//pixelUvSize *= 0.5; // not sure why I have to divide by 2
 	vec2 viewUV = gl_FragCoord.xy * pixelUvSize;
 	float occlusion = texture(ambientOcclusionMap, viewUV).r;
-	occlusion *= CENTER_WEIGHT;
-	for (int i = 0; i < OFFSETS_LEN; ++i) {
-		vec2 offs = OFFSETS[i] * pixelUvSize;
-		occlusion += texture(ambientOcclusionMap, viewUV + offs).r;
-	}
-	occlusion *= INV_WEIGHTS;
-	
-	//occlusion = min(1, 1 / occlusion - 0.5);
 	
 	vec3 ambient = vec3(0.35 * albedo.rgb);
 	ambient *= occlusion;
@@ -167,9 +158,9 @@ void fragment() {
 	
 	//lighting *= occlusion;
 
-	//finalColor = vec4(lighting, albedo.a);
+	finalColor = vec4(lighting, albedo.a);
 	
-	finalColor = vec4( (0.5 + albedo.rgb) * occlusion * 0.5, albedo.a);
+	//finalColor = vec4( (0.5 + albedo.rgb) * occlusion * 0.5, albedo.a);
 	//finalColor = vec4( vec3(occlusion) , albedo.a);
 	//finalColor = vec4(vec3(1)*shadow, 1);
 	//finalColor = vec4(texture(ambientOcclusionMap, viewUV).rgb, 1);

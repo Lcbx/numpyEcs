@@ -19,13 +19,13 @@ uniform mat4 invProj; // inverse proj matrix
 uniform sampler2D texture0;	// normals
 uniform sampler2D DepthMap;	// depth
 
-const int NUM_SAMPLES = 4;
+const int NUM_SAMPLES = 8;
 const int NUM_SPIRAL_TURNS = NUM_SAMPLES/2 + 1;
 
 const float PI =  3.141593;
 const float twoPI = 6.283186;
 
-const float radiusWS = 0.45;
+const float radiusWS = 0.5;
 const float radiusWS2 = radiusWS * radiusWS;
 const float invRadius2 = 1.0 / radiusWS2;
 const float bias = 0.1;
@@ -45,7 +45,8 @@ float randAngle()
 }
 
 vec3 getPositionVS(vec2 uv, int mip_level) {
-	float z = textureLod(DepthMap, uv, mip_level).x;
+	//float z = textureLod(DepthMap, uv, float(mip_level)).x; // lod level not working ?
+	float z = texelFetch(DepthMap, ivec2(uv * textureSize(DepthMap, mip_level)), mip_level).x;
 	vec3 clip = vec3(uv,z)*2.0 - vec3(1.0);
 	vec4 view = invProj * vec4(clip, 1);
 	return view.xyz / view.w;
@@ -82,8 +83,6 @@ float calculateAO(float vv, float vn)
 void fragment() {
 	
 	vec2 uv = fragTexCoord;
-	// doubling uv so it covers the whole screen
-	//uv *= 2.0;
 	
 	vec3 position = getPositionVS(uv, 0);
 	vec3 normal = normalize(texture(texture0, uv).xyz * 2.0 - vec3(1));
@@ -109,10 +108,8 @@ void fragment() {
 		vec2 uv2 = uv + disk * radius;
 		uv2 = clamp(uv2, 0.0, 1.0);
 		
-		// McGuire paper mip
-		int mipLevel = clamp(findMSB(int(radius * 1000.0)), 0, max_mip);
-		//mipLevel = max_mip;
-		//mipLevel = 0;
+		// McGuire mip
+		int mipLevel = clamp(findMSB(int(radius * 500.0)), 0, max_mip);
 		
 		vec3 Q = getPositionVS(uv2, mipLevel);
 		vec3 v = Q - position;
@@ -125,13 +122,17 @@ void fragment() {
 	occlusion *= invSamples;
 	occlusion *= intensity;
 	occlusion = 1.0 - occlusion;
-	occlusion = pow(occlusion, intensity);
-	//occlusion *= occlusion;
-	//occlusion *= occlusion;
+	//occlusion = pow(occlusion, intensity);
+	occlusion *= occlusion;
+	occlusion *= occlusion;
 	occlusion = clamp(occlusion, 0.0, 1.0);
 	
 	finalColor = vec4(vec3(occlusion), 1);
 	//finalColor = vec4(normal * 0.5 + 0.5, 1);
-	//finalColor = vec4(position*0.05 + 0.5,1);
+	//finalColor = vec4(getPositionVS(uv, 5)*0.05 + 0.5,1);
+	//finalColor = vec4(getPositionVS_px(ivec2(gl_FragCoord) >> 5, 5)*0.05 + 0.5,1);
+	//finalColor = vec4(getPositionVS(uv, findMSB(int(perspectiveRadius * 500.0)))*0.05 + 0.5,1);
+	//finalColor = vec4(vec3(max_mip * 0.1),1);
+	//finalColor = vec4(vec3(findMSB(int(perspectiveRadius * 1000.0)) * 0.1 ),1);
 	//finalColor = vec4(1);
 }

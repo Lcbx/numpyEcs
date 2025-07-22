@@ -133,7 +133,7 @@ unused_camera = None
 prepass_buffer = su.create_render_buffer(WINDOW_w, WINDOW_h, depth_map=True)
 AO_w, AO_h = WINDOW_w, WINDOW_h
 #AO_w, AO_h = WINDOW_w//2, WINDOW_h//2
-AO_buffer = su.create_render_buffer(AO_w, AO_h, rl.PIXELFORMAT_UNCOMPRESSED_R16)
+AO_buffer = su.create_render_buffer(AO_w, AO_h)#, rl.PIXELFORMAT_UNCOMPRESSED_R16)
 
 SM_SIZE = 2048
 SHADOW_FORMAT = rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32
