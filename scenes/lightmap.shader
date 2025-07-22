@@ -53,7 +53,6 @@ vec2 get_dir(vec2 encoded){
 
 float get_shadow(vec3 proj){
 
-	// determine occlusion
 	float fragmentDepth = proj.z;
 
 	float occluderDepth = texture(shadowDepthMap, proj.xy).r;
@@ -84,60 +83,61 @@ float get_shadow(vec3 proj){
 
 	float occlusionFactor = 1.5 - remoteOcclusionDist * 2.0;
 	f *= occlusionFactor;
-	//f *= occlusionFactor;
-
-	f *= 150.0; // pass the inverse of this as uniform named blur ?
-
-	//if(f < 0.8)
-	//{
-	//	float noise = random(gl_FragCoord.xy);
-	//	float noiseStrength = 0.2;
-	//	f *= (1.0 + noise * noiseStrength - noiseStrength * 0.5);
-	//}
+	f *= 150.0; // pass the inverse of this as uniform named shadow blur factor ?
 
 	return f;
 }
 
-const float CENTER_WEIGHT = 3;
+const float CENTER_WEIGHT = 2;
 const int OFFSETS_LEN = 4;
-const float INV_WEIGHTS = 1.0 / float(OFFSETS_LEN + CENTER_WEIGHT);
 const vec2 OFFSETS[OFFSETS_LEN] = vec2[OFFSETS_LEN](
 	vec2( 0.7,  -0.7),  vec2(0.7,  0.7),
 	vec2( -0.7,  0.7),  vec2( -0.7, -0.7)
 );
+const float INV_WEIGHTS = 1.0 / float(OFFSETS_LEN + CENTER_WEIGHT);
 
 void fragment() {
 	vec4 albedo = fragColor * texture(texture0, fragTexCoord);
-
+	
+	// 0 = in shadow, 1 = lit
+	float shadow = 1.0;
+	
 	// project into shadow‐map UV
 	vec3 proj = fragShadowClipSpace.xyz / fragShadowClipSpace.w;
 	proj = proj*0.5 + 0.5;
-	if (!between(proj.xy, vec2(0.0), vec2(1.0))) {
-		finalColor = albedo;
-		return;
+	if (between(proj.xy, vec2(0.0), vec2(1.0))) {
+		
+		shadow = get_shadow(proj);
+
+		vec2 pixelUvSize = vec2(1)/textureSize(shadowDepthMap,0);
+		shadow *= CENTER_WEIGHT;
+		for (int i = 0; i < OFFSETS_LEN; ++i) {
+			vec2 offs = OFFSETS[i] * pixelUvSize;
+			shadow += get_shadow(vec3(proj.xy + offs, proj.z));
+		}
+		shadow *= INV_WEIGHTS;
 	}
 
-	float shadow = get_shadow(proj);
-
-	vec2 pixelUvSize = vec2(1)/textureSize(shadowDepthMap,0);
-	shadow *= CENTER_WEIGHT;
-	for (int i = 0; i < OFFSETS_LEN; ++i) {
-		vec2 offs = OFFSETS[i] * pixelUvSize;
-		shadow += get_shadow(vec3(proj.xy + offs, proj.z));
-	}
-	shadow *= INV_WEIGHTS;
-
-	// blinn-phong (in view-space)
-	pixelUvSize = vec2(1)/textureSize(ambientOcclusionMap,0);
-	vec2 viewUV = gl_FragCoord.xy * pixelUvSize;
-	float occlusion = texture(ambientOcclusionMap, viewUV).r;
+	// expecting AO to be full size
+	ivec2 viewPx = ivec2(gl_FragCoord.xy);
+	float occlusion = texelFetch(ambientOcclusionMap, viewPx, 0).r;
 	
+	// smoothing
+	// TODO : use a simple blur instead of generating mipmaps
+	occlusion *= CENTER_WEIGHT;
+	for (int i = 0; i < OFFSETS_LEN; ++i) {
+		vec2 offs = OFFSETS[i] * 5.0;
+		occlusion += texelFetch(ambientOcclusionMap, (viewPx + ivec2(offs)) >> 1, 1).r;
+	}
+	occlusion *= INV_WEIGHTS;
+	
+	// blinn-phong
 	vec3 ambient = vec3(0.35 * albedo.rgb);
 	ambient *= occlusion;
 	vec3 lighting = ambient; 
 	
 	// TODO : accumulate per light
-	// TODO: tonemapping
+	// TODO : tonemapping
 
 	// diffuse
 	//vec3 lightDir = normalize(light.Position - FragPos);

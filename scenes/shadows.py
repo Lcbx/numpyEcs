@@ -66,6 +66,7 @@ def load_shaders():
 	global sceneShader
 	global prepassShader
 	global AOshader
+	global depthBlurShader
 
 	try:
 		newShader = su.BetterShader('scenes/shadowmesh.shader');
@@ -87,6 +88,10 @@ def load_shaders():
 		newShader = su.BetterShader('scenes/AO.compute')
 		if newShader.valid(): AOshader = newShader
 		else: raise Exception('AO.compute')
+		
+		newShader = su.BetterShader('scenes/depthBlur.compute')
+		if newShader.valid(): depthBlurShader = newShader
+		else: raise Exception('depthBlur.compute')
 
 	except Exception as ex:
 		print('--------------> failed compiling', ex.args[0])
@@ -107,6 +112,7 @@ shadowMeshShader = None
 shadowBlurShader = None
 prepassShader = None
 AOshader = None
+depthBlurShader = None
 load_shaders()
 
 camera_dist = 30
@@ -130,10 +136,10 @@ light_camera = Camera3D(
 
 unused_camera = None
 
-prepass_buffer = su.create_render_buffer(WINDOW_w, WINDOW_h, depth_map=True)
+# None is for color format, means we dont actually draw into it
+prepass_buffer = su.create_render_buffer(WINDOW_w, WINDOW_h, None, depth_map=True)
 AO_w, AO_h = WINDOW_w, WINDOW_h
-#AO_w, AO_h = WINDOW_w//2, WINDOW_h//2
-AO_buffer = su.create_render_buffer(AO_w, AO_h)#, rl.PIXELFORMAT_UNCOMPRESSED_R16)
+AO_buffer = su.create_render_buffer(AO_w, AO_h, rl.PIXELFORMAT_UNCOMPRESSED_R16)
 
 SM_SIZE = 2048
 SHADOW_FORMAT = rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32
@@ -166,16 +172,15 @@ def run():
 		rl.rlSetClipPlanes(light_nearFar[0], light_nearFar[1])
 		rl.BeginMode3D(light_camera)
 		rl.ClearBackground(rl.WHITE)
-		rl.rlSetCullFace(rl.RL_CULL_FACE_FRONT)
+		su.SetPolygonOffset(1)
 		
 		lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
 		lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
-
+		
 		with shadowMeshShader:
-			shadowMeshShader.bias = rl.Vector3Scale(lightDir, 0.00001)
 			draw_scene(shadowMeshShader,randomize_color=True)
-
-		rl.rlSetCullFace(rl.RL_CULL_FACE_BACK)
+		
+		su.DisablePolygonOffset()
 		rl.EndMode3D()
 		rl.EndTextureMode()
 
@@ -206,18 +211,18 @@ def run():
 		su.SetPolygonOffset(1)
 		with prepassShader:
 			draw_scene(prepassShader)
+		su.DisablePolygonOffset()
 		rl.EndMode3D()
 		rl.EndTextureMode()
-		su.DisablePolygonOffset()
 		
 		# AO
 		su.GenTextureMipmaps(prepass_buffer.depth)
 		rl.BeginTextureMode(AO_buffer)
 		with AOshader:
 			AOshader.invProj = rl.MatrixInvert(proj)
-			AOshader.DepthMap = prepass_buffer.depth
-			rl.DrawTextureRec(prepass_buffer.texture, (0, 0, WINDOW_w, -WINDOW_h), (0, 0), rl.WHITE);
+			rl.DrawTextureRec(prepass_buffer.depth, (0, 0, WINDOW_w, -WINDOW_h), (0, 0), rl.WHITE);
 		rl.EndTextureMode()
+		su.GenTextureMipmaps(AO_buffer.texture)
 		
 		# transfer depth to main buffer for early z discard
 		su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
@@ -234,14 +239,6 @@ def run():
 			sceneShader.ambientOcclusionMap = AO_buffer.texture
 			draw_scene(sceneShader)
 		rl.EndMode3D()
-		
-		
-		#with AOshader:
-		#	#AOshader.proj = proj
-		#	AOshader.projScale = rl.MatrixToFloatV(proj).v[4+1] # matrix[1][1]
-		#	AOshader.invProj = rl.MatrixInvert(proj)
-		#	AOshader.DepthMap = prepass_buffer.depth
-		#	rl.DrawTextureRec(prepass_buffer.texture, (0, 0, WINDOW_w, -WINDOW_h), (0, 0), rl.WHITE);
 		
 		#draw_shadow_buffer()
 		draw_prepass()
