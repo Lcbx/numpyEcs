@@ -8,15 +8,17 @@ in vec4 vertexColor;
 uniform mat4 matModel;
 uniform mat4 mvp;
 
-//const float bias = 0.00001;
+//const float bias = 0.0001;
 
 varying vec4 fragColor;
 
 void vertex(){
 	fragColor = vertexColor;
 	vec4 vertex = vec4(vertexPosition, 1.0);
+	vertex = mvp*vertex;
 	//vertex.z *= (1.0 + bias);
-	gl_Position = mvp*vertex;
+	//vertex.z += bias;
+	gl_Position = vertex;
 }
 
 

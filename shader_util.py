@@ -331,15 +331,31 @@ class BetterShader:
 
 class WatchTimer:
 	nesting : int = 0
+	timers: list = []
 	
 	def __init__(self, region:str):
 		self.region = region
-		self.start = 0
+		self.start_time = 0
+		self.nesting = WatchTimer.nesting
 		WatchTimer.nesting += 1
 	
 	def __enter__(self) -> None:
-		self.start = rl.GetTime()
+		self.start_time = rl.GetTime()
+		WatchTimer.timers.append(self)
 
 	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
 		WatchTimer.nesting -= 1
-		rl.TraceLog(rl.LOG_DEBUG, ('  ' * WatchTimer.nesting + f'{self.region} took { (rl.GetTime() - self.start) * 1000.0 :.2f}ms').encode('utf-8') )
+		message = self.get_message()
+		rl.TraceLog(rl.LOG_DEBUG, message.encode('utf-8'))
+	
+	def get_message(self):
+		elapsed = self.elapsed_ms()
+		return ('  ' * self.nesting + f'{self.region} : { elapsed :.1f}ms')
+	
+	def elapsed_ms(self):
+		return (rl.GetTime() - self.start_time) * 1000.0
+	
+	def display(x, y, size, color):
+		content = '\n'.join( list(map(WatchTimer.get_message, WatchTimer.timers)) )
+		rl.DrawText(content.encode('utf-8'), x, y, size, color)
+		WatchTimer.timers.clear()

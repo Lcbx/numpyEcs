@@ -106,7 +106,6 @@ void fragment() {
 	float alpha = 0.5 * invSamples;
 	float angle = noise;
 	float angleInc = float(NUM_SPIRAL_TURNS) * invSamples * twoPI;
-	float misses = 0;
 	for (int i = 0; i < NUM_SAMPLES; ++i) {
 		alpha += invSamples;
 		angle += angleInc;
@@ -118,7 +117,7 @@ void fragment() {
 		
 		if (between(uv2, vec2(0.0), vec2(1.0))){
 			// McGuire mip
-			int mipLevel = clamp(findMSB(int(radius * 500.0)), 0, max_mip);
+			int mipLevel = clamp(findMSB(int(radius * 200)), 0, max_mip);
 			
 			vec3 Q = getPositionVS(uv2, mipLevel);
 			vec3 v = Q - position;

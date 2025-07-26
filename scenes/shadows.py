@@ -40,10 +40,10 @@ ground = world.create_entity(
 rnd_uint8 = lambda : rl.GetRandomValue(0, 255)
 rnd_color = lambda : Color(rnd_uint8(),rnd_uint8(),rnd_uint8(),255)
 
-SPACE_SIZE = 30
-CUBE_MAX = 7
+SPACE_SIZE = 180
+CUBE_MAX_SIDE = 7
 
-for e in world.create_entities(15):
+for e in world.create_entities(200):
 	world.add_component(e,
 		Position(
 			rl.GetRandomValue(-SPACE_SIZE, SPACE_SIZE),
@@ -54,8 +54,8 @@ for e in world.create_entities(15):
 			0,
 			rl.GetRandomValue(-4, 4) ),
 		BoundingBox(
-			rl.GetRandomValue(-CUBE_MAX, 0), rl.GetRandomValue(-CUBE_MAX, 0), rl.GetRandomValue(-CUBE_MAX, 0),
-			rl.GetRandomValue(1, CUBE_MAX),  rl.GetRandomValue(1, CUBE_MAX),  rl.GetRandomValue(1, CUBE_MAX) ),
+			rl.GetRandomValue(-CUBE_MAX_SIDE, 0), rl.GetRandomValue(-CUBE_MAX_SIDE, 0), rl.GetRandomValue(-CUBE_MAX_SIDE, 0),
+			rl.GetRandomValue(1, CUBE_MAX_SIDE),  rl.GetRandomValue(1, CUBE_MAX_SIDE),  rl.GetRandomValue(1, CUBE_MAX_SIDE) ),
 		Mesh(rnd_color()),
 	)
 
@@ -95,17 +95,32 @@ def load_shaders():
 
 	except Exception as ex:
 		print('--------------> failed compiling', ex.args[0])
-		print(newShader.vertex_glsl)
-		print('______________________')
-		print(newShader.fragment_glsl)
-
+		#print(newShader.vertex_glsl)
+		#print('______________________')
+		#print(newShader.fragment_glsl)
 
 WINDOW_w, WINDOW_h = 1000, 650
+#WINDOW_w, WINDOW_h = 1920, 1080
 # NOTE: using MSAA with prepass generate z-artifacts
 #rl.SetConfigFlags(rl.FLAG_MSAA_4X_HINT) #|rl.FLAG_WINDOW_RESIZABLE)
+#rl.SetConfigFlags(rl.FLAG_WINDOW_TOPMOST | rl.FLAG_WINDOW_UNDECORATED)
 rl.SetTraceLogLevel(rl.LOG_WARNING)
 rl.InitWindow(WINDOW_w, WINDOW_h, b"Hello")
 rl.SetTargetFPS(60)
+
+display = rl.GetCurrentMonitor()
+monitor_w = rl.GetMonitorWidth(display)
+monitor_h = rl.GetMonitorHeight(display)
+rl.SetWindowPosition(monitor_w - WINDOW_w, 0)
+#rl.SetWindowPosition(0, 0)
+#rl.SetWindowSize(WINDOW_w, WINDOW_h)
+#WINDOW_w, WINDOW_h = monitor_w, monitor_h
+##print(WINDOW_w, WINDOW_h)
+#rl.MaximizeWindow()
+rl.SetWindowState(rl.FLAG_WINDOW_UNDECORATED)
+#rl.ToggleFullscreen()
+#rl.SetExitKey(0)
+
 
 sceneShader = None
 shadowMeshShader = None
@@ -136,6 +151,7 @@ light_camera = Camera3D(
 
 unused_camera = None
 
+# TODO : handle resolution changes (rebuild buffers)
 # None is for color format, means we dont actually draw into it
 prepass_buffer = su.create_render_buffer(WINDOW_w, WINDOW_h, None, depth_map=True)
 AO_w, AO_h = WINDOW_w, WINDOW_h
@@ -175,7 +191,7 @@ def run():
 				rl.rlSetClipPlanes(light_nearFar[0], light_nearFar[1])
 				rl.BeginMode3D(light_camera)
 				rl.ClearBackground(rl.WHITE)
-				su.SetPolygonOffset(1)
+				su.SetPolygonOffset(0.8) # should increase to 3 for perspective light
 				
 				lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
 				lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
@@ -213,7 +229,7 @@ def run():
 					rl.BeginMode3D(camera)
 					proj = rl.rlGetMatrixProjection()
 					rl.ClearBackground(rl.WHITE)
-					su.SetPolygonOffset(1)
+					su.SetPolygonOffset(0.1)
 					with prepassShader:
 						draw_scene(prepassShader)
 					su.DisablePolygonOffset()
@@ -247,10 +263,12 @@ def run():
 						draw_scene(sceneShader)
 					rl.EndMode3D()
 				
+				# maybe add toggles for drawing buffers
 				#draw_shadow_buffer()
-				draw_prepass()
-				rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count} ".encode('utf-8'), 10, 10, 20, rl.LIGHTGRAY)
+				#draw_prepass()
 		
+		rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count}".encode('utf-8'), 10, 10, 20, rl.LIGHTGRAY)
+		su.WatchTimer.display(10, 40, 20, rl.LIGHTGRAY)
 		# sleeps for vsync / target fps
 		rl.EndDrawing()
 	rl.CloseWindow()
