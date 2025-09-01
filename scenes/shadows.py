@@ -164,7 +164,7 @@ shadow_buffer2 = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORM
 
 
 # model
-model_root = b'C:/Users/lucco/Desktop/pythonEngine/scenes/resources/'
+model_root = b'scenes/resources/'
 #model = rl.LoadModel(model_root + b'teapot.obj')
 model = rl.LoadModel(model_root + b'turret.obj')
 model_albedo = rl.LoadTexture(model_root + b'turret_diffuse.png')
