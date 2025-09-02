@@ -132,14 +132,6 @@ void fragment() {
 	ivec2 viewPx = ivec2(gl_FragCoord.xy);
 	float occlusion = texelFetch(ambientOcclusionMap, viewPx, 0).r;
 	
-	// smoothing
-	// TODO : use a simple blur instead of generating mipmaps
-	occlusion *= OFFSETS_WEIGHTS[0];
-	for (int i = 0; i < OFFSETS_LEN; ++i) {
-		ivec2 offs = ivec2(OFFSETS[i] * 5);
-		occlusion += texelFetch(ambientOcclusionMap, (viewPx + offs) >> 1, 1).r * OFFSETS_WEIGHTS[i+1];
-	}
-	
 	// blinn-phong
 	vec3 ambient = vec3(0.35 * albedo.rgb);
 	//ambient *= occlusion;

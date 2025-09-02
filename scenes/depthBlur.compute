@@ -15,7 +15,6 @@ void vertex(){
 
 varying vec2 fragTexCoord;
 
-
 uniform sampler2D texture0;
 uniform vec2 u_direction;
 
@@ -46,6 +45,11 @@ const float coeffs[M + 1] = float[M + 1](
 
 // TODO: precompute t to avoid division
 
+//bool between(vec2 v, vec2 bottomLeft, vec2 topRight){
+//	vec2 s = step(bottomLeft, v) - step(topRight, v);
+//	return bool(s.x * s.y);
+//}
+
 void fragment()
 {
 	vec4 sum = coeffs[0] * texture(texture0, fragTexCoord);
@@ -58,8 +62,13 @@ void fragment()
 		float w = w0 + w1;
 		float t = w1 / w;
 
-		sum += w * texture(texture0, fragTexCoord + u_direction * (float(i) + t));
-		sum += w * texture(texture0, fragTexCoord - u_direction * (float(i) + t));
+		vec2 forward = fragTexCoord + u_direction * (float(i) + t);
+		vec2 backward = fragTexCoord - u_direction * (float(i) + t);
+
+		//if(between(forward, vec2(0.0), vec2(1.0)))
+			sum += w * texture(texture0, forward);
+		//if(between(backward, vec2(0.0), vec2(1.0)))
+			sum += w * texture(texture0, backward);
 	}
 
 	finalColor = sum;

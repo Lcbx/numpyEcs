@@ -250,9 +250,9 @@ class BetterShader:
 
 
 	def __setattr__(self, name: str, value: Any):
-		if hasattr(self, 'uniform_locs') and name in self.uniform_locs:
+		try:
 			SetShaderValue(self.shader, self.uniform_locs[name], value)
-		else:
+		except:
 			object.__setattr__(self, name, value)
 
 	def _parse_file(self, filepath):

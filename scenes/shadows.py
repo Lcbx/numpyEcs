@@ -156,6 +156,7 @@ unused_camera = None
 prepass_buffer = su.create_render_buffer(WINDOW_w, WINDOW_h, None, depth_map=True)
 AO_w, AO_h = WINDOW_w, WINDOW_h
 AO_buffer = su.create_render_buffer(AO_w, AO_h, rl.PIXELFORMAT_UNCOMPRESSED_R16)
+AO_buffer2 = su.create_render_buffer(AO_w, AO_h, rl.PIXELFORMAT_UNCOMPRESSED_R16)
 
 SM_SIZE = 2048
 SHADOW_FORMAT = rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32
@@ -242,9 +243,20 @@ def run():
 					rl.BeginTextureMode(AO_buffer)
 					with AOshader:
 						AOshader.invProj = rl.MatrixInvert(proj)
-						rl.DrawTextureRec(prepass_buffer.depth, (0, 0, WINDOW_w, -WINDOW_h), (0, 0), rl.WHITE);
+						rl.DrawTextureRec(prepass_buffer.depth, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
 					rl.EndTextureMode()
-					su.GenTextureMipmaps(AO_buffer.texture)
+
+					rl.BeginTextureMode(AO_buffer2)
+					with depthBlurShader:
+						depthBlurShader.u_direction = Vector2(1/float(AO_w),0)
+						rl.DrawTextureRec(AO_buffer.texture, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
+					rl.EndTextureMode()
+
+					rl.BeginTextureMode(AO_buffer)
+					with depthBlurShader:
+						depthBlurShader.u_direction = Vector2(0,1/float(AO_h))
+						rl.DrawTextureRec(AO_buffer2.texture, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
+					rl.EndTextureMode()
 				
 				with su.WatchTimer('main draw'):
 					# transfer depth to main buffer for early z discard

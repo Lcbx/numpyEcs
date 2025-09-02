@@ -1,5 +1,6 @@
-* implement AO
-* implement msaa
+* implement msaa (not sure it's worth it? -> on the backburner)
+* move AO computation into main pass ? can't blur it then though
+* move cascaded shadowmap in AO buffer so we can bundle the depth aware pass together ?
 * add frustum culling
 * batch same shader calls (raylib does so for static meshes under the hood iirc)
 * use openAL for binaural audio
