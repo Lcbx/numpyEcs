@@ -1,0 +1,36 @@
+
+in vec3 vertexPosition;
+in vec2 vertexTexCoord;
+in vec3 vertexNormal;
+in vec4 vertexColor;
+
+uniform mat4 mvp;
+
+void vertex(){
+	fragTexCoord = vertexTexCoord;
+	vec4 vertex = vec4(vertexPosition, 1);
+	vertex = mvp*vertex;
+	gl_Position = vertex;
+}
+
+varying vec2 fragTexCoord;
+
+uniform sampler2D texture0;
+uniform vec2 u_direction;
+
+out vec4 finalColor;
+
+void fragment(){
+	vec2 uv = fragTexCoord * 0.5;
+	vec2 offset = u_direction;
+	vec4 sum =
+		   texture(texture0, uv + vec2(-offset.x * 2.0, 0.0));
+	sum += texture(texture0, uv + vec2(-offset.x, offset.y)) * 2.0;
+	sum += texture(texture0, uv + vec2(0.0, offset.y * 2.0));
+	sum += texture(texture0, uv + vec2(offset.x, offset.y)) * 2.0;
+	sum += texture(texture0, uv + vec2(offset.x * 2.0, 0.0));
+	sum += texture(texture0, uv + vec2(offset.x, -offset.y)) * 2.0;
+	sum += texture(texture0, uv + vec2(0.0, -offset.y * 2.0));
+	sum += texture(texture0, uv + vec2(-offset.x, -offset.y)) * 2.0;
+	finalColor = sum / 12.0;
+}

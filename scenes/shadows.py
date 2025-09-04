@@ -66,7 +66,8 @@ def load_shaders():
 	global sceneShader
 	global prepassShader
 	global AOshader
-	global depthBlurShader
+	global kawaseBlur_downSampleShader
+	global kawaseBlur_upSampleShader
 
 	try:
 		newShader = su.BetterShader('scenes/shadowmesh.shader');
@@ -89,15 +90,19 @@ def load_shaders():
 		if newShader.valid(): AOshader = newShader
 		else: raise Exception('AO.compute')
 		
-		newShader = su.BetterShader('scenes/depthBlur.compute')
-		if newShader.valid(): depthBlurShader = newShader
-		else: raise Exception('depthBlur.compute')
+		newShader = su.BetterShader('scenes/kawaseBlur_downSample.compute')
+		if newShader.valid(): kawaseBlur_downSampleShader = newShader
+		else: raise Exception('kawaseBlur_downSample.compute')
+
+		newShader = su.BetterShader('scenes/kawaseBlur_upSample.compute')
+		if newShader.valid(): kawaseBlur_upSampleShader = newShader
+		else: raise Exception('kawaseBlur_downSampleShader.compute')
 
 	except Exception as ex:
 		print('--------------> failed compiling', ex.args[0])
-		#print(newShader.vertex_glsl)
-		#print('______________________')
-		#print(newShader.fragment_glsl)
+		print(newShader.vertex_glsl)
+		print('______________________')
+		print(newShader.fragment_glsl)
 
 WINDOW_w, WINDOW_h = 1000, 650
 #WINDOW_w, WINDOW_h = 1920, 1080
@@ -122,12 +127,14 @@ rl.SetWindowState(rl.FLAG_WINDOW_UNDECORATED)
 #rl.SetExitKey(0)
 
 
-sceneShader = None
-shadowMeshShader = None
-shadowBlurShader = None
-prepassShader = None
-AOshader = None
-depthBlurShader = None
+sceneShader : su.BetterShader = None
+shadowMeshShader : su.BetterShader = None
+shadowBlurShader : su.BetterShader = None
+prepassShader : su.BetterShader = None
+AOshader : su.BetterShader = None
+depthBlurShader : su.BetterShader = None
+kawaseBlur_downSampleShader : su.BetterShader = None
+kawaseBlur_upSampleShader : su.BetterShader = None
 load_shaders()
 
 camera_dist = 30
@@ -156,7 +163,8 @@ unused_camera = None
 prepass_buffer = su.create_render_buffer(WINDOW_w, WINDOW_h, None, depth_map=True)
 AO_w, AO_h = WINDOW_w, WINDOW_h
 AO_buffer = su.create_render_buffer(AO_w, AO_h, rl.PIXELFORMAT_UNCOMPRESSED_R16)
-AO_buffer2 = su.create_render_buffer(AO_w, AO_h, rl.PIXELFORMAT_UNCOMPRESSED_R16)
+AO_buffer2 = su.create_render_buffer(AO_w//2, AO_h//2, rl.PIXELFORMAT_UNCOMPRESSED_R16)
+AO_buffer3 = su.create_render_buffer(AO_w//4, AO_h//4, rl.PIXELFORMAT_UNCOMPRESSED_R16)
 
 SM_SIZE = 2048
 SHADOW_FORMAT = rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32
@@ -246,17 +254,37 @@ def run():
 						rl.DrawTextureRec(prepass_buffer.depth, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
 					rl.EndTextureMode()
 
-					rl.BeginTextureMode(AO_buffer2)
-					with depthBlurShader:
-						depthBlurShader.u_direction = Vector2(1/float(AO_w),0)
-						rl.DrawTextureRec(AO_buffer.texture, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
-					rl.EndTextureMode()
+					# kawase-blur : good perf no matter the kernel size
+					# + easy choose a compromise between quality ands cost
+					# link: https://community.arm.com/cfs-file/__key/communityserver-blogs-components-weblogfiles/00-00-00-20-66/siggraph2015_2D00_mmg_2D00_marius_2D00_notes.pdf
 
-					rl.BeginTextureMode(AO_buffer)
-					with depthBlurShader:
-						depthBlurShader.u_direction = Vector2(0,1/float(AO_h))
-						rl.DrawTextureRec(AO_buffer2.texture, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
-					rl.EndTextureMode()
+					pixel_scale = Vector2(1.0/float(AO_w),1.0/float(AO_h))
+					pixel_scale_x2 = rl.Vector2Scale(pixel_scale, 2)
+					pixel_scale_x4 = rl.Vector2Scale(pixel_scale_x2, 2)
+
+					for _ in range(2):
+						rl.BeginTextureMode(AO_buffer2)
+						with kawaseBlur_downSampleShader:
+							kawaseBlur_downSampleShader.u_direction = pixel_scale
+							rl.DrawTextureRec(AO_buffer.texture, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
+						rl.EndTextureMode()
+
+						rl.BeginTextureMode(AO_buffer3)
+						with kawaseBlur_downSampleShader:
+							kawaseBlur_downSampleShader.u_direction = pixel_scale_x2
+							rl.DrawTextureRec(AO_buffer2.texture, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
+						rl.EndTextureMode()
+
+						rl.BeginTextureMode(AO_buffer2)
+						with kawaseBlur_upSampleShader:
+							kawaseBlur_upSampleShader.u_direction = pixel_scale_x4
+							rl.DrawTextureRec(AO_buffer3.texture, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
+
+						rl.BeginTextureMode(AO_buffer)
+						with kawaseBlur_upSampleShader:
+							kawaseBlur_upSampleShader.u_direction = pixel_scale_x2
+							rl.DrawTextureRec(AO_buffer2.texture, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
+						rl.EndTextureMode()
 				
 				with su.WatchTimer('main draw'):
 					# transfer depth to main buffer for early z discard
@@ -278,8 +306,9 @@ def run():
 				# maybe add toggles for drawing buffers
 				#draw_shadow_buffer()
 				#draw_prepass()
+				#draw_AO()
 		
-		rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count}".encode('utf-8'), 10, 10, 20, rl.LIGHTGRAY)
+		rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count}".encode(), 10, 10, 20, rl.LIGHTGRAY)
 		su.WatchTimer.display(10, 40, 20, rl.LIGHTGRAY)
 		# sleeps for vsync / target fps
 		rl.EndDrawing()
@@ -297,8 +326,17 @@ def draw_prepass():
 	display_size = WINDOW_w / 5.0
 	display_scale = display_size / float(prepass_buffer.texture.width)
 	rl.DrawTextureEx(prepass_buffer.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
+	
+def draw_AO():
+	# NOTE: this is after goin on the downsampling / upsampling roller-coaster
+	# if you want the downsampling results you have to comment the upsampling
+	display_size = WINDOW_w / 5.0
 	display_scale = display_size / float(AO_buffer.texture.width)
-	rl.DrawTextureEx(AO_buffer.texture, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
+	rl.DrawTextureEx(AO_buffer.texture, Vector2(WINDOW_w - display_size, 0), rotation, display_scale, rl.RAYWHITE)
+	display_scale = display_size / float(AO_buffer2.texture.width)
+	rl.DrawTextureEx(AO_buffer2.texture, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
+	display_scale = display_size / float(AO_buffer3.texture.width)
+	rl.DrawTextureEx(AO_buffer3.texture, Vector2(WINDOW_w - display_size, 2 * display_size), rotation, display_scale, rl.RAYWHITE)
 
 orbit = True
 def inputs():

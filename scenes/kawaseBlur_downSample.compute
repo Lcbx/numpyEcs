@@ -1,0 +1,38 @@
+
+in vec3 vertexPosition;
+in vec2 vertexTexCoord;
+in vec3 vertexNormal;
+in vec4 vertexColor;
+
+uniform mat4 mvp;
+
+void vertex(){
+	fragTexCoord = vertexTexCoord;
+	vec4 vertex = vec4(vertexPosition, 1);
+	vertex = mvp*vertex;
+	gl_Position = vertex;
+}
+
+varying vec2 fragTexCoord;
+
+uniform sampler2D texture0;
+uniform vec2 u_direction;
+
+out vec4 finalColor;
+
+void fragment(){
+	vec2 uv = fragTexCoord * 2.0;
+	vec2 offset = u_direction;
+
+
+	float topLeft = texture(texture0, uv - offset).r;
+	float topRight = texture(texture0, uv + vec2(offset.x, -offset.y)).r;
+	float middle = texture(texture0, uv).r;
+	float botLeft = texture(texture0, uv - vec2(offset.x, -offset.y)).r;
+	float botRight = texture(texture0, uv + offset).r;
+
+	// TODO : try to make this depth aware / edge preserving ?
+
+	float sum = (middle * 4.0 + botRight + topLeft + topRight + botLeft) * 0.125; // 0.125 == 1/8
+	finalColor = vec4(vec3(sum), 1);
+}

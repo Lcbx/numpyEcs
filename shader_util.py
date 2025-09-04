@@ -15,6 +15,8 @@ from OpenGL.GL import (
 import re
 from typing import Any, Sequence
 
+
+
 """ # in rlgl.h
 
 void SetShaderValue(Shader shader, int locIndex, const void *value, int uniformType);			   // Set shader uniform value
@@ -231,9 +233,10 @@ class BetterShader:
 		self._parse_file(filepath)
 		self._generate_glsl()
 
+		rl.TraceLog(rl.LOG_INFO, f'compiling {filepath}'.encode())
 		self.shader = rl.LoadShaderFromMemory(
-			self.vertex_glsl.encode('utf-8'),
-			self.fragment_glsl.encode('utf-8')
+			self.vertex_glsl.encode(),
+			self.fragment_glsl.encode()
 		)
 		
 		for type, name in self.uniforms:
@@ -346,7 +349,7 @@ class WatchTimer:
 	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
 		WatchTimer.nesting -= 1
 		message = self.get_message()
-		rl.TraceLog(rl.LOG_DEBUG, message.encode('utf-8'))
+		rl.TraceLog(rl.LOG_DEBUG, message.encode())
 	
 	def get_message(self):
 		elapsed = self.elapsed_ms()
@@ -357,5 +360,5 @@ class WatchTimer:
 	
 	def display(x, y, size, color):
 		content = '\n'.join( list(map(WatchTimer.get_message, WatchTimer.timers)) )
-		rl.DrawText(content.encode('utf-8'), x, y, size, color)
+		rl.DrawText(content.encode(), x, y, size, color)
 		WatchTimer.timers.clear()

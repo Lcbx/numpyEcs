@@ -31,7 +31,7 @@ const float radiusWS = 0.5;
 const float radiusWS2 = radiusWS * radiusWS;
 const float invRadius2 = 1.0 / radiusWS2;
 const float bias = 0.001;
-const float intensity = 2.0;
+const float intensity = 2.5;
 
 out vec4 finalColor;
 
