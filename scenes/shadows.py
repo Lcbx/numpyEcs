@@ -247,22 +247,26 @@ def run():
 				
 				# AO
 				with su.WatchTimer('AO'):
-					su.GenTextureMipmaps(prepass_buffer.depth)
-					rl.BeginTextureMode(AO_buffer)
-					with AOshader:
-						AOshader.invProj = rl.MatrixInvert(proj)
-						rl.DrawTextureRec(prepass_buffer.depth, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
-					rl.EndTextureMode()
+					if not applyAO:
+						rl.BeginTextureMode(AO_buffer)
+						su.ClearColorBuffer()
+						rl.EndTextureMode()
+					else:
+						su.GenTextureMipmaps(prepass_buffer.depth)
+						rl.BeginTextureMode(AO_buffer)
+						with AOshader:
+							AOshader.invProj = rl.MatrixInvert(proj)
+							rl.DrawTextureRec(prepass_buffer.depth, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
+						rl.EndTextureMode()
 
-					# kawase-blur : good perf no matter the kernel size
-					# + easy choose a compromise between quality ands cost
-					# link: https://community.arm.com/cfs-file/__key/communityserver-blogs-components-weblogfiles/00-00-00-20-66/siggraph2015_2D00_mmg_2D00_marius_2D00_notes.pdf
+						# kawase-blur : good perf no matter the kernel size
+						# + easy choose a compromise between quality ands cost
+						# link: https://community.arm.com/cfs-file/__key/communityserver-blogs-components-weblogfiles/00-00-00-20-66/siggraph2015_2D00_mmg_2D00_marius_2D00_notes.pdf
 
-					pixel_scale = Vector2(1.0/float(AO_w),1.0/float(AO_h))
-					pixel_scale_x2 = rl.Vector2Scale(pixel_scale, 2)
-					pixel_scale_x4 = rl.Vector2Scale(pixel_scale_x2, 2)
+						pixel_scale = Vector2(1.0/float(AO_w),1.0/float(AO_h))
+						pixel_scale_x2 = rl.Vector2Scale(pixel_scale, 2)
+						pixel_scale_x4 = rl.Vector2Scale(pixel_scale_x2, 2)
 
-					for _ in range(2):
 						rl.BeginTextureMode(AO_buffer2)
 						with kawaseBlur_downSampleShader:
 							kawaseBlur_downSampleShader.u_direction = pixel_scale
@@ -339,15 +343,19 @@ def draw_AO():
 	rl.DrawTextureEx(AO_buffer3.texture, Vector2(WINDOW_w - display_size, 2 * display_size), rotation, display_scale, rl.RAYWHITE)
 
 orbit = True
+applyAO = True
 def inputs():
 	global camera
 	global camera_dist
 	global unused_camera
 	global orbit
+	global applyAO
 
 	if rl.IsKeyPressed(rl.KEY_R): load_shaders()
 	if rl.IsKeyPressed(rl.KEY_O):
 		orbit = not orbit
+	if rl.IsKeyPressed(rl.KEY_I):
+		applyAO = not applyAO
 	if rl.IsKeyPressed(rl.KEY_P):
 		light_camera.projection = (rl.CAMERA_ORTHOGRAPHIC
 			if light_camera.projection == rl.CAMERA_PERSPECTIVE

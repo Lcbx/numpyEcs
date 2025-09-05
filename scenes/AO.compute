@@ -27,11 +27,11 @@ const float twoPI = 6.283186;
 
 
 // could be moved to uniforms
-const float radiusWS = 0.5;
+const float radiusWS = 0.3;
 const float radiusWS2 = radiusWS * radiusWS;
 const float invRadius2 = 1.0 / radiusWS2;
 const float bias = 0.001;
-const float intensity = 2.5;
+const float intensity = 3.0;
 
 out vec4 finalColor;
 
