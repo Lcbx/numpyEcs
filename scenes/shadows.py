@@ -228,7 +228,7 @@ def run():
 						read_buffer, write_buffer = write_buffer, read_buffer
 
 			# main camera
-			with su.WatchTimer('draw'):
+			with su.WatchTimer('main camera'):
 				# TODO : don't do frustum culling twice (prepass + main pass)
 				
 				# z prepass
@@ -286,7 +286,7 @@ def run():
 							rl.DrawTextureRec(AO_buffer2.texture, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
 						rl.EndTextureMode()
 				
-				with su.WatchTimer('main draw'):
+				with su.WatchTimer('forward pass'):
 					# transfer depth to main buffer for early z discard
 					su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
 					

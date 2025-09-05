@@ -348,17 +348,16 @@ class WatchTimer:
 
 	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
 		WatchTimer.nesting -= 1
-		message = self.get_message()
-		rl.TraceLog(rl.LOG_DEBUG, message.encode())
+		self.message = self.get_message()
+		rl.TraceLog(rl.LOG_DEBUG, self.message.encode())
 	
 	def get_message(self):
-		elapsed = self.elapsed_ms()
-		return ('  ' * self.nesting + f'{self.region} : { elapsed :.1f}ms')
+		return ('  ' * self.nesting + f'{self.region} : { self.elapsed_ms() :.2f}ms')
 	
 	def elapsed_ms(self):
 		return (rl.GetTime() - self.start_time) * 1000.0
 	
 	def display(x, y, size, color):
-		content = '\n'.join( list(map(WatchTimer.get_message, WatchTimer.timers)) )
+		content = '\n'.join( list(map(lambda t: t.message, WatchTimer.timers)) )
 		rl.DrawText(content.encode(), x, y, size, color)
 		WatchTimer.timers.clear()
