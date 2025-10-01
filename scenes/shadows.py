@@ -176,6 +176,7 @@ shadow_buffer2 = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORM
 model_root = b'scenes/resources/'
 #model = rl.LoadModel(model_root + b'teapot.obj')
 model = rl.LoadModel(model_root + b'turret.obj')
+#model = rl.LoadModel(model_root + b'heightmap_mesh.glb')
 model_albedo = rl.LoadTexture(model_root + b'turret_diffuse.png')
 su.SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
 
