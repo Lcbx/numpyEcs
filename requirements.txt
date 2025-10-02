@@ -2,3 +2,4 @@ numpy==2.2.5
 pytest==8.3.5
 raylib==5.5.0.2
 PyOpenGL==3.1.9
+Jinja2==3.1.6

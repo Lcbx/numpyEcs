@@ -12,8 +12,11 @@ from OpenGL.GL import (
 	GL_POLYGON_OFFSET_FILL, GL_MULTISAMPLE, GL_TEXTURE_2D
 )
 
+import os
 import re
-from typing import Any, Sequence
+from typing import Any, Sequence, Dict, Optional
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
+
 
 
 
@@ -194,52 +197,87 @@ def DisableMultisampling():
 	glEnable(GL_MULTISAMPLE)
 
 
+class DefaultFalseDict(Dict):
+	"""Dict that returns False for any missing key; used in feature resolution"""
+	def __missing__(self, key):
+		return False
+
 class BetterShader:
 	"""
 	Parses a shader definition file containing two functions: vertex() and fragment().
 	Extracts uniforms, varying, in, and out variables, then generates GLSL code for both stages.
 	"""
+
 	# Regex to capture qualifier, type, and name from declarations
-	_decl_pattern = re.compile(r"\n(?>layout\(location = ([0-9])\) )?(uniform|in|out|varying|const)\s+(\S+)\s+([^;]+).*?;")
-	# Regex to extract function bodies
-	_func_pattern = re.compile(
-		r'\n'                            # start at a newline
-		r'[\w\*\s&<>]+?\s+'              # return type (e.g. void, bool, vec4, const mat4&)
-		r'([A-Za-z_]\w*)'                # function name
-		r'\s*\(([^)]*)\)\s*'             # argument list
-		r'(?:\{\n|\n\{\n)'               # opening brace on same or next line
-		r'([\s\S]*?)'                    # function body (non-greedy)
-		r'\n\}'                          # closing brace at column 0
+	_decl_pattern = re.compile(
+		r"\n"										# start after a newline (keeps things simple)
+		r"(?:layout\s*\(\s*location\s*=\s*(\d+)\s*\)\s*)?"  # optional layout(location = N)
+		r"(uniform|in|out|varying|const)\s+"		 # qualifier
+		r"(\S+)\s+"								  # type (no spaces)
+		r"([^;]+?)\s*;"							  # name(s) until the semicolon
+		, re.MULTILINE
 	)
 
-	_opengl_version = '#version 430'
+	# Regex to extract function definitions with bodies
+	_func_pattern = re.compile(
+		r'\n'							# start at a newline
+		r'[\w\*\s&<>]+?\s+'			  # return type (e.g. void, bool, vec4, const mat4&)
+		r'([A-Za-z_]\w*)'				# function name
+		r'\s*\(([^)]*)\)\s*'			 # argument list
+		r'(?:\{\n|\n\{\n)'			   # opening brace on same or next line
+		r'([\s\S]*?)'					# function body (non-greedy)
+		r'\n\}'						  # closing brace at column 0
+	)
+
 	_vertex_start = 'void vertex()'
 	_fragment_start = 'void fragment()'
 	_main_start = 'void main()'
 
-	def __init__(self, filepath):
+	def __init__(
+		self,
+		filepath: str,
+		*,
+		features: Optional[Sequence[str]] = None,
+		params: Optional[Dict[str, Any]] = None,
+		glsl_version: str = '#version 430'
+	):
+		"""
+		:param filepath: Path to the master shader definition file (template).
+		:param features: Dict of feature flags for conditionals, e.g. {'FEATURE_FOG': True}.
+		:param params: Any extra variables you want available in templates.
+		:param glsl_version: Override #version (defaults to #version 430).
+		"""
 		self.filepath = filepath
-		self.uniforms = []		# list of uniform names
-		self.uniform_locs = {}	# dict of uniform locs
-		self.varyings = []		# list of varying names
-		self.ins = []			# list of in-variable names
-		self.outs = []			# list of out-variable names
-		self.consts = []		# list of constants
-		self.functions = []	   	# list of function definitions
-		self.vertex_glsl = ''	# Generated GLSL code for vertex shader
-		self.fragment_glsl = ''	# Generated GLSL code for fragment shader
-		
+		self._basedir = os.path.dirname(os.path.abspath(filepath))
+		self._opengl_version = glsl_version
+		self.uniforms = []	   # list[(type, name)]
+		self.uniform_locs = {}   # name -> location id
+		self.varyings = []	   # list[(type, name)]
+		self.ins = []			# list[(loc, type, name)]
+		self.outs = []		   # list[(loc, type, name)]
+		self.consts = []		 # list[(type, name)]
+		self.functions = []	  # list[str]
+		self.vertex_glsl = ''	# rendered vertex GLSL
+		self.fragment_glsl = ''  # rendered fragment GLSL
 
-		self._parse_file(filepath)
+		# Render the shader source through Jinja2 (handles #if / #include)
+		text = self._render_template(features, params)
+
+		# Parse the rendered text for declarations & functions
+		self._parse_rendered_text(text)
+
+		# Generate final vertex/fragment GLSL
 		self._generate_glsl()
 
 		rl.TraceLog(rl.LOG_INFO, f'compiling {filepath}'.encode())
+
+		# Compile via raylib
 		self.shader = rl.LoadShaderFromMemory(
 			self.vertex_glsl.encode(),
 			self.fragment_glsl.encode()
 		)
-		
-		for type, name in self.uniforms:
+
+		for typ, name in self.uniforms:
 			self.uniform_locs[name] = rl.GetShaderLocation(self.shader, name.encode('utf-8'))
 
 	def valid(self) -> bool:
@@ -249,53 +287,80 @@ class BetterShader:
 		rl.BeginShaderMode(self.shader)
 
 	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
-		rl.EndShaderMode();
+		rl.EndShaderMode()
 
-
-	def __setattr__(self, name: str, value: Any):
+	def __setattr__(self, name: str, value: Any) -> None:
 		try:
 			SetShaderValue(self.shader, self.uniform_locs[name], value)
-		except:
-			object.__setattr__(self, name, value)
+			return
+		except Exception:
+			pass
+		object.__setattr__(self, name, value)
 
-	def _parse_file(self, filepath):
-		with open(filepath, 'r', encoding="utf8") as f:
-			text = f.read()
-		
-		decls = self._decl_pattern.findall(text)
-		for loc, qual, typ, name in decls:
-			#print(loc, qual, type, name)
+	def _render_template(self, features: Sequence[str], params: Dict[str, Any]) -> str:
+		"""
+		evaluate the preprocessor sections using jinja2
+		"""
+		env = Environment(
+			loader=FileSystemLoader(self._basedir),
+			undefined=StrictUndefined,		# fail fast for missing vars
+			autoescape=False,				 # GLSL is not HTML
+			keep_trailing_newline=True,
+			trim_blocks=True,
+			lstrip_blocks=True,
+			line_statement_prefix='#'		 # << key: enable #if/#endif/#include
+		)
+		template_name = os.path.basename(self.filepath)
+		template = env.get_template(template_name)
+
+		ctx = {}
+
+		featuresDict = DefaultFalseDict()
+		if features is not None: featuresDict.update({k: True for k in features})
+		ctx["FEATURES"] = featuresDict
+		ctx["PARAMS"] = params or {}
+
+		return template.render(**ctx)
+
+	
+	def _parse_rendered_text(self, text: str):
+		# Declarations
+		for loc, qual, typ, name in self._decl_pattern.findall(text):
 			if qual == 'uniform':
 				self.uniforms.append((typ, name))
 			elif qual == 'varying':
 				self.varyings.append((typ, name))
 			elif qual == 'in':
-				self.ins.append( (loc, typ, name) )
+				self.ins.append((loc, typ, name))
 			elif qual == 'out':
-				self.outs.append( (loc, typ, name) )
+				self.outs.append((loc, typ, name))
 			elif qual == 'const':
 				self.consts.append((typ, name))
 
-		self.functions = [ m.group(0).strip() for m in self._func_pattern.finditer(text) ]
+		# Functions (full match = whole function; we keep their text)
+		self.functions = [m.group(0).strip() for m in self._func_pattern.finditer(text)]
 
+		# Find vertex()/fragment() bodies
 		for i, f in enumerate(self.functions):
-			if f.startswith(self._vertex_start): self._vertex_body = i
-			elif f.startswith(self._fragment_start): self._fragment_body = i
-	
+			if f.startswith(self._vertex_start):
+				self._vertex_body = i
+			elif f.startswith(self._fragment_start):
+				self._fragment_body = i
 
+		#if not hasattr(self, '_vertex_body'):
+		#	raise ValueError(f'could not find vertex function in {text}')
+		#if not hasattr(self, '_fragment_body'):
+		#	raise ValueError(f'could not find vertex function in {text}')
 
 	def _generate_glsl(self):
-		
 		def inoutFmt(loc, typ, name, inoutStr):
 			return (f'layout(location = {loc}) ' if loc else '') + f'{inoutStr} {typ} {name};'
-		def inStr(input):
-			return inoutFmt(*input, 'in')
-		def outStr(input):
-			return inoutFmt(*input, 'out')
-		
-		# Vertex Shader
-		if hasattr(self, '_vertex_body'):
-			v_lines = (
+		def inStr(entry):
+			return inoutFmt(*entry, 'in')
+		def outStr(entry):
+			return inoutFmt(*entry, 'out')
+
+		v_lines = (
 			self._opengl_version, '',
 			*map(inStr, self.ins), '',
 			*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms), '',
@@ -303,33 +368,28 @@ class BetterShader:
 			*map(lambda kv: f'const {kv[0]} {kv[1]};', self.consts), '',
 			*self.functions[:self._vertex_body], '',
 			self.functions[self._vertex_body].replace(self._vertex_start, self._main_start)
-			)
-			self.vertex_glsl = '\n'.join(v_lines)
-		
-		# will use the default vertex shader
-		else:
-			self.vertex_glsl = ''
-			self._vertex_body = -1
+		)
+		self.vertex_glsl = '\n'.join(v_lines)
 
+		# Helper: functions after vertex() but not fragment()
+		start_idx = (self._vertex_body + 1) if self._vertex_body is not None else 0
 		functions_after_vertex_but_not_fragment = [
-		  self.functions[i] for i in range(self._vertex_body+1,len(self.functions))
-		  if i != self._fragment_body
+			self.functions[i] for i in range(start_idx, len(self.functions))
+			if i != self._fragment_body
 		]
-		
 
-		# Fragment Shader
+		# Fragment shader (required)
 		f_lines = [
-		self._opengl_version, '',
-		*map(lambda kv: f'in {kv[0]} {kv[1]};', self.varyings), '',
-		*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms), '',
-		*map(outStr, self.outs), '',
-		*map(lambda kv: f'const {kv[0]} {kv[1]};', self.consts), '',
-		*functions_after_vertex_but_not_fragment, '',
-		self.functions[self._fragment_body].replace(self._fragment_start, self._main_start)
+			self._opengl_version, '',
+			*map(lambda kv: f'in {kv[0]} {kv[1]};', self.varyings), '',
+			*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms), '',
+			*map(outStr, self.outs), '',
+			*map(lambda kv: f'const {kv[0]} {kv[1]};', self.consts), '',
+			*functions_after_vertex_but_not_fragment, '',
+			self.functions[self._fragment_body].replace(self._fragment_start, self._main_start)
 		]
 		self.fragment_glsl = '\n'.join(f_lines)
-		
-		#print(self.vertex_glsl, self.fragment_glsl)
+
 
 
 class WatchTimer:
