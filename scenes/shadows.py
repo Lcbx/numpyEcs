@@ -111,7 +111,7 @@ WINDOW_w, WINDOW_h = 1000, 650
 #rl.SetConfigFlags(rl.FLAG_WINDOW_TOPMOST | rl.FLAG_WINDOW_UNDECORATED)
 rl.SetTraceLogLevel(rl.LOG_WARNING)
 rl.InitWindow(WINDOW_w, WINDOW_h, b"Hello")
-rl.SetTargetFPS(60)
+#rl.SetTargetFPS(60)
 
 display = rl.GetCurrentMonitor()
 monitor_w = rl.GetMonitorWidth(display)
@@ -166,7 +166,7 @@ AO_buffer = su.create_render_buffer(AO_w, AO_h, rl.PIXELFORMAT_UNCOMPRESSED_R16)
 AO_buffer2 = su.create_render_buffer(AO_w//2, AO_h//2, rl.PIXELFORMAT_UNCOMPRESSED_R16)
 AO_buffer3 = su.create_render_buffer(AO_w//4, AO_h//4, rl.PIXELFORMAT_UNCOMPRESSED_R16)
 
-SM_SIZE = 2048
+SM_SIZE = 1440
 SHADOW_FORMAT = rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32
 shadow_buffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT, depth_map=True)
 shadow_buffer2 = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT)
@@ -201,7 +201,7 @@ def run():
 				rl.rlSetClipPlanes(light_nearFar[0], light_nearFar[1])
 				rl.BeginMode3D(light_camera)
 				rl.ClearBackground(rl.WHITE)
-				su.SetPolygonOffset(0.8) # should increase to 3 for perspective light
+				su.SetPolygonOffset(0.9) # should increase to 3 for perspective light
 				
 				lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
 				lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
@@ -313,10 +313,15 @@ def run():
 				#draw_prepass()
 				#draw_AO()
 		
-		rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count}".encode(), 10, 10, 20, rl.LIGHTGRAY)
-		su.WatchTimer.display(10, 40, 20, rl.LIGHTGRAY)
-		# sleeps for vsync / target fps
-		rl.EndDrawing()
+			rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count}".encode(), 10, 10, 20, rl.LIGHTGRAY)
+			su.WatchTimer.display(10, 40, 20, rl.LIGHTGRAY)
+
+			# sleeps for vsync / target fps
+			rl.EndDrawing()
+
+			# a lot of stuff happening ain EndDrawing it seems...
+			# shadow map cost seems to determine perf the most
+			su.WatchTimer.capture()
 	rl.CloseWindow()
 
 

@@ -391,19 +391,18 @@ class BetterShader:
 		self.fragment_glsl = '\n'.join(f_lines)
 
 
-
 class WatchTimer:
 	nesting : int = 0
 	timers: list = []
+	report = ''
 	
 	def __init__(self, region:str):
 		self.region = region
-		self.start_time = 0
-		self.nesting = WatchTimer.nesting
-		WatchTimer.nesting += 1
 	
 	def __enter__(self) -> None:
 		self.start_time = rl.GetTime()
+		self.nesting = WatchTimer.nesting
+		WatchTimer.nesting += 1
 		WatchTimer.timers.append(self)
 
 	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
@@ -412,12 +411,22 @@ class WatchTimer:
 		rl.TraceLog(rl.LOG_DEBUG, self.message.encode())
 	
 	def get_message(self):
-		return ('  ' * self.nesting + f'{self.region} : { self.elapsed_ms() :.2f}ms')
+		#return ('  ' * self.nesting + f'{self.region} : { self.elapsed_ms() :.1f}ms')	
+		return ('  ' * self.nesting + f'{self.region} : { self.elapsed_percent() :.0f}%')	
 	
 	def elapsed_ms(self):
 		return (rl.GetTime() - self.start_time) * 1000.0
+
+	def elapsed_percent(self):
+		ft = rl.GetFrameTime() + 0.0001
+		return (rl.GetTime() - self.start_time) / ft * 100.0
 	
-	def display(x, y, size, color):
-		content = '\n'.join( list(map(lambda t: t.message, WatchTimer.timers)) )
-		rl.DrawText(content.encode(), x, y, size, color)
+	def capture():
+		WatchTimer.report = '\n'.join( list(map(
+			lambda t: t.message if hasattr(t, 'message') else t.get_message(),
+			WatchTimer.timers))
+		)
 		WatchTimer.timers.clear()
+
+	def display(x, y, size, color):
+		rl.DrawText(WatchTimer.report.encode(), x, y, size, color)
