@@ -20,7 +20,8 @@ uniform sampler2D texture0; // depth
 //uniform sampler2D normals;   // normals
 
 const int NUM_SAMPLES = 8;
-const int NUM_SPIRAL_TURNS = NUM_SAMPLES/2 + 1;
+const float INV_NUM_SAMPLES = 1.0 / float(NUM_SAMPLES);
+const float NUM_SPIRAL_TURNS = float(NUM_SAMPLES/2 + 1);
 
 const float PI =  3.141593;
 const float twoPI = 6.283186;
@@ -78,7 +79,7 @@ float calculateAO(float vv, float vn)
 }
 
 
-// TODO: apply normal-based blur
+// TODO: apply normal or depth-aware blur
 // TODO: fix wrong screen border (on written depth)
 
 
@@ -98,16 +99,15 @@ void fragment() {
 	float noise = randAngle();
 	//noise = 0;
 	
-	float invSamples = 1.0 / float(NUM_SAMPLES);
 	int max_mip = textureQueryLevels(texture0) - 1;
 	float perspectiveRadius = radiusWS / position.z;
 	
 	float occlusion = 0.0;
-	float alpha = 0.5 * invSamples;
+	float alpha = 0.5 * INV_NUM_SAMPLES;
 	float angle = noise;
-	float angleInc = float(NUM_SPIRAL_TURNS) * invSamples * twoPI;
+	float angleInc = NUM_SPIRAL_TURNS * INV_NUM_SAMPLES * twoPI;
 	for (int i = 0; i < NUM_SAMPLES; ++i) {
-		alpha += invSamples;
+		alpha += INV_NUM_SAMPLES;
 		angle += angleInc;
 		
 		vec2 disk = vec2(cos(angle), sin(angle));
@@ -127,7 +127,7 @@ void fragment() {
 			occlusion += calculateAO(vv, vn);
 		}
 	}
-	occlusion *= invSamples;
+	occlusion *= INV_NUM_SAMPLES;
 	occlusion *= intensity;
 	occlusion = 1.0 - occlusion;
 	//occlusion = pow(occlusion, intensity);
@@ -136,12 +136,4 @@ void fragment() {
 	occlusion = clamp(occlusion, 0.0, 1.0);
 	
 	finalColor = vec4(vec3(occlusion), 1);
-	
-	//finalColor = vec4(normal * 0.5 + 0.5, 1);
-	//finalColor = vec4(getPositionVS(uv, 5)*0.05 + 0.5,1);
-	//finalColor = vec4(getPositionVS_px(ivec2(gl_FragCoord) >> 5, 5)*0.05 + 0.5,1);
-	//finalColor = vec4(getPositionVS(uv, findMSB(int(perspectiveRadius * 1000.0)))*0.05 + 0.5,1);
-	//finalColor = vec4(vec3(max_mip * 0.1),1);
-	//finalColor = vec4(vec3(findMSB(int(perspectiveRadius * 1000.0)) * 0.1 ),1);
-	//finalColor = vec4(1);
 }

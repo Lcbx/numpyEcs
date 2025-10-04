@@ -33,7 +33,7 @@ uniform sampler2D texture0;			// diffuse
 
 uniform vec3 lightDir;
 uniform sampler2D shadowDepthMap;	   // classic depth map (R channel)
-uniform sampler2D shadowPenumbraMap;   // RGB: [meshID, distX, distY]
+uniform sampler2D shadowPenumbraMap;   // RGB: [meshId, distX, distY]
 uniform sampler2D ambientOcclusionMap; // R: intensity
 
 out vec4 finalColor;
@@ -57,6 +57,9 @@ float get_shadow(vec3 proj){
 
 	float fragmentDepth = proj.z;
 
+	//vec3 penumbra = texture(shadowPenumbraMap, proj.xy).rgb;
+	//float occluderDepth = penumbra.r;
+
 	float occluderDepth = texture(shadowDepthMap, proj.xy).r;
 	float localOcclusionDist = fragmentDepth - occluderDepth;
 
@@ -67,6 +70,7 @@ float get_shadow(vec3 proj){
 
 	vec2 remoteCoord = proj.xy + penDir;
 
+	//float remoteOccluderDepth = texture(shadowPenumbraMap, remoteCoord).r;
 	float remoteOccluderDepth = texture(shadowDepthMap, remoteCoord).r;
 	float remoteOcclusionDist = fragmentDepth - remoteOccluderDepth;
 
@@ -74,6 +78,7 @@ float get_shadow(vec3 proj){
 
 	float distToEdgeSq = dot(penDir, penDir);
 	float f = distToEdgeSq;
+	//float f = localOcclusionDist;
 
 	/// all different soft shadow strength/delimitations
 	//f *= 5000;
@@ -81,30 +86,29 @@ float get_shadow(vec3 proj){
 	f = sqrt(f);
 
 	// causes artifacts
-	//if(remoteOcclusionDist < f) return 1.0;
+	if(remoteOcclusionDist < f) return 1.0;
 
 	float occlusionFactor = 1.5 - remoteOcclusionDist * 2.0;
 	f *= occlusionFactor;
-	f *= 150.0; // pass the inverse of this as uniform named shadow blur factor ?
+	f *= 130.0; // pass the inverse of this as uniform named shadow blur factor ?
 
 	return f;
 }
 
-//const int OFFSETS_LEN = 8;
-const int OFFSETS_LEN = 4;
-const vec2 OFFSETS[OFFSETS_LEN] = vec2[](
-	vec2( 0.7,  -0.7),  vec2(0.7,  0.7),
-	vec2( -0.7,  0.7),  vec2( -0.7, -0.7)
-	//, vec2( -1, 0),  vec2( 1, 0),
-	//  vec2( 0, -1),  vec2( 0, 1)
-);
-const float INV_OFFSETS = 1.0 / float(OFFSETS_LEN+1);
-const float OFFSETS_WEIGHTS[OFFSETS_LEN+1] = float[](
-	2.0 *INV_OFFSETS,
-	0.75 *INV_OFFSETS, 0.75 *INV_OFFSETS, 0.75 *INV_OFFSETS, 0.75 *INV_OFFSETS
-	//1.25 *INV_OFFSETS, 1.25 *INV_OFFSETS, 1.25 *INV_OFFSETS, 1.25 *INV_OFFSETS,
-	//0.5 *INV_OFFSETS, 0.5 *INV_OFFSETS, 0.5 *INV_OFFSETS, 0.5 *INV_OFFSETS
-);
+float randAngle()
+{
+	uint x = uint(gl_FragCoord.x);
+	uint y = uint(gl_FragCoord.y);
+	return (30u * x ^ y + 10u * x * y);
+}
+
+const float POISSON_RADIUS = 3.5;
+const int NUM_SAMPLES = 8;
+const float INV_NUM_SAMPLES = 1.0 / float(NUM_SAMPLES);
+const float NUM_SPIRAL_TURNS = float(NUM_SAMPLES/2 + 1);
+
+const float PI =  3.141593;
+const float twoPI = 6.283186;
 
 void fragment() {
 	vec4 albedo = fragColor;
@@ -112,20 +116,29 @@ void fragment() {
 	
 	// 0 = in shadow, 1 = lit
 	float shadow = 1.0;
+
+	float inv2PenumbraSize = POISSON_RADIUS / float(textureSize( shadowPenumbraMap, 0));
 	
 	// project into shadow‐map UV
 	vec3 proj = fragShadowClipSpace.xyz / fragShadowClipSpace.w;
 	proj = proj*0.5 + 0.5;
 	if (between(proj.xy, vec2(0.0), vec2(1.0))) {
-		
-		shadow = get_shadow(proj);
 
-		vec2 pixelUvSize = vec2(1)/textureSize(shadowDepthMap,0);
-		shadow *= OFFSETS_WEIGHTS[0];
-		for (int i = 0; i < OFFSETS_LEN; ++i) {
-			vec2 offs = OFFSETS[i] * pixelUvSize;
-			shadow += get_shadow(vec3(proj.xy + offs, proj.z)) * OFFSETS_WEIGHTS[i+1];
+		// poisson sampling
+		float alpha = 0.5 * INV_NUM_SAMPLES;
+		float angle = randAngle();
+		float angleInc = NUM_SPIRAL_TURNS * INV_NUM_SAMPLES * twoPI;
+		for (int i = 0; i < NUM_SAMPLES; ++i) {
+			alpha += INV_NUM_SAMPLES;
+			angle += angleInc;
+			vec2 disk = vec2(cos(angle), sin(angle));
+			float radius = inv2PenumbraSize * alpha;
+			vec2 uv2 = proj.xy + disk * radius;
+			if (between(uv2, vec2(0.0), vec2(1.0))){
+				shadow += get_shadow(vec3(uv2, proj.z));
+			}
 		}
+		shadow *= INV_NUM_SAMPLES;
 	}
 
 	// expecting AO to be full size
@@ -134,7 +147,7 @@ void fragment() {
 	
 	// blinn-phong
 	vec3 ambient = vec3(0.35 * albedo.rgb);
-	//ambient *= occlusion;
+	ambient *= occlusion;
 	vec3 lighting = ambient; 
 	
 	// TODO : accumulate per light
@@ -157,7 +170,7 @@ void fragment() {
 	lighting += diffuse * albedo.rgb; // = diffuse * light.Color * attenuation;
 	lighting += vec3(specular) * 0.1; // = light.Color * specular * attenuation;
 	
-	lighting *= occlusion;
+	//lighting *= occlusion;
 
 	finalColor = vec4(lighting, albedo.a);
 	

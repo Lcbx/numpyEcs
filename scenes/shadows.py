@@ -104,8 +104,9 @@ def load_shaders():
 		print('______________________')
 		print(newShader.fragment_glsl)
 
-WINDOW_w, WINDOW_h = 1000, 650
+#WINDOW_w, WINDOW_h = 1000, 650
 #WINDOW_w, WINDOW_h = 1920, 1080
+WINDOW_w, WINDOW_h = 1800, 900
 # NOTE: using MSAA with prepass generate z-artifacts
 #rl.SetConfigFlags(rl.FLAG_MSAA_4X_HINT) #|rl.FLAG_WINDOW_RESIZABLE)
 #rl.SetConfigFlags(rl.FLAG_WINDOW_TOPMOST | rl.FLAG_WINDOW_UNDECORATED)
@@ -166,7 +167,7 @@ AO_buffer = su.create_render_buffer(AO_w, AO_h, rl.PIXELFORMAT_UNCOMPRESSED_R16)
 AO_buffer2 = su.create_render_buffer(AO_w//2, AO_h//2, rl.PIXELFORMAT_UNCOMPRESSED_R16)
 AO_buffer3 = su.create_render_buffer(AO_w//4, AO_h//4, rl.PIXELFORMAT_UNCOMPRESSED_R16)
 
-SM_SIZE = 1440
+SM_SIZE = 1024
 SHADOW_FORMAT = rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32
 shadow_buffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT, depth_map=True)
 shadow_buffer2 = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT)
@@ -213,16 +214,19 @@ def run():
 				rl.EndMode3D()
 				rl.EndTextureMode()
 
-				# blur passes
+				# populate fuzzy shadow map with passes
 				read_buffer = shadow_buffer
 				write_buffer = shadow_buffer2
-				step = 16.0/float(SM_SIZE)
-				last = 1.0 /float(SM_SIZE)
+				invSize = 1.0 /float(SM_SIZE)
+				step = 16.0
+				last = 1.0
 				with shadowBlurShader:
+					#shadowBlurShader.depthmap = shadow_buffer.depth
 					while step > last:
-						step /= 2.0
+						step *= 0.5
 						rl.BeginTextureMode(write_buffer)
-						shadowBlurShader.stepSize = step
+						shadowBlurShader.stepSize = step * invSize
+						#shadowBlurShader.last = 1 if step <= last else 0
 						# screen-wide rectangle, y-flipped due to default OpenGL coordinates
 						rl.DrawTextureRec(read_buffer.texture, (0, 0, SM_SIZE, -SM_SIZE), (0, 0), rl.WHITE);
 						rl.EndTextureMode()
@@ -253,6 +257,7 @@ def run():
 						su.ClearColorBuffer()
 						rl.EndTextureMode()
 					else:
+						# TODO : maybe generate mipmaps earlier and use them at other places ?
 						su.GenTextureMipmaps(prepass_buffer.depth)
 						rl.BeginTextureMode(AO_buffer)
 						with AOshader:

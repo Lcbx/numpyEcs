@@ -22,6 +22,9 @@ uniform sampler2D texture0; // R=meshID, G/B=curr distance‐vector in UV coordi
 
 uniform float stepSize;	  // current step size in uv
 
+//uniform sampler2D depthmap; // depth
+//uniform int last;	  	  // whether this is the last pass
+
 out vec4 finalColor;
 
 
@@ -85,5 +88,6 @@ void fragment() {
 	bestDir = bestDir * 0.5 + 0.5;
 	// NOTE: we could output the depth instead of meshId on last draw (step == 1)
 	// so the scene shader does not need 2 textures
+	//if(last==1) bestDir.x = texture(depthmap, fragTexCoord).r;
 	finalColor = vec4(meshId, bestDir, 1);
 }
