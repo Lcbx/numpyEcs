@@ -2,7 +2,7 @@
 
 import argparse
 import sys
-from pathlib import Path as path 
+from pathlib import Path as path
 
 parser = argparse.ArgumentParser(
 	prog='python game engine',
@@ -25,9 +25,13 @@ if args.test or args.tests:
 # run particular test
 if args.test:
 	from importlib import import_module
-	for test_path in test_paths:
-		module = import_module( to_module(test_path) )
-		if hasattr(module, args.test): getattr(module, args.test)()
+	modules = [ import_module( to_module(test_path) ) for test_path in test_paths ]
+	module_index = next( (i for i, m in enumerate(modules) for f in m.__dict__ if f == args.test), None)
+	if module_index:
+		getattr(modules[module_index], args.test)()
+		print(f'{args.test} executed.')
+	else:
+		print(f'could not find "{args.test}" test')
 
 # run whole test suite using pytest
 elif args.tests:

@@ -317,10 +317,8 @@ class BetterShader:
 
 		featuresDict = DefaultFalseDict()
 		if features is not None: featuresDict.update({k: True for k in features})
-		ctx["FEATURES"] = featuresDict
-		ctx["PARAMS"] = params or {}
 
-		return template.render(**ctx)
+		return template.render(FEATURES=featuresDict, PARAMS=params or {})
 
 	
 	def _parse_rendered_text(self, text: str):

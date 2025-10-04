@@ -1,8 +1,9 @@
 import pytest
 
 from shader_util import BetterShader
-from raylib import InitWindow
+from raylib import InitWindow, SetTraceLogLevel, LOG_WARNING
 
+SetTraceLogLevel(LOG_WARNING)
 # no way to init raylib without this afaik
 InitWindow(1, 1, b"test")
 
