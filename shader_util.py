@@ -1,8 +1,10 @@
 import raylib as rl
+
 from pyray import ( Vector2, Vector3, Vector4,
-	Shader, Material, Texture, RenderTexture,
+	Shader, Material, Texture, RenderTexture, Camera3D,
 	ffi, rl_load_texture
 )
+
 from OpenGL.GL import (
 	glBindFramebuffer, glBlitFramebuffer,
 	glClear, glEnable, glDisable, glPolygonOffset,
@@ -16,6 +18,30 @@ import os
 import re
 from typing import Any, Sequence, Dict, Optional
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
+
+from pyray import Vector2, Vector3, Color, Camera3D, RenderTexture
+
+
+def InitWindow(w:float, h:float, title:str):
+	# NOTE: using MSAA with prepass generate z-artifacts
+	#rl.SetConfigFlags(rl.FLAG_MSAA_4X_HINT) #|rl.FLAG_WINDOW_RESIZABLE)
+	#rl.SetConfigFlags(rl.FLAG_WINDOW_TOPMOST | rl.FLAG_WINDOW_UNDECORATED)
+	rl.SetTraceLogLevel(rl.LOG_WARNING)
+	rl.InitWindow(w, h, title.encode())
+	#rl.SetTargetFPS(60)
+
+	display = rl.GetCurrentMonitor()
+	monitor_w = rl.GetMonitorWidth(display)
+	monitor_h = rl.GetMonitorHeight(display)
+	rl.SetWindowPosition(monitor_w - w, 0)
+	#rl.SetWindowPosition(0, 0)
+	#rl.SetWindowSize(w, h)
+	#w, WINDOW_h = monitor_w, monitor_h
+	##print(w, h)
+	#rl.MaximizeWindow()
+	rl.SetWindowState(rl.FLAG_WINDOW_UNDECORATED)
+	#rl.ToggleFullscreen()
+	#rl.SetExitKey(0)
 
 
 
@@ -195,6 +221,14 @@ def EnableMultisampling():
 	glEnable(GL_MULTISAMPLE)
 def DisableMultisampling():
 	glEnable(GL_MULTISAMPLE)
+
+def DrawTexture(tex:Texture, width:float, height:float):
+	# screen-wide rectangle, y-flipped due to default OpenGL coordinates
+	rl.DrawTextureRec(tex, (0, 0, width, -height), (0, 0), rl.WHITE)
+
+def ClearBuffers():
+	rl.ClearBackground(rl.WHITE)
+
 
 
 class DefaultFalseDict(Dict):
@@ -388,6 +422,30 @@ class BetterShader:
 		]
 		self.fragment_glsl = '\n'.join(f_lines)
 
+
+class RenderContext:
+
+	def __init__(self,
+		shader:BetterShader = None,
+		texture:RenderTexture = None,
+		camera:Camera3D = None,
+		clipPlanes:(float, float) = None):
+		self.shader = shader
+		self.texture = texture
+		self.camera = camera
+		self.clipPlanes = clipPlanes
+
+	def __enter__(self):
+		if self.shader: rl.BeginShaderMode(self.shader.shader)
+		if self.texture: rl.BeginTextureMode(self.texture)
+		if self.clipPlanes: rl.rlSetClipPlanes(self.clipPlanes[0], self.clipPlanes[1])
+		if self.camera: rl.BeginMode3D(self.camera)
+		return self
+
+	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
+		if self.camera: rl.EndMode3D()
+		if self.texture: rl.EndTextureMode()
+		rl.EndShaderMode()
 
 class WatchTimer:
 	nesting : int = 0

@@ -1,7 +1,6 @@
-import raylib as rl
-from pyray import Vector2, Vector3, Color, Camera3D, rl_load_texture, RenderTexture
 from ecs import *
 import shader_util as su
+from shader_util import Vector2, Vector3, Color, Camera3D, RenderTexture
 
 @component
 class Position:
@@ -30,14 +29,14 @@ bboxes = world.get_store(BoundingBox)
 
 ground = world.create_entity(
 	Position(0,-0.51,0),
-	Mesh(rl.LIGHTGRAY),
+	Mesh(su.rl.LIGHTGRAY),
 	BoundingBox(
 		-25,0,-25,
 		25,1,25
 	)
 )
 
-rnd_uint8 = lambda : rl.GetRandomValue(0, 255)
+rnd_uint8 = lambda : su.rl.GetRandomValue(0, 255)
 rnd_color = lambda : Color(rnd_uint8(),rnd_uint8(),rnd_uint8(),255)
 
 SPACE_SIZE = 180
@@ -46,16 +45,16 @@ CUBE_MAX_SIDE = 7
 for e in world.create_entities(200):
 	world.add_component(e,
 		Position(
-			rl.GetRandomValue(-SPACE_SIZE, SPACE_SIZE),
-			rl.GetRandomValue(0, 20),
-			rl.GetRandomValue(-SPACE_SIZE, SPACE_SIZE) ),
+			su.rl.GetRandomValue(-SPACE_SIZE, SPACE_SIZE),
+			su.rl.GetRandomValue(0, 20),
+			su.rl.GetRandomValue(-SPACE_SIZE, SPACE_SIZE) ),
 		Velocity(
-			rl.GetRandomValue(-4, 4),
+			su.rl.GetRandomValue(-4, 4),
 			0,
-			rl.GetRandomValue(-4, 4) ),
+			su.rl.GetRandomValue(-4, 4) ),
 		BoundingBox(
-			rl.GetRandomValue(-CUBE_MAX_SIDE, 0), rl.GetRandomValue(-CUBE_MAX_SIDE, 0), rl.GetRandomValue(-CUBE_MAX_SIDE, 0),
-			rl.GetRandomValue(1, CUBE_MAX_SIDE),  rl.GetRandomValue(1, CUBE_MAX_SIDE),  rl.GetRandomValue(1, CUBE_MAX_SIDE) ),
+			su.rl.GetRandomValue(-CUBE_MAX_SIDE, 0), su.rl.GetRandomValue(-CUBE_MAX_SIDE, 0), su.rl.GetRandomValue(-CUBE_MAX_SIDE, 0),
+			su.rl.GetRandomValue(1, CUBE_MAX_SIDE),  su.rl.GetRandomValue(1, CUBE_MAX_SIDE),  su.rl.GetRandomValue(1, CUBE_MAX_SIDE) ),
 		Mesh(rnd_color()),
 	)
 
@@ -107,25 +106,7 @@ def load_shaders():
 #WINDOW_w, WINDOW_h = 1000, 650
 #WINDOW_w, WINDOW_h = 1920, 1080
 WINDOW_w, WINDOW_h = 1800, 900
-# NOTE: using MSAA with prepass generate z-artifacts
-#rl.SetConfigFlags(rl.FLAG_MSAA_4X_HINT) #|rl.FLAG_WINDOW_RESIZABLE)
-#rl.SetConfigFlags(rl.FLAG_WINDOW_TOPMOST | rl.FLAG_WINDOW_UNDECORATED)
-rl.SetTraceLogLevel(rl.LOG_WARNING)
-rl.InitWindow(WINDOW_w, WINDOW_h, b"Hello")
-#rl.SetTargetFPS(60)
-
-display = rl.GetCurrentMonitor()
-monitor_w = rl.GetMonitorWidth(display)
-monitor_h = rl.GetMonitorHeight(display)
-rl.SetWindowPosition(monitor_w - WINDOW_w, 0)
-#rl.SetWindowPosition(0, 0)
-#rl.SetWindowSize(WINDOW_w, WINDOW_h)
-#WINDOW_w, WINDOW_h = monitor_w, monitor_h
-##print(WINDOW_w, WINDOW_h)
-#rl.MaximizeWindow()
-rl.SetWindowState(rl.FLAG_WINDOW_UNDECORATED)
-#rl.ToggleFullscreen()
-#rl.SetExitKey(0)
+su.InitWindow(WINDOW_w, WINDOW_h, "Hello")
 
 
 sceneShader : su.BetterShader = None
@@ -145,7 +126,7 @@ camera = Camera3D(
 	Vector3(0,10,0),
 	Vector3(0,1,0),
 	60.0,
-	rl.CAMERA_PERSPECTIVE
+	su.rl.CAMERA_PERSPECTIVE
 )
 
 light_nearFar = (5,100)
@@ -154,7 +135,7 @@ light_camera = Camera3D(
 	Vector3(0,0,-20),
 	Vector3(0,1,0),
 	90.0,
-	rl.CAMERA_ORTHOGRAPHIC
+	su.rl.CAMERA_ORTHOGRAPHIC
 )
 
 unused_camera = None
@@ -163,32 +144,32 @@ unused_camera = None
 # None is for color format, means we dont actually draw into it
 prepass_buffer = su.create_render_buffer(WINDOW_w, WINDOW_h, None, depth_map=True)
 AO_w, AO_h = WINDOW_w, WINDOW_h
-AO_buffer = su.create_render_buffer(AO_w, AO_h, rl.PIXELFORMAT_UNCOMPRESSED_R16)
-AO_buffer2 = su.create_render_buffer(AO_w//2, AO_h//2, rl.PIXELFORMAT_UNCOMPRESSED_R16)
-AO_buffer3 = su.create_render_buffer(AO_w//4, AO_h//4, rl.PIXELFORMAT_UNCOMPRESSED_R16)
+AO_buffer = su.create_render_buffer(AO_w, AO_h, su.rl.PIXELFORMAT_UNCOMPRESSED_R16)
+AO_buffer2 = su.create_render_buffer(AO_w//2, AO_h//2, su.rl.PIXELFORMAT_UNCOMPRESSED_R16)
+AO_buffer3 = su.create_render_buffer(AO_w//4, AO_h//4, su.rl.PIXELFORMAT_UNCOMPRESSED_R16)
 
 SM_SIZE = 1024
-SHADOW_FORMAT = rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32
+SHADOW_FORMAT = su.rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32
 shadow_buffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT, depth_map=True)
 shadow_buffer2 = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT)
 
 
 # model
 model_root = b'scenes/resources/'
-#model = rl.LoadModel(model_root + b'teapot.obj')
-model = rl.LoadModel(model_root + b'turret.obj')
-#model = rl.LoadModel(model_root + b'heightmap_mesh.glb')
-model_albedo = rl.LoadTexture(model_root + b'turret_diffuse.png')
-su.SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
+#model = su.rl.LoadModel(model_root + b'teapot.obj')
+model = su.rl.LoadModel(model_root + b'turret.obj')
+#model = su.rl.LoadModel(model_root + b'heightmap_mesh.glb')
+model_albedo = su.rl.LoadTexture(model_root + b'turret_diffuse.png')
+su.SetMaterialTexture(model.materials[0], su.rl.MATERIAL_MAP_DIFFUSE, model_albedo)
 
-#anims = su.LoadModelAnimations(model_root + b'mixamo_toon_girl.glb')
+#anims = su.LoadModelAnimations(model_root + b'mixamo_toon_gisu.rl.glb')
 #animFrameCounter = 0
 
 def run():
 	global camera, unused_camera
-	while not rl.WindowShouldClose():
+	while not su.rl.WindowShouldClose():
 
-		frameTime = rl.GetFrameTime()
+		frameTime = su.rl.GetFrameTime()
 		
 		with su.WatchTimer('update'):
 			inputs()
@@ -197,22 +178,17 @@ def run():
 		with su.WatchTimer('total draw'):
 			
 			with su.WatchTimer('shadow'):
-				# write shadow_buffer
-				rl.BeginTextureMode(shadow_buffer)
-				rl.rlSetClipPlanes(light_nearFar[0], light_nearFar[1])
-				rl.BeginMode3D(light_camera)
-				rl.ClearBackground(rl.WHITE)
-				su.SetPolygonOffset(0.9) # should increase to 3 for perspective light
-				
-				lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
-				lightVP = rl.MatrixMultiply(rl.rlGetMatrixModelview(), rl.rlGetMatrixProjection())
-				
-				with shadowMeshShader:
-					draw_scene(shadowMeshShader,randomize_color=True)
-				
-				su.DisablePolygonOffset()
-				rl.EndMode3D()
-				rl.EndTextureMode()
+
+				with su.RenderContext(shader=shadowMeshShader, texture=shadow_buffer, camera=light_camera, clipPlanes=light_nearFar) as render:
+					su.ClearBuffers()
+					su.SetPolygonOffset(0.9) # should increase to 3 for perspective light
+					
+					lightDir = su.rl.Vector3Normalize(su.rl.Vector3Subtract(light_camera.position, light_camera.target))
+					lightVP = su.rl.MatrixMultiply(su.rl.rlGetMatrixModelview(), su.rl.rlGetMatrixProjection())
+
+					draw_scene(render,randomize_color=True)
+					
+					su.DisablePolygonOffset()
 
 				# populate fuzzy shadow map with passes
 				read_buffer = shadow_buffer
@@ -220,16 +196,14 @@ def run():
 				invSize = 1.0 /float(SM_SIZE)
 				step = 16.0
 				last = 1.0
-				with shadowBlurShader:
-					#shadowBlurShader.depthmap = shadow_buffer.depth
-					while step > last:
+				
+				#shadowBlurShader.depthmap = shadow_buffer.depth
+				while step > last:
+					with su.RenderContext(shader=shadowBlurShader, texture=write_buffer) as render:
 						step *= 0.5
-						rl.BeginTextureMode(write_buffer)
 						shadowBlurShader.stepSize = step * invSize
 						#shadowBlurShader.last = 1 if step <= last else 0
-						# screen-wide rectangle, y-flipped due to default OpenGL coordinates
-						rl.DrawTextureRec(read_buffer.texture, (0, 0, SM_SIZE, -SM_SIZE), (0, 0), rl.WHITE);
-						rl.EndTextureMode()
+						su.DrawTexture(read_buffer.texture, SM_SIZE, SM_SIZE)
 						read_buffer, write_buffer = write_buffer, read_buffer
 
 			# main camera
@@ -238,120 +212,102 @@ def run():
 				
 				# z prepass
 				with su.WatchTimer('prepass'):
-					rl.BeginTextureMode(prepass_buffer)
-					rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
-					rl.BeginMode3D(camera)
-					proj = rl.rlGetMatrixProjection()
-					rl.ClearBackground(rl.WHITE)
-					su.SetPolygonOffset(0.1)
-					with prepassShader:
-						draw_scene(prepassShader)
-					su.DisablePolygonOffset()
-					rl.EndMode3D()
-					rl.EndTextureMode()
+					with su.RenderContext(shader=prepassShader, texture=prepass_buffer, clipPlanes=camera_nearFar, camera=camera) as render:
+						proj = su.rl.rlGetMatrixProjection()
+						su.ClearBuffers()
+						su.SetPolygonOffset(0.1)
+						draw_scene(render)
+						su.DisablePolygonOffset()
 				
 				# AO
 				with su.WatchTimer('AO'):
-					if not applyAO:
-						rl.BeginTextureMode(AO_buffer)
-						su.ClearColorBuffer()
-						rl.EndTextureMode()
-					else:
+					if applyAO:
 						# TODO : maybe generate mipmaps earlier and use them at other places ?
 						su.GenTextureMipmaps(prepass_buffer.depth)
-						rl.BeginTextureMode(AO_buffer)
-						with AOshader:
-							AOshader.invProj = rl.MatrixInvert(proj)
-							rl.DrawTextureRec(prepass_buffer.depth, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
-						rl.EndTextureMode()
+
+						with su.RenderContext(shader=AOshader, texture=AO_buffer) as render:
+							AOshader.invProj = su.rl.MatrixInvert(proj)
+							su.DrawTexture(prepass_buffer.depth, AO_w, AO_h)
 
 						# kawase-blur : good perf no matter the kernel size
 						# + easy choose a compromise between quality ands cost
 						# link: https://community.arm.com/cfs-file/__key/communityserver-blogs-components-weblogfiles/00-00-00-20-66/siggraph2015_2D00_mmg_2D00_marius_2D00_notes.pdf
 
 						pixel_scale = Vector2(1.0/float(AO_w),1.0/float(AO_h))
-						pixel_scale_x2 = rl.Vector2Scale(pixel_scale, 2)
-						pixel_scale_x4 = rl.Vector2Scale(pixel_scale_x2, 2)
+						pixel_scale_x2 = su.rl.Vector2Scale(pixel_scale, 2)
+						pixel_scale_x4 = su.rl.Vector2Scale(pixel_scale_x2, 2)
 
-						rl.BeginTextureMode(AO_buffer2)
-						with kawaseBlur_downSampleShader:
+						with su.RenderContext(shader=kawaseBlur_downSampleShader, texture=AO_buffer2) as render:
 							kawaseBlur_downSampleShader.u_direction = pixel_scale
-							rl.DrawTextureRec(AO_buffer.texture, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
-						rl.EndTextureMode()
+							su.DrawTexture(AO_buffer.texture, AO_w, AO_h)
 
-						rl.BeginTextureMode(AO_buffer3)
-						with kawaseBlur_downSampleShader:
+						with su.RenderContext(shader=kawaseBlur_downSampleShader, texture=AO_buffer3) as render:
 							kawaseBlur_downSampleShader.u_direction = pixel_scale_x2
-							rl.DrawTextureRec(AO_buffer2.texture, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
-						rl.EndTextureMode()
+							su.DrawTexture(AO_buffer2.texture, AO_w, AO_h)
 
-						rl.BeginTextureMode(AO_buffer2)
-						with kawaseBlur_upSampleShader:
+						with su.RenderContext(shader=kawaseBlur_upSampleShader, texture=AO_buffer2) as render:
 							kawaseBlur_upSampleShader.u_direction = pixel_scale_x4
-							rl.DrawTextureRec(AO_buffer3.texture, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
+							su.DrawTexture(AO_buffer3.texture, AO_w, AO_h)
 
-						rl.BeginTextureMode(AO_buffer)
-						with kawaseBlur_upSampleShader:
+						with su.RenderContext(shader=kawaseBlur_upSampleShader, texture=AO_buffer) as render:
 							kawaseBlur_upSampleShader.u_direction = pixel_scale_x2
-							rl.DrawTextureRec(AO_buffer2.texture, (0, 0, AO_w, -AO_h), (0, 0), rl.WHITE);
-						rl.EndTextureMode()
+							su.DrawTexture(AO_buffer2.texture, AO_w, AO_h)
 				
 				with su.WatchTimer('forward pass'):
+
+					su.rl.BeginDrawing()
+					
 					# transfer depth to main buffer for early z discard
 					su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
+
+					with su.RenderContext(shader=sceneShader, clipPlanes=camera_nearFar, camera=camera) as render:
 					
-					rl.BeginDrawing()
-					rl.rlSetClipPlanes(camera_nearFar[0], camera_nearFar[1])
-					rl.BeginMode3D(camera)
-					su.ClearColorBuffer() # do not clear depth !
-					with sceneShader:
+						su.ClearColorBuffer() # do not clear depth !
+						
 						sceneShader.lightDir = lightDir
 						sceneShader.lightVP  = lightVP
 						sceneShader.shadowDepthMap = shadow_buffer.depth
 						sceneShader.shadowPenumbraMap = read_buffer.texture
 						sceneShader.ambientOcclusionMap = AO_buffer.texture
-						draw_scene(sceneShader)
-					rl.EndMode3D()
+						draw_scene(render)
 				
 				# maybe add toggles for drawing buffers
 				#draw_shadow_buffer()
 				#draw_prepass()
 				#draw_AO()
 		
-			rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count}".encode(), 10, 10, 20, rl.LIGHTGRAY)
-			su.WatchTimer.display(10, 40, 20, rl.LIGHTGRAY)
+			su.rl.DrawText(f"fps {su.rl.GetFPS()} cubes {world.count}".encode(), 10, 10, 20, su.rl.LIGHTGRAY)
+			su.WatchTimer.display(10, 40, 20, su.rl.LIGHTGRAY)
 
 			# sleeps for vsync / target fps
-			rl.EndDrawing()
+			su.rl.EndDrawing()
 
 			# a lot of stuff happening ain EndDrawing it seems...
 			# shadow map cost seems to determine perf the most
 			su.WatchTimer.capture()
-	rl.CloseWindow()
 
 
 rotation = 0
 def draw_shadow_buffer():
 	display_size = WINDOW_w / 5.0
 	display_scale = display_size / float(shadow_buffer.depth.width)
-	rl.DrawTextureEx(shadow_buffer.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
-	rl.DrawTextureEx(shadow_buffer2.texture, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
-	rl.DrawTextureEx(shadow_buffer.depth, Vector2(WINDOW_w - display_size, 2 * display_size), rotation, display_scale, rl.RAYWHITE)
+	su.rl.DrawTextureEx(shadow_buffer.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, su.rl.RAYWHITE)
+	su.rl.DrawTextureEx(shadow_buffer2.texture, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, su.rl.RAYWHITE)
+	su.rl.DrawTextureEx(shadow_buffer.depth, Vector2(WINDOW_w - display_size, 2 * display_size), rotation, display_scale, su.rl.RAYWHITE)
 def draw_prepass():
 	display_size = WINDOW_w / 5.0
 	display_scale = display_size / float(prepass_buffer.texture.width)
-	rl.DrawTextureEx(prepass_buffer.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
-	
+	su.rl.DrawTextureEx(prepass_buffer.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, su.rl.RAYWHITE)
 def draw_AO():
 	# NOTE: this is after goin on the downsampling / upsampling roller-coaster
 	# if you want the downsampling results you have to comment the upsampling
 	display_size = WINDOW_w / 5.0
 	display_scale = display_size / float(AO_buffer.texture.width)
-	rl.DrawTextureEx(AO_buffer.texture, Vector2(WINDOW_w - display_size, 0), rotation, display_scale, rl.RAYWHITE)
+	su.rl.DrawTextureEx(AO_buffer.texture, Vector2(WINDOW_w - display_size, 0), rotation, display_scale, su.rl.RAYWHITE)
 	display_scale = display_size / float(AO_buffer2.texture.width)
-	rl.DrawTextureEx(AO_buffer2.texture, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
+	su.rl.DrawTextureEx(AO_buffer2.texture, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, su.rl.RAYWHITE)
 	display_scale = display_size / float(AO_buffer3.texture.width)
-	rl.DrawTextureEx(AO_buffer3.texture, Vector2(WINDOW_w - display_size, 2 * display_size), rotation, display_scale, rl.RAYWHITE)
+	su.rl.DrawTextureEx(AO_buffer3.texture, Vector2(WINDOW_w - display_size, 2 * display_size), rotation, display_scale, su.rl.RAYWHITE)
 
 orbit = True
 applyAO = True
@@ -362,17 +318,21 @@ def inputs():
 	global orbit
 	global applyAO
 
-	if rl.IsKeyPressed(rl.KEY_R): load_shaders()
-	if rl.IsKeyPressed(rl.KEY_O):
+	if su.rl.IsKeyPressed(su.rl.KEY_R): load_shaders()
+	if su.rl.IsKeyPressed(su.rl.KEY_O):
 		orbit = not orbit
-	if rl.IsKeyPressed(rl.KEY_I):
+	if su.rl.IsKeyPressed(su.rl.KEY_I):
+		if applyAO:
+			with su.RenderContext(texture=AO_buffer) as render:
+				su.ClearColorBuffer()
 		applyAO = not applyAO
-	if rl.IsKeyPressed(rl.KEY_P):
-		light_camera.projection = (rl.CAMERA_ORTHOGRAPHIC
-			if light_camera.projection == rl.CAMERA_PERSPECTIVE
-			else rl.CAMERA_PERSPECTIVE
+
+	if su.rl.IsKeyPressed(su.rl.KEY_P):
+		light_camera.projection = (su.rl.CAMERA_ORTHOGRAPHIC
+			if light_camera.projection == su.rl.CAMERA_PERSPECTIVE
+			else su.rl.CAMERA_PERSPECTIVE
 		)
-	if rl.IsKeyPressed(rl.KEY_L):
+	if su.rl.IsKeyPressed(su.rl.KEY_L):
 		if unused_camera:
 			camera = unused_camera
 			unused_camera = None
@@ -381,7 +341,7 @@ def inputs():
 			camera = light_camera
 
 	scrollspeed = 3.0
-	mw = scrollspeed * rl.GetMouseWheelMove()
+	mw = scrollspeed * su.rl.GetMouseWheelMove()
 	if mw != 0 and ( camera.position.y > scrollspeed + 0.5 or mw > 0.0):
 		cam_pos = np.array([camera.position.x, camera.position.y, camera.position.z])
 		tar = np.array([camera.target.x, camera.target.y, camera.target.z])
@@ -392,7 +352,7 @@ def inputs():
 def update(frameTime):
 	global camera
 	
-	time = rl.GetTime()
+	time = su.rl.GetTime()
 	
 	if orbit:
 		cam_ang = time * 0.5
@@ -402,7 +362,7 @@ def update(frameTime):
 			np.sin(cam_ang) * camera_dist)
 
 	#global animFrameCounter
-	#rl.UpdateModelAnimation(model, anims[0], animFrameCounter)
+	#su.rl.UpdateModelAnimation(model, anims[0], animFrameCounter)
 	#animFrameCounter += 1
 	#if animFrameCounter >= anims[0].frameCount: animFrameCounter = 0
 
@@ -423,17 +383,17 @@ def update(frameTime):
 	velocities.set_vector(pv, v_vec)
 
 
-def draw_scene(shader:su.BetterShader, randomize_color=False):
+def draw_scene(render:su.RenderContext, randomize_color=False):
 	global model
-	with shader:
+	with render.shader:
 		for i in range(model.materialCount):
-			model.materials[i].shader = shader.shader
+			model.materials[i].shader = render.shader.shader
 		
 		# model, position, rotation axis, rotation (deg), scale, tint
 		#scale = 0.4
-		#rl.DrawModelEx(model, Vector3(0,4,0), Vector3(1,0,0), 0.0, Vector3(scale,scale,scale), rl.BEIGE)
+		#su.rl.DrawModelEx(model, Vector3(0,4,0), Vector3(1,0,0), 0.0, Vector3(scale,scale,scale), su.rl.BEIGE)
 		scale = 1
-		rl.DrawModelEx(model, Vector3(0,0,0), Vector3(1,0,0), 0.0, Vector3(scale,scale,scale), rl.BEIGE)
+		su.rl.DrawModelEx(model, Vector3(0,0,0), Vector3(1,0,0), 0.0, Vector3(scale,scale,scale), su.rl.BEIGE)
 
 		ents = world.where(Position, Mesh, BoundingBox)
 		pos_vec, mesh_vec, bb_vec, = (positions.get_vector(ents), meshes.get_vector(ents), bboxes.get_vector(ents))
@@ -444,7 +404,7 @@ def draw_scene(shader:su.BetterShader, randomize_color=False):
 		meshIds = ents / np.max(ents)
 		
 		for meshId, center, size, mesh in zip(meshIds, centers, sizes, mesh_vec):
-			rl.DrawCube(
+			su.rl.DrawCube(
 				tuple(center),
 				size[0], # x
 				size[1], # y
