@@ -148,10 +148,8 @@ AO_buffer = su.create_render_buffer(AO_w, AO_h, su.rl.PIXELFORMAT_UNCOMPRESSED_R
 AO_buffer2 = su.create_render_buffer(AO_w//2, AO_h//2, su.rl.PIXELFORMAT_UNCOMPRESSED_R16)
 AO_buffer3 = su.create_render_buffer(AO_w//4, AO_h//4, su.rl.PIXELFORMAT_UNCOMPRESSED_R16)
 
-SM_SIZE = 1024
-#SHADOW_FORMAT = su.rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32
+SM_SIZE = 2024
 shadow_buffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=None, depth_map=True)
-#shadow_buffer2 = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT)
 
 
 # model
@@ -181,7 +179,7 @@ def run():
 
 				with su.RenderContext(shader=shadowMeshShader, texture=shadow_buffer, camera=light_camera, clipPlanes=light_nearFar) as render:
 					su.ClearBuffers()
-					su.SetPolygonOffset(0.9) # should increase to 3 for perspective light
+					su.SetPolygonOffset(1.0) # should increase to 3 for perspective light
 					
 					lightDir = su.rl.Vector3Normalize(su.rl.Vector3Subtract(light_camera.position, light_camera.target))
 					lightVP = su.rl.MatrixMultiply(su.rl.rlGetMatrixModelview(), su.rl.rlGetMatrixProjection())
@@ -189,6 +187,7 @@ def run():
 					draw_scene(render,randomize_color=True)
 					
 					su.DisablePolygonOffset()
+				
 
 			# main camera
 			with su.WatchTimer('main camera'):
@@ -250,12 +249,13 @@ def run():
 						
 						sceneShader.lightDir = lightDir
 						sceneShader.lightVP  = lightVP
+						sceneShader.invDepthMapSize = 1.0 / float(SM_SIZE)
 						sceneShader.shadowDepthMap = shadow_buffer.depth
 						sceneShader.ambientOcclusionMap = AO_buffer.texture
 						draw_scene(render)
 				
 				# maybe add toggles for drawing buffers
-				#draw_shadow_buffer()
+				draw_shadow_buffer()
 				#draw_prepass()
 				#draw_AO()
 		
@@ -274,9 +274,7 @@ rotation = 0
 def draw_shadow_buffer():
 	display_size = WINDOW_w / 5.0
 	display_scale = display_size / float(shadow_buffer.depth.width)
-	su.rl.DrawTextureEx(shadow_buffer.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, su.rl.RAYWHITE)
-	su.rl.DrawTextureEx(shadow_buffer2.texture, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, su.rl.RAYWHITE)
-	su.rl.DrawTextureEx(shadow_buffer.depth, Vector2(WINDOW_w - display_size, 2 * display_size), rotation, display_scale, su.rl.RAYWHITE)
+	su.rl.DrawTextureEx(shadow_buffer.depth, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, su.rl.RAYWHITE)
 def draw_prepass():
 	display_size = WINDOW_w / 5.0
 	display_scale = display_size / float(prepass_buffer.texture.width)
