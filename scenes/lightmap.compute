@@ -21,7 +21,6 @@ varying vec2 fragTexCoord;
 uniform sampler2D texture0; // R=meshID, G/B=curr distance‐vector in UV coordinates
 
 uniform float stepSize;	  // current step size in uv
-
 //uniform sampler2D depthmap; // depth
 //uniform int last;	  	  // whether this is the last pass
 

@@ -149,7 +149,8 @@ AO_buffer2 = su.create_render_buffer(AO_w//2, AO_h//2, su.rl.PIXELFORMAT_UNCOMPR
 AO_buffer3 = su.create_render_buffer(AO_w//4, AO_h//4, su.rl.PIXELFORMAT_UNCOMPRESSED_R16)
 
 SM_SIZE = 1024
-SHADOW_FORMAT = su.rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32
+INV_SM_SIZE = 1.0 / float(SM_SIZE)
+SHADOW_FORMAT = su.rl.PIXELFORMAT_UNCOMPRESSED_R16G16B16
 shadow_buffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT, depth_map=True)
 shadow_buffer2 = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT)
 
@@ -181,7 +182,7 @@ def run():
 
 				with su.RenderContext(shader=shadowMeshShader, texture=shadow_buffer, camera=light_camera, clipPlanes=light_nearFar) as render:
 					su.ClearBuffers()
-					su.SetPolygonOffset(0.9) # should increase to 3 for perspective light
+					su.SetPolygonOffset(0.8) # should increase to 3 for perspective light
 					
 					lightDir = su.rl.Vector3Normalize(su.rl.Vector3Subtract(light_camera.position, light_camera.target))
 					lightVP = su.rl.MatrixMultiply(su.rl.rlGetMatrixModelview(), su.rl.rlGetMatrixProjection())
@@ -193,15 +194,14 @@ def run():
 				# populate fuzzy shadow map with passes
 				read_buffer = shadow_buffer
 				write_buffer = shadow_buffer2
-				invSize = 1.0 /float(SM_SIZE)
-				step = 16.0
+				step = 8.0
 				last = 1.0
 				
 				#shadowBlurShader.depthmap = shadow_buffer.depth
 				while step > last:
 					with su.RenderContext(shader=shadowBlurShader, texture=write_buffer) as render:
 						step *= 0.5
-						shadowBlurShader.stepSize = step * invSize
+						shadowBlurShader.stepSize = step * INV_SM_SIZE
 						#shadowBlurShader.last = 1 if step <= last else 0
 						su.DrawTexture(read_buffer.texture, SM_SIZE, SM_SIZE)
 						read_buffer, write_buffer = write_buffer, read_buffer
@@ -264,6 +264,7 @@ def run():
 					
 						su.ClearColorBuffer() # do not clear depth !
 						
+						sceneShader.invDepthMapSize = INV_SM_SIZE
 						sceneShader.lightDir = lightDir
 						sceneShader.lightVP  = lightVP
 						sceneShader.shadowDepthMap = shadow_buffer.depth
