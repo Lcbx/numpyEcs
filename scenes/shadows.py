@@ -143,7 +143,7 @@ unused_camera = None
 # TODO : handle resolution changes (rebuild buffers)
 # None is for color format, means we dont actually draw into it
 prepass_buffer = su.create_render_buffer(WINDOW_w, WINDOW_h, None, depth_map=True)
-AO_w, AO_h = WINDOW_w, WINDOW_h
+AO_w, AO_h = WINDOW_w//2, WINDOW_h//2
 AO_buffer = su.create_render_buffer(AO_w, AO_h, su.rl.PIXELFORMAT_UNCOMPRESSED_R16)
 AO_buffer2 = su.create_render_buffer(AO_w//2, AO_h//2, su.rl.PIXELFORMAT_UNCOMPRESSED_R16)
 AO_buffer3 = su.create_render_buffer(AO_w//4, AO_h//4, su.rl.PIXELFORMAT_UNCOMPRESSED_R16)
@@ -182,7 +182,7 @@ def run():
 
 				with su.RenderContext(shader=shadowMeshShader, texture=shadow_buffer, camera=light_camera, clipPlanes=light_nearFar) as render:
 					su.ClearBuffers()
-					su.SetPolygonOffset(0.8) # should increase to 3 for perspective light
+					su.SetPolygonOffset(3.0) # should increase to 3 for perspective light
 					
 					lightDir = su.rl.Vector3Normalize(su.rl.Vector3Subtract(light_camera.position, light_camera.target))
 					lightVP = su.rl.MatrixMultiply(su.rl.rlGetMatrixModelview(), su.rl.rlGetMatrixProjection())
@@ -223,7 +223,7 @@ def run():
 				with su.WatchTimer('AO'):
 					if applyAO:
 						# TODO : maybe generate mipmaps earlier and use them at other places ?
-						su.GenTextureMipmaps(prepass_buffer.depth)
+						#su.GenTextureMipmaps(prepass_buffer.depth)
 
 						with su.RenderContext(shader=AOshader, texture=AO_buffer) as render:
 							AOshader.invProj = su.rl.MatrixInvert(proj)
@@ -264,9 +264,9 @@ def run():
 					
 						su.ClearColorBuffer() # do not clear depth !
 						
-						sceneShader.invDepthMapSize = INV_SM_SIZE
 						sceneShader.lightDir = lightDir
 						sceneShader.lightVP  = lightVP
+						sceneShader.shadowSamplingRadius = 3.5 * INV_SM_SIZE
 						sceneShader.shadowDepthMap = shadow_buffer.depth
 						sceneShader.shadowPenumbraMap = read_buffer.texture
 						sceneShader.ambientOcclusionMap = AO_buffer.texture

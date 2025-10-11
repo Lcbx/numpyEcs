@@ -213,7 +213,7 @@ def ClearColorBuffer():
 
 def SetPolygonOffset(value:float):
 	glEnable(GL_POLYGON_OFFSET_FILL)
-	glPolygonOffset(value, value)
+	glPolygonOffset(value, 0.0)
 def DisablePolygonOffset():
 	glDisable(GL_POLYGON_OFFSET_FILL)
 

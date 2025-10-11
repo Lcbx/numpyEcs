@@ -32,6 +32,7 @@ void vertex(){
 uniform sampler2D texture0;			// diffuse
 
 uniform vec3 lightDir;
+uniform float shadowSamplingRadius;
 uniform sampler2D shadowDepthMap;	   // classic depth map (R channel)
 uniform sampler2D shadowPenumbraMap;   // RGB: [meshId, distX, distY]
 uniform sampler2D ambientOcclusionMap; // R: intensity
@@ -53,22 +54,20 @@ vec2 get_dir(vec2 encoded){
 
 // TODO : maybe put shadows into it's own buffer like occlusion ?
 // or put both in the same buffer ? food for thoughts
-float get_shadow(vec3 proj){
+float get_shadow(vec2 uv, float fragmentDepth){
 
-	float fragmentDepth = proj.z;
-
-	//vec3 penumbra = texture(shadowPenumbraMap, proj.xy).rgb;
+	//vec3 penumbra = texture(shadowPenumbraMap, uv).rgb;
 	//float occluderDepth = penumbra.r;
 
-	float occluderDepth = texture(shadowDepthMap, proj.xy).r;
+	float occluderDepth = texture(shadowDepthMap, uv).r;
 	float localOcclusionDist = fragmentDepth - occluderDepth;
 
 	if(localOcclusionDist > 0) return 0.0;
 
-	vec3 penumbra = texture(shadowPenumbraMap, proj.xy).rgb;
+	vec3 penumbra = texture(shadowPenumbraMap, uv).rgb;
 	vec2 penDir = get_dir(penumbra.gb);
 
-	vec2 remoteCoord = proj.xy + penDir;
+	vec2 remoteCoord = uv + penDir;
 
 	//float remoteOccluderDepth = texture(shadowPenumbraMap, remoteCoord).r;
 	float remoteOccluderDepth = texture(shadowDepthMap, remoteCoord).r;
@@ -78,11 +77,7 @@ float get_shadow(vec3 proj){
 
 	float distToEdgeSq = dot(penDir, penDir);
 	float f = distToEdgeSq;
-	//float f = localOcclusionDist;
 
-	/// all different soft shadow strength/delimitations
-	//f *= 5000;
-	//f = pow(f, 0.8) * 500;
 	f = sqrt(f);
 
 	// causes artifacts
@@ -90,7 +85,7 @@ float get_shadow(vec3 proj){
 
 	float occlusionFactor = 1.5 - remoteOcclusionDist * 2.0;
 	f *= occlusionFactor;
-	f *= 130.0; // pass the inverse of this as uniform named shadow blur factor ?
+	f *= 120.0; // pass the inverse of this as uniform named shadow blur factor ?
 
 	return f;
 }
@@ -104,27 +99,25 @@ float randAngle()
 
 
 const float POISSON_RADIUS = 3.5;
-const int NUM_SAMPLES = 8;
+const int NUM_SAMPLES = 5;
 const float INV_NUM_SAMPLES = 1.0 / float(NUM_SAMPLES);
-const float NUM_SPIRAL_TURNS = float(NUM_SAMPLES/2 + 1);
+const float NUM_SPIRAL_TURNS = 3;
 
 const float PI =  3.141593;
 const float twoPI = 6.283186;
 
 void fragment() {
 	vec4 albedo = fragColor;
+	//albedo = vec4(1);
 	//albedo *= texture(texture0, fragTexCoord);
 	
 	// 0 = in shadow, 1 = lit
-	float shadow = 1.0;
-
-	float inv2PenumbraSize = POISSON_RADIUS / float(textureSize( shadowPenumbraMap, 0));
+	float shadow = 0.1;
 	
 	// project into shadow‐map UV
 	vec3 proj = fragShadowClipSpace.xyz / fragShadowClipSpace.w;
 	proj = proj*0.5 + 0.5;
-	if (between(proj.xy, vec2(0.0), vec2(1.0))) {
-
+	if(between(proj.xy, vec2(0.0), vec2(1.0))){
 		// poisson sampling
 		float alpha = 0.5 * INV_NUM_SAMPLES;
 		float angle = randAngle();
@@ -132,18 +125,15 @@ void fragment() {
 		for (int i = 0; i < NUM_SAMPLES; ++i) {
 			alpha += INV_NUM_SAMPLES;
 			angle += angleInc;
-			vec2 disk = vec2(cos(angle), sin(angle));
-			float radius = inv2PenumbraSize * alpha;
-			vec2 uv2 = proj.xy + disk * radius;
-			if (between(uv2, vec2(0.0), vec2(1.0))){
-				shadow += get_shadow(vec3(uv2, proj.z));
-			}
+			vec2 disk = vec2(cos(angle), sin(angle)) * alpha;
+			shadow += get_shadow(proj.xy + disk * shadowSamplingRadius, proj.z);
 		}
 		shadow *= INV_NUM_SAMPLES;
 	}
+	else shadow = 1;
 
-	// expecting AO to be full size
-	ivec2 viewPx = ivec2(gl_FragCoord.xy);
+	// AO, sampled based on screen uv (from half-res)
+	ivec2 viewPx = ivec2(gl_FragCoord.xy * 0.5);
 	float occlusion = texelFetch(ambientOcclusionMap, viewPx, 0).r;
 	
 	// blinn-phong
