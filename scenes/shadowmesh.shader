@@ -26,3 +26,4 @@ out vec4 finalColor;
 void fragment() {
 	finalColor = fragColor;
 }
+

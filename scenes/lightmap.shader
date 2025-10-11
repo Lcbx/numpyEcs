@@ -102,6 +102,7 @@ float randAngle()
 	return (30u * x ^ y + 10u * x * y);
 }
 
+
 const float POISSON_RADIUS = 3.5;
 const int NUM_SAMPLES = 8;
 const float INV_NUM_SAMPLES = 1.0 / float(NUM_SAMPLES);
