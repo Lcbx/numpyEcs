@@ -243,24 +243,17 @@ class BetterShader:
 	"""
 
 	# Regex to capture qualifier, type, and name from declarations
-	_decl_pattern = re.compile(
-		r"\n"										# start after a newline (keeps things simple)
-		r"(?:layout\s*\(\s*location\s*=\s*(\d+)\s*\)\s*)?"  # optional layout(location = N)
-		r"(uniform|in|out|varying|const)\s+"		 # qualifier
-		r"(\S+)\s+"								  # type (no spaces)
-		r"([^;]+?)\s*;"							  # name(s) until the semicolon
-		, re.MULTILINE
-	)
+	_decl_pattern = re.compile(r"\n(?>layout\(location = (\d+)\) )?(uniform|in|out|varying|const)\s+(\S+)\s+([^;]+).*?;", re.MULTILINE)
 
 	# Regex to extract function definitions with bodies
 	_func_pattern = re.compile(
-		r'\n'							# start at a newline
-		r'[\w\*\s&<>]+?\s+'			  # return type (e.g. void, bool, vec4, const mat4&)
-		r'([A-Za-z_]\w*)'				# function name
-		r'\s*\(([^)]*)\)\s*'			 # argument list
-		r'(?:\{\n|\n\{\n)'			   # opening brace on same or next line
-		r'([\s\S]*?)'					# function body (non-greedy)
-		r'\n\}'						  # closing brace at column 0
+		r'\n'                            # start at a newline
+		r'[\w\*\s&<>]+?\s+'              # return type (e.g. void, bool, vec4, const mat4&)
+		r'([A-Za-z_]\w*)'                # function name
+		r'\s*\(([^)]*)\)\s*'             # argument list
+		r'(?:\{\n|\n\{\n)'               # opening brace on same or next line
+		r'([\s\S]*?)'                    # function body (non-greedy)
+		r'\n\}'                          # closing brace at column 0
 	)
 
 	_vertex_start = 'void vertex()'
@@ -294,6 +287,9 @@ class BetterShader:
 		self.vertex_glsl = ''	# rendered vertex GLSL
 		self.fragment_glsl = ''  # rendered fragment GLSL
 
+
+		#print(f'compiling {filepath}')
+
 		# Render the shader source through Jinja2 (handles #if / #include)
 		text = self._render_template(features, params)
 
@@ -326,9 +322,7 @@ class BetterShader:
 	def __setattr__(self, name: str, value: Any) -> None:
 		try:
 			SetShaderValue(self.shader, self.uniform_locs[name], value)
-			return
-		except Exception:
-			pass
+		except: pass
 		object.__setattr__(self, name, value)
 
 	def _render_template(self, features: Sequence[str], params: Dict[str, Any]) -> str:
@@ -372,17 +366,17 @@ class BetterShader:
 		# Functions (full match = whole function; we keep their text)
 		self.functions = [m.group(0).strip() for m in self._func_pattern.finditer(text)]
 
+		#print(*[ f[0:20] for f in self.functions], sep='\n')
+
 		# Find vertex()/fragment() bodies
 		for i, f in enumerate(self.functions):
 			if f.startswith(self._vertex_start):
 				self._vertex_body = i
+				#print('-> got vert', hasattr(self, '_vertex_body'))
 			elif f.startswith(self._fragment_start):
 				self._fragment_body = i
+				#print('-> got frag', hasattr(self, '_fragment_start'))
 
-		#if not hasattr(self, '_vertex_body'):
-		#	raise ValueError(f'could not find vertex function in {text}')
-		#if not hasattr(self, '_fragment_body'):
-		#	raise ValueError(f'could not find vertex function in {text}')
 
 	def _generate_glsl(self):
 		def inoutFmt(loc, typ, name, inoutStr):
