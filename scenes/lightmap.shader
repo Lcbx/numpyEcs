@@ -51,10 +51,6 @@ float randAngle()
 	return (30u * x ^ y + 10u * x * y);
 }
 
-
-float compare(vec2 uv, float depth){
-}
-
 void fragment() {
 	vec4 albedo = fragColor;
 	//albedo *= texture(texture0, fragTexCoord);
