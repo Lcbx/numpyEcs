@@ -95,7 +95,7 @@ def load_shaders():
 
 		newShader = su.BetterShader('scenes/kawaseBlur_upSample.compute')
 		if newShader.valid(): kawaseBlur_upSampleShader = newShader
-		else: raise Exception('kawaseBlur_downSampleShader.compute')
+		else: raise Exception('kawaseBlur_upSampleShader.compute')
 
 	except Exception as ex:
 		print('--------------> failed compiling', ex.args[0])
@@ -167,7 +167,6 @@ su.SetMaterialTexture(model.materials[0], su.rl.MATERIAL_MAP_DIFFUSE, model_albe
 #animFrameCounter = 0
 
 def run():
-	global camera, unused_camera
 	while not su.rl.WindowShouldClose():
 
 		frameTime = su.rl.GetFrameTime()
@@ -388,7 +387,7 @@ def draw_scene(render:su.RenderContext, randomize_color=False):
 	global model
 	with render.shader:
 		for i in range(model.materialCount):
-			model.materials[i].shader = render.shader.shader
+			model.materials[i].shader = render.shader.shaderStruct
 		
 		# model, position, rotation axis, rotation (deg), scale, tint
 		#scale = 0.4
