@@ -302,26 +302,26 @@ class BetterShader:
 		rl.TraceLog(rl.LOG_INFO, f'compiling {filepath}'.encode())
 
 		# Compile via raylib
-		self.shader = rl.LoadShaderFromMemory(
+		self.shaderStruct = rl.LoadShaderFromMemory(
 			self.vertex_glsl.encode(),
 			self.fragment_glsl.encode()
 		)
 
 		for typ, name in self.uniforms:
-			self.uniform_locs[name] = rl.GetShaderLocation(self.shader, name.encode('utf-8'))
+			self.uniform_locs[name] = rl.GetShaderLocation(self.shaderStruct, name.encode('utf-8'))
 
 	def valid(self) -> bool:
-		return self.shader.id > 0
+		return self.shaderStruct.id > 0
 
 	def __enter__(self) -> None:
-		rl.BeginShaderMode(self.shader)
+		rl.BeginShaderMode(self.shaderStruct)
 
 	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
 		rl.EndShaderMode()
 
 	def __setattr__(self, name: str, value: Any) -> None:
 		try:
-			SetShaderValue(self.shader, self.uniform_locs[name], value)
+			SetShaderValue(self.shaderStruct, self.uniform_locs[name], value)
 		except: pass
 		object.__setattr__(self, name, value)
 
@@ -430,7 +430,7 @@ class RenderContext:
 		self.clipPlanes = clipPlanes
 
 	def __enter__(self):
-		if self.shader: rl.BeginShaderMode(self.shader.shader)
+		if self.shader: rl.BeginShaderMode(self.shader.shaderStruct)
 		if self.texture: rl.BeginTextureMode(self.texture)
 		if self.clipPlanes: rl.rlSetClipPlanes(self.clipPlanes[0], self.clipPlanes[1])
 		if self.camera: rl.BeginMode3D(self.camera)
