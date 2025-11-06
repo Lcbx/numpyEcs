@@ -27,16 +27,20 @@ const float twoPI = 6.283186;
 
 
 // could be moved to uniforms
-const float radiusWS = 0.3;
+const float radiusWS = 0.35;
 const float radiusWS2 = radiusWS * radiusWS;
 const float invRadius2 = 1.0 / radiusWS2;
-const float bias = 0.01;
-const float intensity = 10.0;
+const float bias = 0.1;
+const float intensity = 25.0;
 
 out vec4 finalColor;
 
 float random(vec2 co) {
 	return fract(dot(co.xy, vec2(3,13)) * dot(co.yx, vec2(7,4)) * 0.008);
+}
+
+float interleavedGradientNoise(vec2 co){
+	return fract(52.9829189 * fract(dot(co, vec2(0.06711056, 0.00583715))));
 }
 
 bool between(vec2 v, vec2 bottomLeft, vec2 topRight){
@@ -46,10 +50,13 @@ bool between(vec2 v, vec2 bottomLeft, vec2 topRight){
 
 float randAngle()
 {
-	uint x = uint(gl_FragCoord.x);
-	uint y = uint(gl_FragCoord.y);
-	return (30u * x ^ y + 10u * x * y);
+	ivec2 uv = ivec2(gl_FragCoord.xy);
+	float angle = 0;
+	angle += 30u * uv.x ^ uv.y + 10u * uv.x * uv.y;
+	//angle *= interleavedGradientNoise(gl_FragCoord.xy) * PI;
+	return angle;
 }
+
 
 vec3 getPositionVS(vec2 uv, int mip_level) {
 	//float z = textureLod(texture0, uv, float(mip_level)).x; // lod level not working ?

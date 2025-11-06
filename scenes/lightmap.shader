@@ -43,6 +43,10 @@ float random(vec2 co) {
 	return fract(dot(co, vec2(3,8)) * dot(co.yx, vec2(7,5)) * 0.03);
 }
 
+float interleavedGradientNoise(vec2 co){
+	return fract(52.9829189 * fract(dot(co, vec2(0.06711056, 0.00583715))));
+}
+
 bool between(vec2 v, vec2 bottomLeft, vec2 topRight){
 	vec2 s = step(bottomLeft, v) - step(topRight, v);
 	return bool(s.x * s.y);
@@ -92,11 +96,14 @@ float get_shadow(vec2 uv, float fragmentDepth){
 
 float randAngle()
 {
-	uint x = uint(gl_FragCoord.x);
-	uint y = uint(gl_FragCoord.y);
-	return (30u * x ^ y + 10u * x * y);
+	ivec2 uv = ivec2(gl_FragCoord.xy);
+	float angle = 0;
+	angle += 30u * uv.x ^ uv.y + 10u * uv.x * uv.y;
+	float ign = interleavedGradientNoise(gl_FragCoord.xy);
+	angle += ign * PI;
+	angle *= ign;
+	return angle;
 }
-
 
 const float POISSON_RADIUS = 3.5;
 const int NUM_SAMPLES = 5;
@@ -112,12 +119,13 @@ void fragment() {
 	//albedo *= texture(texture0, fragTexCoord);
 	
 	// 0 = in shadow, 1 = lit
-	float shadow = 0.1;
+	float shadow = 1;
 	
 	// project into shadow‐map UV
 	vec3 proj = fragShadowClipSpace.xyz / fragShadowClipSpace.w;
 	proj = proj*0.5 + 0.5;
 	if(between(proj.xy, vec2(0.0), vec2(1.0))){
+		float shadowComputed = 0;
 		// poisson sampling
 		float alpha = 0.5 * INV_NUM_SAMPLES;
 		float angle = randAngle();
@@ -126,11 +134,10 @@ void fragment() {
 			alpha += INV_NUM_SAMPLES;
 			angle += angleInc;
 			vec2 disk = vec2(cos(angle), sin(angle)) * alpha;
-			shadow += get_shadow(proj.xy + disk * shadowSamplingRadius, proj.z);
+			shadowComputed += get_shadow(proj.xy + disk * shadowSamplingRadius, proj.z);
 		}
-		shadow *= INV_NUM_SAMPLES;
+		shadow = shadowComputed * INV_NUM_SAMPLES;
 	}
-	else shadow = 1;
 
 	// AO, sampled based on screen uv (from half-res)
 	ivec2 viewPx = ivec2(gl_FragCoord.xy * 0.5);

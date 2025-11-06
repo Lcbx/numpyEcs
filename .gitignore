@@ -4,3 +4,6 @@
 
 # nuitka
 build/*
+
+# blender
+*.blend1

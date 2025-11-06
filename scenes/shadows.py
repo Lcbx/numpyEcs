@@ -27,15 +27,6 @@ velocities = world.get_store(Velocity)
 meshes = world.get_store(Mesh)
 bboxes = world.get_store(BoundingBox)
 
-ground = world.create_entity(
-	Position(0,-0.51,0),
-	Mesh(su.rl.LIGHTGRAY),
-	BoundingBox(
-		-25,0,-25,
-		25,1,25
-	)
-)
-
 rnd_uint8 = lambda : su.rl.GetRandomValue(0, 255)
 rnd_color = lambda : Color(rnd_uint8(),rnd_uint8(),rnd_uint8(),255)
 
@@ -129,7 +120,7 @@ camera = Camera3D(
 	su.rl.CAMERA_PERSPECTIVE
 )
 
-light_nearFar = (5,100)
+light_nearFar = (10,300)
 light_camera = Camera3D(
 	Vector3(30, 30, 25),
 	Vector3(0,0,-20),
@@ -159,9 +150,9 @@ shadow_buffer2 = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORM
 model_root = b'scenes/resources/'
 #model = su.rl.LoadModel(model_root + b'teapot.obj')
 model = su.rl.LoadModel(model_root + b'turret.obj')
-#model = su.rl.LoadModel(model_root + b'heightmap_mesh.glb')
 model_albedo = su.rl.LoadTexture(model_root + b'turret_diffuse.png')
 su.SetMaterialTexture(model.materials[0], su.rl.MATERIAL_MAP_DIFFUSE, model_albedo)
+heightmap = su.rl.LoadModel(model_root + b'heightmap_mesh.glb')
 
 #anims = su.LoadModelAnimations(model_root + b'mixamo_toon_gisu.rl.glb')
 #animFrameCounter = 0
@@ -222,7 +213,7 @@ def run():
 				with su.WatchTimer('AO'):
 					if applyAO:
 						# TODO : maybe generate mipmaps earlier and use them at other places ?
-						#su.GenTextureMipmaps(prepass_buffer.depth)
+						su.GenTextureMipmaps(prepass_buffer.depth)
 
 						with su.RenderContext(shader=AOshader, texture=AO_buffer) as render:
 							AOshader.invProj = su.rl.MatrixInvert(proj)
@@ -388,12 +379,15 @@ def draw_scene(render:su.RenderContext, randomize_color=False):
 	with render.shader:
 		for i in range(model.materialCount):
 			model.materials[i].shader = render.shader.shaderStruct
+		for i in range(heightmap.materialCount):
+			heightmap.materials[i].shader = render.shader.shaderStruct
 		
 		# model, position, rotation axis, rotation (deg), scale, tint
 		#scale = 0.4
 		#su.rl.DrawModelEx(model, Vector3(0,4,0), Vector3(1,0,0), 0.0, Vector3(scale,scale,scale), su.rl.BEIGE)
 		scale = 1
 		su.rl.DrawModelEx(model, Vector3(0,0,0), Vector3(1,0,0), 0.0, Vector3(scale,scale,scale), su.rl.BEIGE)
+		su.rl.DrawModelEx(heightmap, Vector3(0,0,0), Vector3(1,0,0), 0.0, Vector3(scale,scale,scale), su.rl.BEIGE)		
 
 		ents = world.where(Position, Mesh, BoundingBox)
 		pos_vec, mesh_vec, bb_vec, = (positions.get_vector(ents), meshes.get_vector(ents), bboxes.get_vector(ents))
