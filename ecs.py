@@ -2,9 +2,10 @@ import numpy as np
 import inspect
 from typing import Type, Dict, Callable, Any, List, Tuple
 from dataclasses import dataclass
+from enum import Flag, IntFlag, auto
 
 
-# useful when we'll instantiate scenes, so we can translate entity ids stored in components
+# useful when we'll instanciate scenes, so we can translate entity ids stored in components
 class Entity(int): pass
 
 component = dataclass
@@ -35,7 +36,9 @@ class ComponentStorage:
 
 		self._dense = {}
 		for nm, typ in ann.items():
-			dtype = np.float64 if typ is float else int if typ is int else object
+			# issubclass is for IntFlag
+			dtype = np.float64 if typ is float else int if issubclass(typ, int) else object
+			#print(nm, typ, dtype)
 			self._dense[nm] = np.zeros(capacity, dtype=dtype)
 
 		# Expose object-field names
@@ -384,7 +387,7 @@ class ECS:
 		es = np.atleast_1d(entities).astype(int)
 		return [self._stores.get(cls).get_vector(es) for cls in comp_clss]
 
-	def where(self, *comp_clss) -> np.ndarray:
+	def where(self, *comp_clss, exclude=None) -> np.ndarray:
 		"""
 		Usage: ecs.where(C1, C2, ...) # → all entities with those comps
 		"""
@@ -395,6 +398,13 @@ class ECS:
 		if mask == 0: return []
 
 		criteria = self.entity_masks & mask == mask
+		
+		if exclude:
+			exc_mask = 0
+			for cls in exclude:
+				exc_mask |= self._comp_bits.get(cls, 0)
+			criteria &= self.entity_masks & exc_mask == 0
+
 		ents = np.nonzero(criteria)[0]
 		
 		return ents

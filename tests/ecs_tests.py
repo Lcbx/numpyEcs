@@ -181,9 +181,14 @@ class Position2D:
 class Velocity2D:
     vx: float; vy: float
 
+class TagEnum(IntFlag):
+    Enemy=auto()
+    Flying=auto()
+    Dazed=auto()
+
 @component
 class Tag:
-    id: int; name: str
+    value:TagEnum
 
 @component
 class Position:
@@ -214,7 +219,7 @@ def test_movement_system():
     ecs.create_entity(
         Position2D(5.0, -3.0),
         Velocity2D(-1.0, 0.5),
-        Tag(42, "Enemy"))
+        Tag(TagEnum.Enemy | TagEnum.Dazed))
 
     # Verify initial positions
     positions = ecs.get_store(Position2D)
@@ -223,8 +228,8 @@ def test_movement_system():
     assert (p1.x, p1.y) == pytest.approx((0.0, 0.0))
     assert (p2.x, p2.y) == pytest.approx((5.0, -3.0))
 
-    # Apply movement only for Tag "Enemy"
-    targets = ecs.where(Tag, Position2D, Velocity2D, lambda t, p, v: t.name == "Enemy")
+    # Apply movement only for Tag
+    targets = ecs.where(Tag, Position2D, Velocity2D)
     p_vec, v_vec = ecs.get_vectors(Position2D, Velocity2D, targets)
     p_vec -= v_vec * 0.5
     ecs.get_store(Position2D).set_vector(targets, p_vec)
@@ -232,6 +237,19 @@ def test_movement_system():
     # Check updated position for entity 2
     p2_after = ecs.get_store(Position2D).get(2)
     assert (p2_after.x, p2_after.y) == pytest.approx((5.0 + 0.5, -3.0 - 0.25))
+    p1_after = ecs.get_store(Position2D).get(1)
+    assert (p1_after.x, p1_after.y) == pytest.approx((0.0, 0.0))
+
+
+    # test where exclude param
+    untagged = ecs.where(Position2D, Velocity2D, exclude=[Tag])
+    assert not 2 in untagged
+
+    # test intFlag
+    tagVal = ecs.get_store(Tag).get(2).value
+    assert tagVal & TagEnum.Enemy > 0
+    assert tagVal & TagEnum.Flying == 0
+
 
 def test_aabb_system_and_overlap():
     ecs = ECS()

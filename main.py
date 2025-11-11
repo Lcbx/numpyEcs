@@ -26,12 +26,18 @@ if args.test or args.tests:
 if args.test:
 	from importlib import import_module
 	modules = [ import_module( to_module(test_path) ) for test_path in test_paths ]
-	module_index = next( (i for i, m in enumerate(modules) for f in m.__dict__ if f == args.test), None)
-	if module_index:
-		getattr(modules[module_index], args.test)()
-		print(f'{args.test} executed.')
-	else:
-		print(f'could not find "{args.test}" test')
+	failed = True
+	for m in modules:
+		try:
+			getattr(m, args.test)()
+			print(f'{args.test} executed.')
+			failed = False
+		except: pass
+
+	if failed:
+		print(f'could not find "{args.test}" test. candidates:')
+		from pprint import pp 
+		pp( list(f for m in modules for f in m.__dict__ if 'test' in f) )
 
 # run whole test suite using pytest
 elif args.tests:
