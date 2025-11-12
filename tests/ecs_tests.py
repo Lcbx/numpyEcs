@@ -208,6 +208,86 @@ class AxisAlignedBoundingBox:
     x_min: float; y_min: float; z_min: float
     x_max: float; y_max: float; z_max: float
 
+
+def make_pos2d_store(vals):
+    store = ComponentStorage(Position2D, capacity=max(32, len(vals)))
+    for eid, (x, y) in enumerate(vals):
+        store._add(eid, Position2D(x, y))
+    return store
+
+def make_multitag_store(blocks_per_entity):
+    store = ComponentStorage(Tag, capacity=64, mult_comp=True)
+    for eid, values in blocks_per_entity.items():
+        for v in values:
+            store._add(eid, Tag(v))
+    return store
+
+def test_query_simple_vectorized():
+    pos = make_pos2d_store([(0, 0), (1, 2), (5, -3), (-1, 1), (4, 10)])
+    # x > 0 and |y| < 3  -> entities 1 only (1,2) fails second cond; entity 2 has |y|=3 -> false
+    out = pos.query(lambda x, y: (x > 0) & (np.abs(y) < 3))
+    assert out.dtype == int
+    assert out.tolist() == [1]
+
+def test_query_subset_filtering():
+    pos = make_pos2d_store([(10, 0), (9, 0), (11, 0), (8, 0)])
+    subset = np.array([0, 1, 3], dtype=int)  # exclude entity 2 even though it matches
+    out = pos.query(lambda x, y: x >= 10, entities=subset)
+    assert out.tolist() == [0]
+
+def test_query_returns_empty_when_no_match():
+    pos = make_pos2d_store([(0, 0), (1, 1)])
+    out = pos.query(lambda x, y: (x < 0))
+    assert isinstance(out, np.ndarray)
+    assert out.size == 0
+
+def test_query_can_use_entity_id_in_predicate():
+    pos = make_pos2d_store([(5, 0), (5, 0), (5, 0)])
+    out = pos.query( lambda x, y, entity: (x == 5) & (entity != 1), include_entity=True)
+    assert out.tolist() == [0, 2]
+
+def test_query_raises_on_length_mismatch():
+    pos = make_pos2d_store([(0, 0), (1, 1), (2, 2)])
+    with pytest.raises(ValueError):
+        pos.query(lambda x, y: np.array([True, False]))
+
+def test_query_on_empty_storage():
+    pos = ComponentStorage(Position2D, capacity=8)
+    out = pos.query(lambda x: x > 0)
+    assert out.size == 0
+
+def test_query_mult_comp_any_row_matches_once_stable_order():
+    mt = make_multitag_store({
+        0: [1, 0],
+        1: [0, 0],
+        2: [2, 1],
+    })
+    out = mt.query(lambda value: value == 1)
+    assert out.tolist() == [0, 2]
+
+def test_query_mult_comp_subset_filtering():
+    mt = make_multitag_store({
+        5: [3, 3],
+        7: [1, 2],
+        9: [1],
+    })
+    subset = np.array([7, 9], dtype=int)
+    out = mt.query(lambda value: value == 1, entities=subset)
+    assert out.tolist() == [7, 9]
+
+def test_query_mult_comp_no_match_returns_empty():
+    mt = make_multitag_store({0: [0, 0], 1: [2], 3: [4, 5]})
+    out = mt.query(lambda value: value == 9)
+    assert out.size == 0
+
+def test_query_intflag_predicate():
+    tags = ComponentStorage(Tag, capacity=8)
+    tags._add(1, Tag(TagEnum.Enemy | TagEnum.Dazed))
+    tags._add(2, Tag(TagEnum.Flying))
+    tags._add(3, Tag(TagEnum.Enemy))
+    out = tags.query(lambda value: (value & TagEnum.Enemy) != 0)
+    assert out.tolist() == [1, 3]
+
 def test_movement_system():
     ecs = ECS()
     ecs.register(Position2D, Velocity2D, Tag)
@@ -240,7 +320,6 @@ def test_movement_system():
     p1_after = ecs.get_store(Position2D).get(1)
     assert (p1_after.x, p1_after.y) == pytest.approx((0.0, 0.0))
 
-
     # test where exclude param
     untagged = ecs.where(Position2D, Velocity2D, exclude=[Tag])
     assert not 2 in untagged
@@ -249,6 +328,11 @@ def test_movement_system():
     tagVal = ecs.get_store(Tag).get(2).value
     assert tagVal & TagEnum.Enemy > 0
     assert tagVal & TagEnum.Flying == 0
+
+    # test query
+    tagVal = ecs.get_store(Tag).query(lambda value: value&TagEnum.Enemy == 1)
+    assert len(tagVal) == 1
+    assert tagVal[0] == 2
 
 
 def test_aabb_system_and_overlap():

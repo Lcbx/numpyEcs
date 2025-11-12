@@ -1,5 +1,5 @@
 import numpy as np
-import inspect
+#from inspect import signature as inspect_signature
 from typing import Type, Dict, Callable, Any, List, Tuple
 from dataclasses import dataclass
 from enum import Flag, IntFlag, auto
@@ -37,10 +37,10 @@ class ComponentStorage:
 		self._dense = {}
 		for nm, typ in ann.items():
 			dtype = (
-			    np.float64 if typ is float else
+				np.float64 if typ is float else
 				# issubclass is for IntFlag
-			    int if issubclass(typ, int) else
-			    object
+				int if issubclass(typ, int) else
+				object
 			) if isinstance(typ, type) else object
 			#print(nm, typ, dtype)
 			self._dense[nm] = np.zeros(capacity, dtype=dtype)
@@ -65,6 +65,10 @@ class ComponentStorage:
 	def sparse_size(self) -> int:
 		return self._sparse.shape[0]
 
+	@property
+	def live_entities(self) -> np.ndarray:
+		return self._entities[:self._size] != ComponentStorage.NONE
+
 	def _grow_sparse(self, entity: int):
 		old = self.sparse_size
 		new_cap = max(old * 2, entity + 32)
@@ -79,7 +83,7 @@ class ComponentStorage:
 		new_entities = np.full(new_cap, ComponentStorage.NONE, dtype=int)
 
 		if self.mult_comp:
-			valid_idx = np.nonzero(self._entities[:self._size] != ComponentStorage.NONE)[0]
+			valid_idx = np.nonzero(self.live_entities)[0]
 			new_size  = valid_idx.shape[0]
 			new_entities[:new_size] = self._entities[valid_idx]
 		else:
@@ -224,7 +228,7 @@ class ComponentStorage:
 		"""
 		Usage:
 			get_vector()							# all component fields, for all entities
-			get_vector(f1, f2, ...)				 # only f1,f2,..., for all entities
+			get_vector(f1, f2, ...)					# only f1,f2,..., for all entities
 			get_vector(f1, f2, ..., entities_array) # f1,f2,... for given entities
 		"""
 		# Parse args
@@ -267,6 +271,73 @@ class ComponentStorage:
 
 		for j, field in enumerate(self._fields):
 			self._dense[field][idx] = arr[:, j]
+
+	def query(self,
+			  condition: Callable,
+			  entities: np.ndarray = None,
+			  include_entity: bool = False) -> np.ndarray:
+		"""
+		Return entity ids for which `condition` holds.
+
+		- `condition` is a vectorized predicate with keyword args: lambda x, y: ...
+		- `entities` is a susbset of entities we want apply the match on
+		- entity is optioinnally injected as a param named `entity` if `include_entity=True`.
+		  ex: pos.query(lambda x, entity: ..., include_entity=True)
+		- If `mult_comp=True`, an entity matches if ANY of its rows match
+		"""
+
+		if self._size == 0:
+			return np.empty(0, dtype=int)
+
+		if self.mult_comp:
+			idx_all = np.nonzero(self.live_entities)[0]
+			ent_all = self._entities[idx_all]
+
+			if entities is not None:
+				es = np.atleast_1d(entities).astype(int)
+				keep = np.isin(ent_all, es, assume_unique=False)
+				idx, ent = idx_all[keep], ent_all[keep]
+			else:
+				idx, ent = idx_all, ent_all
+		else:
+			if entities is not None:
+				es = np.atleast_1d(entities).astype(int)
+				head = self._sparse[es]
+				valid = head != ComponentStorage.NONE
+				idx, ent = head[valid], es[valid]
+			else:
+				idx = np.arange(self._size, dtype=int)
+				ent = self._entities[:self._size]
+
+		if idx.size == 0:
+			return np.empty(0, dtype=int)
+
+		ns = {field: arr[idx] for field, arr in self._dense.items()}
+		if include_entity:
+			ns["entity"] = ent
+		#print(ns.keys())
+
+		def raiseError():
+			raise ValueError("Condition must accept all component properties as params and return a boolean array of the same length as the evaluated rows.")
+
+		try:
+			mask = condition(**ns)
+		except:
+			raiseError()
+
+		mask = np.asarray(mask, dtype=bool)
+		if mask.shape[0] != idx.shape[0]:
+			raiseError()
+
+		matched = ent[mask]
+		if matched.size == 0:
+			return np.empty(0, dtype=int)
+
+		if self.mult_comp:
+			return np.unique(matched).astype(int)
+
+		return matched.astype(int)
+
 
 
 
@@ -361,6 +432,7 @@ class ECS:
 		bits = self.entity_masks[entity]
 		for comp in components:
 			cls = type(comp)
+			# if this throws you pbbly did not register the component class
 			bit = self._comp_bits[cls]
 			bits |= bit
 			self._stores[cls]._add(entity, comp)
