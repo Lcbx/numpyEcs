@@ -36,8 +36,12 @@ class ComponentStorage:
 
 		self._dense = {}
 		for nm, typ in ann.items():
-			# issubclass is for IntFlag
-			dtype = np.float64 if typ is float else int if isinstance(typ, type) and issubclass(typ, int) else object
+			dtype = (
+			    np.float64 if typ is float else
+				# issubclass is for IntFlag
+			    int if issubclass(typ, int) else
+			    object
+			) if isinstance(typ, type) else object
 			#print(nm, typ, dtype)
 			self._dense[nm] = np.zeros(capacity, dtype=dtype)
 
