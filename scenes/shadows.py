@@ -227,19 +227,19 @@ def run():
 
 						pixel_scale = Vector2(1.0/float(AO_w),1.0/float(AO_h))
 						pixel_scale_x2 = su.rl.Vector2Scale(pixel_scale, 2)
-						pixel_scale_x4 = su.rl.Vector2Scale(pixel_scale_x2, 2)
+						#pixel_scale_x4 = su.rl.Vector2Scale(pixel_scale_x2, 2)
 
 						with su.RenderContext(shader=kawaseBlur_downSampleShader, texture=AO_buffer2) as render:
 							kawaseBlur_downSampleShader.u_direction = pixel_scale
 							su.DrawTexture(AO_buffer.texture, AO_w, AO_h)
 
-						with su.RenderContext(shader=kawaseBlur_downSampleShader, texture=AO_buffer3) as render:
-							kawaseBlur_downSampleShader.u_direction = pixel_scale_x2
-							su.DrawTexture(AO_buffer2.texture, AO_w, AO_h)
+						#with su.RenderContext(shader=kawaseBlur_downSampleShader, texture=AO_buffer3) as render:
+						#	kawaseBlur_downSampleShader.u_direction = pixel_scale_x2
+						#	su.DrawTexture(AO_buffer2.texture, AO_w, AO_h)
 
-						with su.RenderContext(shader=kawaseBlur_upSampleShader, texture=AO_buffer2) as render:
-							kawaseBlur_upSampleShader.u_direction = pixel_scale_x4
-							su.DrawTexture(AO_buffer3.texture, AO_w, AO_h)
+						#with su.RenderContext(shader=kawaseBlur_upSampleShader, texture=AO_buffer2) as render:
+						#	kawaseBlur_upSampleShader.u_direction = pixel_scale_x4
+						#	su.DrawTexture(AO_buffer3.texture, AO_w, AO_h)
 
 						with su.RenderContext(shader=kawaseBlur_upSampleShader, texture=AO_buffer) as render:
 							kawaseBlur_upSampleShader.u_direction = pixel_scale_x2
