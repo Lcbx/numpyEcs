@@ -60,31 +60,33 @@ def load_shaders():
 	global kawaseBlur_upSampleShader
 
 	try:
-		newShader = su.BetterShader('scenes/shadowmesh.shader');
+		shaders_dir = 'scenes/shaders/'
+
+		newShader = su.BetterShader(shaders_dir + 'shadowmesh.shader');
 		if newShader.valid(): shadowMeshShader = newShader
 		else: raise Exception('shadowmesh.shader')
 
-		newShader = su.BetterShader('scenes/lightmap.compute');
+		newShader = su.BetterShader(shaders_dir + 'lightmap.compute');
 		if newShader.valid(): shadowBlurShader = newShader
 		else: raise Exception('lightmap.compute')
 
-		newShader = su.BetterShader('scenes/lightmap.shader')
+		newShader = su.BetterShader(shaders_dir + 'lightmap.shader')
 		if newShader.valid(): sceneShader = newShader
 		else: raise Exception('lightmap.shader')
 
-		newShader = su.BetterShader('scenes/prepass.shader')
+		newShader = su.BetterShader(shaders_dir + 'prepass.shader')
 		if newShader.valid(): prepassShader = newShader
 		else: raise Exception('prepass.shader')
 		
-		newShader = su.BetterShader('scenes/AO.compute')
+		newShader = su.BetterShader(shaders_dir + 'AO.compute')
 		if newShader.valid(): AOshader = newShader
 		else: raise Exception('AO.compute')
 		
-		newShader = su.BetterShader('scenes/kawaseBlur_downSample.compute')
+		newShader = su.BetterShader(shaders_dir + 'kawaseBlur_downSample.compute')
 		if newShader.valid(): kawaseBlur_downSampleShader = newShader
 		else: raise Exception('kawaseBlur_downSample.compute')
 
-		newShader = su.BetterShader('scenes/kawaseBlur_upSample.compute')
+		newShader = su.BetterShader(shaders_dir + 'kawaseBlur_upSample.compute')
 		if newShader.valid(): kawaseBlur_upSampleShader = newShader
 		else: raise Exception('kawaseBlur_upSampleShader.compute')
 
