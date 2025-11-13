@@ -98,10 +98,11 @@ float randAngle()
 {
 	ivec2 uv = ivec2(gl_FragCoord.xy);
 	float angle = 0;
+	//angle += 1;
 	angle += 30u * uv.x ^ uv.y + 10u * uv.x * uv.y;
-	float ign = interleavedGradientNoise(gl_FragCoord.xy);
-	angle += ign * PI;
-	angle *= ign;
+	//float ign = interleavedGradientNoise(gl_FragCoord.xy);
+	//angle += ign * PI;
+	//angle *= ign;
 	return angle;
 }
 
@@ -113,14 +114,34 @@ const float NUM_SPIRAL_TURNS = 3;
 const float PI =  3.141593;
 const float twoPI = 6.283186;
 
-void fragment() {
-	vec4 albedo = fragColor;
-	//albedo = vec4(1);
-	//albedo *= texture(texture0, fragTexCoord);
-	
-	// 0 = in shadow, 1 = lit
+
+float sampleAO() {
+	// AO, sampled based on screen uv (from half-res)
+	ivec2 viewPx = ivec2(gl_FragCoord.xy * 0.5);
+	float occlusion = 0;
+	occlusion = texelFetch(ambientOcclusionMap, viewPx, 0).r; // middle tap
+	occlusion *= 2.0;
+	//occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(-2, 0), 0).r;
+	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(-1, 1), 0).r * 2.0;
+	//occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(0, 2), 0).r;
+	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(1, 1), 0).r * 2.0;
+	//occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(2, 0), 0).r;
+	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(1, -1), 0).r * 2.0;
+	//occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(0, -2), 0).r;
+	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(-1, -1), 0).r * 2.0;
+	//occlusion *= 0.0833333333333; // 1/12
+	//occlusion *= 0.125; // 1/8
+	//occlusion *= 0.25; // 1/8
+	//occlusion *= 0.2; // 1/5
+	occlusion *= 0.1; // 1/10
+	//occlusion *= 0.07692; // 1/13
+	//occlusion *= 0.07143; // 1/14
+	return occlusion;
+
+}
+
+float sampleShadowMap(){
 	float shadow = 1;
-	
 	// project into shadow‐map UV
 	vec3 proj = fragShadowClipSpace.xyz / fragShadowClipSpace.w;
 	proj = proj*0.5 + 0.5;
@@ -138,10 +159,18 @@ void fragment() {
 		}
 		shadow = shadowComputed * INV_NUM_SAMPLES;
 	}
+	return shadow;
+}
 
-	// AO, sampled based on screen uv (from half-res)
-	ivec2 viewPx = ivec2(gl_FragCoord.xy * 0.5);
-	float occlusion = texelFetch(ambientOcclusionMap, viewPx, 0).r;
+void fragment() {
+	vec4 albedo = fragColor;
+	//albedo = vec4(1);
+	//albedo *= texture(texture0, fragTexCoord);
+	
+	// 0 = in shadow, 1 = lit
+	float shadow = sampleShadowMap();
+	// 0 = in shadow, 1 = lit
+	float occlusion = sampleAO();	
 	
 	// blinn-phong
 	vec3 ambient = vec3(0.35 * albedo.rgb);

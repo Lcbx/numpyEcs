@@ -21,15 +21,13 @@ uniform vec2 u_direction;
 out vec4 finalColor;
 
 void fragment(){
-	vec2 uv = fragTexCoord * 2.0;
-	vec2 offset = u_direction;
+	ivec2 viewPx = ivec2(gl_FragCoord.xy * 2.0);
 
-
-	float topLeft = texture(texture0, uv - offset).r;
-	float topRight = texture(texture0, uv + vec2(offset.x, -offset.y)).r;
-	float middle = texture(texture0, uv).r;
-	float botLeft = texture(texture0, uv - vec2(offset.x, -offset.y)).r;
-	float botRight = texture(texture0, uv + offset).r;
+	float topLeft = texelFetch(texture0,	viewPx +ivec2(-1,-1), 0).r;
+	float topRight = texelFetch(texture0,	viewPx +ivec2(1,-1), 0).r;
+	float middle = texelFetch(texture0,	 	viewPx +ivec2(0,0), 0).r;
+	float botLeft = texelFetch(texture0, 	viewPx +ivec2(-1,1), 0).r;
+	float botRight = texelFetch(texture0, 	viewPx +ivec2(1,1), 0).r;
 
 	// TODO : try to make this depth aware / edge preserving ?
 

@@ -21,16 +21,15 @@ uniform vec2 u_direction;
 out vec4 finalColor;
 
 void fragment(){
-	vec2 uv = fragTexCoord * 0.5;
-	vec2 offset = u_direction;
-	vec4 sum =
-		   texture(texture0, uv + vec2(-offset.x * 2.0, 0.0));
-	sum += texture(texture0, uv + vec2(-offset.x, offset.y)) * 2.0;
-	sum += texture(texture0, uv + vec2(0.0, offset.y * 2.0));
-	sum += texture(texture0, uv + vec2(offset.x, offset.y)) * 2.0;
-	sum += texture(texture0, uv + vec2(offset.x * 2.0, 0.0));
-	sum += texture(texture0, uv + vec2(offset.x, -offset.y)) * 2.0;
-	sum += texture(texture0, uv + vec2(0.0, -offset.y * 2.0));
-	sum += texture(texture0, uv + vec2(-offset.x, -offset.y)) * 2.0;
-	finalColor = sum * 0.0833333333333; // 1/12
+	ivec2 viewPx = ivec2(gl_FragCoord.xy * 0.5);
+	float sum =
+		   texelFetch(texture0, viewPx + ivec2(-2, 0), 0).r;
+	sum += texelFetch(texture0, viewPx + ivec2(-1, 1), 0).r * 2.0;
+	sum += texelFetch(texture0, viewPx + ivec2(0, 2), 0).r;
+	sum += texelFetch(texture0, viewPx + ivec2(1, 1), 0).r * 2.0;
+	sum += texelFetch(texture0, viewPx + ivec2(2, 0), 0).r;
+	sum += texelFetch(texture0, viewPx + ivec2(1, -1), 0).r * 2.0;
+	sum += texelFetch(texture0, viewPx + ivec2(0, -2), 0).r;
+	sum += texelFetch(texture0, viewPx + ivec2(-1, -1), 0).r * 2.0;
+	finalColor = vec4(vec3(sum * 0.0833333333333), 1); // 1/12
 }

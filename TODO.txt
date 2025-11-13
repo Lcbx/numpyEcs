@@ -1,6 +1,7 @@
-* implement msaa (not sure it's worth it? -> on the backburner)
+* idea : apply directional shadow map on the AO buffer ? (simple + blur comes free)
 * add frustum culling
 * batch same shader calls (raylib does so for static meshes under the hood iirc)
 * use openAL for binaural audio
 * use bullet for physics (at first ; maybe migrate to ctypes & jolt later)
 * add a particle system
+* implement msaa (not sure it's worth it -> on the backburner)

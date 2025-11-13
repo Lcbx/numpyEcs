@@ -155,6 +155,7 @@ model = su.rl.LoadModel(model_root + b'turret.obj')
 model_albedo = su.rl.LoadTexture(model_root + b'turret_diffuse.png')
 su.SetMaterialTexture(model.materials[0], su.rl.MATERIAL_MAP_DIFFUSE, model_albedo)
 heightmap = su.rl.LoadModel(model_root + b'heightmap_mesh.glb')
+pole = su.rl.LoadModel(model_root + b'rooftop_utility_pole.glb')
 
 #anims = su.LoadModelAnimations(model_root + b'mixamo_toon_gisu.rl.glb')
 #animFrameCounter = 0
@@ -183,18 +184,19 @@ def run():
 					
 					su.DisablePolygonOffset()
 
+				# NOTE : the custom shadow pass is cool but pretty costly...
+
 				# populate fuzzy shadow map with passes
 				read_buffer = shadow_buffer
 				write_buffer = shadow_buffer2
 				step = 8.0
 				last = 1.0
 				
-				#shadowBlurShader.depthmap = shadow_buffer.depth
+				su.DisableDepth()
 				while step > last:
 					with su.RenderContext(shader=shadowBlurShader, texture=write_buffer) as render:
 						step *= 0.5
 						shadowBlurShader.stepSize = step * INV_SM_SIZE
-						#shadowBlurShader.last = 1 if step <= last else 0
 						su.DrawTexture(read_buffer.texture, SM_SIZE, SM_SIZE)
 						read_buffer, write_buffer = write_buffer, read_buffer
 
@@ -205,6 +207,7 @@ def run():
 				# z prepass
 				with su.WatchTimer('prepass'):
 					with su.RenderContext(shader=prepassShader, texture=prepass_buffer, clipPlanes=camera_nearFar, camera=camera) as render:
+						su.EnableDepth()
 						proj = su.rl.rlGetMatrixProjection()
 						su.ClearBuffers()
 						su.SetPolygonOffset(0.1)
@@ -217,6 +220,10 @@ def run():
 						# TODO : maybe generate mipmaps earlier and use them at other places ?
 						su.GenTextureMipmaps(prepass_buffer.depth)
 
+						su.DisableDepth()
+
+						# TODO : make AO depth aware
+
 						with su.RenderContext(shader=AOshader, texture=AO_buffer) as render:
 							AOshader.invProj = su.rl.MatrixInvert(proj)
 							su.DrawTexture(prepass_buffer.depth, AO_w, AO_h)
@@ -225,28 +232,24 @@ def run():
 						# + easy choose a compromise between quality ands cost
 						# link: https://community.arm.com/cfs-file/__key/communityserver-blogs-components-weblogfiles/00-00-00-20-66/siggraph2015_2D00_mmg_2D00_marius_2D00_notes.pdf
 
-						pixel_scale = Vector2(1.0/float(AO_w),1.0/float(AO_h))
-						pixel_scale_x2 = su.rl.Vector2Scale(pixel_scale, 2)
-						#pixel_scale_x4 = su.rl.Vector2Scale(pixel_scale_x2, 2)
+						# NOTE: with enough taps and the upsampling in default matrial
+						# -> we can get rid of blur pass with minimal artifacts
 
 						with su.RenderContext(shader=kawaseBlur_downSampleShader, texture=AO_buffer2) as render:
-							kawaseBlur_downSampleShader.u_direction = pixel_scale
 							su.DrawTexture(AO_buffer.texture, AO_w, AO_h)
 
 						#with su.RenderContext(shader=kawaseBlur_downSampleShader, texture=AO_buffer3) as render:
-						#	kawaseBlur_downSampleShader.u_direction = pixel_scale_x2
 						#	su.DrawTexture(AO_buffer2.texture, AO_w, AO_h)
 
 						#with su.RenderContext(shader=kawaseBlur_upSampleShader, texture=AO_buffer2) as render:
-						#	kawaseBlur_upSampleShader.u_direction = pixel_scale_x4
 						#	su.DrawTexture(AO_buffer3.texture, AO_w, AO_h)
 
 						with su.RenderContext(shader=kawaseBlur_upSampleShader, texture=AO_buffer) as render:
-							kawaseBlur_upSampleShader.u_direction = pixel_scale_x2
 							su.DrawTexture(AO_buffer2.texture, AO_w, AO_h)
 				
 				with su.WatchTimer('forward pass'):
 
+					su.EnableDepth()
 					su.rl.BeginDrawing()
 					
 					# transfer depth to main buffer for early z discard
@@ -284,23 +287,23 @@ rotation = 0
 def draw_shadow_buffer():
 	display_size = WINDOW_w / 5.0
 	display_scale = display_size / float(shadow_buffer.depth.width)
-	su.rl.DrawTextureEx(shadow_buffer.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, su.rl.RAYWHITE)
-	su.rl.DrawTextureEx(shadow_buffer2.texture, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, su.rl.RAYWHITE)
-	su.rl.DrawTextureEx(shadow_buffer.depth, Vector2(WINDOW_w - display_size, 2 * display_size), rotation, display_scale, su.rl.RAYWHITE)
+	su.rl.DrawTextureEx(shadow_buffer.texture, (WINDOW_w - display_size, 0.0), rotation, display_scale, su.rl.RAYWHITE)
+	su.rl.DrawTextureEx(shadow_buffer2.texture, (WINDOW_w - display_size, display_size), rotation, display_scale, su.rl.RAYWHITE)
+	su.rl.DrawTextureEx(shadow_buffer.depth, (WINDOW_w - display_size, 2 * display_size), rotation, display_scale, su.rl.RAYWHITE)
 def draw_prepass():
 	display_size = WINDOW_w / 5.0
 	display_scale = display_size / float(prepass_buffer.texture.width)
-	su.rl.DrawTextureEx(prepass_buffer.texture, Vector2(WINDOW_w - display_size, 0.0), rotation, display_scale, su.rl.RAYWHITE)
+	su.rl.DrawTextureEx(prepass_buffer.texture, (WINDOW_w - display_size, 0.0), rotation, display_scale, su.rl.RAYWHITE)
 def draw_AO():
 	# NOTE: this is after goin on the downsampling / upsampling roller-coaster
 	# if you want the downsampling results you have to comment the upsampling
 	display_size = WINDOW_w / 5.0
 	display_scale = display_size / float(AO_buffer.texture.width)
-	su.rl.DrawTextureEx(AO_buffer.texture, Vector2(WINDOW_w - display_size, 0), rotation, display_scale, su.rl.RAYWHITE)
+	su.rl.DrawTextureEx(AO_buffer.texture, (WINDOW_w - display_size, 0), rotation, display_scale, su.rl.RAYWHITE)
 	display_scale = display_size / float(AO_buffer2.texture.width)
-	su.rl.DrawTextureEx(AO_buffer2.texture, Vector2(WINDOW_w - display_size, display_size), rotation, display_scale, su.rl.RAYWHITE)
+	su.rl.DrawTextureEx(AO_buffer2.texture, (WINDOW_w - display_size, display_size), rotation, display_scale, su.rl.RAYWHITE)
 	display_scale = display_size / float(AO_buffer3.texture.width)
-	su.rl.DrawTextureEx(AO_buffer3.texture, Vector2(WINDOW_w - display_size, 2 * display_size), rotation, display_scale, su.rl.RAYWHITE)
+	su.rl.DrawTextureEx(AO_buffer3.texture, (WINDOW_w - display_size, 2 * display_size), rotation, display_scale, su.rl.RAYWHITE)
 
 orbit = True
 applyAO = True
@@ -383,13 +386,17 @@ def draw_scene(render:su.RenderContext, randomize_color=False):
 			model.materials[i].shader = render.shader.shaderStruct
 		for i in range(heightmap.materialCount):
 			heightmap.materials[i].shader = render.shader.shaderStruct
+		for i in range(heightmap.materialCount):
+			pole.materials[i].shader = render.shader.shaderStruct
+
 		
 		# model, position, rotation axis, rotation (deg), scale, tint
-		#scale = 0.4
-		#su.rl.DrawModelEx(model, Vector3(0,4,0), Vector3(1,0,0), 0.0, Vector3(scale,scale,scale), su.rl.BEIGE)
 		scale = 1
-		su.rl.DrawModelEx(model, Vector3(0,0,0), Vector3(1,0,0), 0.0, Vector3(scale,scale,scale), su.rl.BEIGE)
-		su.rl.DrawModelEx(heightmap, Vector3(0,0,0), Vector3(1,0,0), 0.0, Vector3(scale,scale,scale), su.rl.BEIGE)		
+		su.rl.DrawModelEx(model, (0,0,10), (1,0,0), 0.0, (scale,scale,scale), su.rl.BEIGE)
+		su.rl.DrawModelEx(heightmap, (0,0,0), (1,0,0), 0.0, (scale,scale,scale), su.rl.BEIGE)
+		scale = 5
+		# seems like there is per vertex color in that mesh, with all the same bluish color... ?
+		su.rl.DrawModelEx(pole, (0,0,-10), (1,0,0), 0.0, (scale,scale,scale), su.rl.WHITE) 
 
 		ents = world.where(Position, Mesh, BoundingBox)
 		pos_vec, mesh_vec, bb_vec, = (positions.get_vector(ents), meshes.get_vector(ents), bboxes.get_vector(ents))

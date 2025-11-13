@@ -8,10 +8,11 @@ from pyray import ( Vector2, Vector3, Vector4,
 from OpenGL.GL import (
 	glBindFramebuffer, glBlitFramebuffer,
 	glClear, glEnable, glDisable, glPolygonOffset,
-	glBindTexture, glGenerateMipmap,
+	glBindTexture, glGenerateMipmap, glDepthMask,
 	GL_READ_FRAMEBUFFER, GL_DRAW_FRAMEBUFFER,
 	GL_DEPTH_BUFFER_BIT, GL_COLOR_BUFFER_BIT, GL_NEAREST,
-	GL_POLYGON_OFFSET_FILL, GL_MULTISAMPLE, GL_TEXTURE_2D
+	GL_POLYGON_OFFSET_FILL, GL_MULTISAMPLE, GL_TEXTURE_2D,
+	GL_DEPTH_TEST, GL_TRUE, GL_FALSE
 )
 
 import os
@@ -229,6 +230,16 @@ def DrawTexture(tex:Texture, width:float, height:float):
 def ClearBuffers():
 	rl.ClearBackground(rl.WHITE)
 
+
+# TODO : toggle automatically based on whether it is a postprocess or 3d pass 
+def DisableDepth():
+	glDepthMask(GL_FALSE)
+	glDisable(GL_DEPTH_TEST)
+	#pass
+def EnableDepth():
+	glDepthMask(GL_TRUE)
+	glEnable(GL_DEPTH_TEST)
+	#pass
 
 
 class DefaultFalseDict(Dict):
