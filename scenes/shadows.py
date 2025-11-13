@@ -157,6 +157,7 @@ su.SetMaterialTexture(model.materials[0], su.rl.MATERIAL_MAP_DIFFUSE, model_albe
 heightmap = su.rl.LoadModel(model_root + b'heightmap_mesh.glb')
 pole = su.rl.LoadModel(model_root + b'rooftop_utility_pole.glb')
 
+
 #anims = su.LoadModelAnimations(model_root + b'mixamo_toon_gisu.rl.glb')
 #animFrameCounter = 0
 
@@ -271,6 +272,7 @@ def run():
 				#draw_shadow_buffer()
 				#draw_prepass()
 				#draw_AO()
+				#draw_mat_tex(model)
 		
 			su.rl.DrawText(f"fps {su.rl.GetFPS()} cubes {world.count}".encode(), 10, 10, 20, su.rl.LIGHTGRAY)
 			su.WatchTimer.display(10, 40, 20, su.rl.LIGHTGRAY)
@@ -304,6 +306,17 @@ def draw_AO():
 	su.rl.DrawTextureEx(AO_buffer2.texture, (WINDOW_w - display_size, display_size), rotation, display_scale, su.rl.RAYWHITE)
 	display_scale = display_size / float(AO_buffer3.texture.width)
 	su.rl.DrawTextureEx(AO_buffer3.texture, (WINDOW_w - display_size, 2 * display_size), rotation, display_scale, su.rl.RAYWHITE)
+def draw_mat_tex(model):
+	display_size = WINDOW_w / 5.0
+	i = 0
+	for i in range(model.materialCount):
+		mat = model.materials[i]
+		for tex in [mat.maps[i].texture for i in range(12)]: # rl.MAX_MATERIAL_MAPS
+			#print(tex.id)
+			if tex.id != 0:
+				display_scale = display_size / float(tex.width)
+				su.rl.DrawTextureEx(tex, (WINDOW_w - display_size, i * tex.height * display_scale), rotation, display_scale, su.rl.RAYWHITE)
+
 
 orbit = True
 applyAO = True
@@ -386,7 +399,7 @@ def draw_scene(render:su.RenderContext, randomize_color=False):
 			model.materials[i].shader = render.shader.shaderStruct
 		for i in range(heightmap.materialCount):
 			heightmap.materials[i].shader = render.shader.shaderStruct
-		for i in range(heightmap.materialCount):
+		for i in range(pole.materialCount):
 			pole.materials[i].shader = render.shader.shaderStruct
 
 		
