@@ -53,8 +53,10 @@ float randAngle()
 	ivec2 uv = ivec2(gl_FragCoord.xy);
 	float angle = 0;
 	//angle += 1;
-	angle += 30u * uv.x ^ uv.y + 10u * uv.x * uv.y;
-	//angle *= interleavedGradientNoise(gl_FragCoord.xy);
+	//angle += 30u * uv.x ^ uv.y + 10u * uv.x * uv.y;
+	float ign = interleavedGradientNoise(gl_FragCoord.xy);
+	//angle *= ign;
+	angle = ign;
 	return angle;
 }
 

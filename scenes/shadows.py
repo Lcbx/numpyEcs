@@ -236,8 +236,8 @@ def run():
 						# NOTE: with enough taps and the upsampling in default matrial
 						# -> we can get rid of blur pass with minimal artifacts
 
-						with su.RenderContext(shader=kawaseBlur_downSampleShader, texture=AO_buffer2) as render:
-							su.DrawTexture(AO_buffer.texture, AO_w, AO_h)
+						#with su.RenderContext(shader=kawaseBlur_downSampleShader, texture=AO_buffer2) as render:
+						#	su.DrawTexture(AO_buffer.texture, AO_w, AO_h)
 
 						#with su.RenderContext(shader=kawaseBlur_downSampleShader, texture=AO_buffer3) as render:
 						#	su.DrawTexture(AO_buffer2.texture, AO_w, AO_h)
@@ -245,8 +245,8 @@ def run():
 						#with su.RenderContext(shader=kawaseBlur_upSampleShader, texture=AO_buffer2) as render:
 						#	su.DrawTexture(AO_buffer3.texture, AO_w, AO_h)
 
-						with su.RenderContext(shader=kawaseBlur_upSampleShader, texture=AO_buffer) as render:
-							su.DrawTexture(AO_buffer2.texture, AO_w, AO_h)
+						#with su.RenderContext(shader=kawaseBlur_upSampleShader, texture=AO_buffer) as render:
+						#	su.DrawTexture(AO_buffer2.texture, AO_w, AO_h)
 				
 				with su.WatchTimer('forward pass'):
 

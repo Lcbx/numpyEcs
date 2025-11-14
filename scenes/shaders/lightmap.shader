@@ -119,21 +119,21 @@ float sampleAO() {
 	// AO, sampled based on screen uv (from half-res)
 	ivec2 viewPx = ivec2(gl_FragCoord.xy * 0.5);
 	float occlusion = 0;
-	occlusion = texelFetch(ambientOcclusionMap, viewPx, 0).r; // middle tap
-	occlusion *= 2.0;
-	//occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(-2, 0), 0).r;
+	//occlusion = texelFetch(ambientOcclusionMap, viewPx, 0).r; // middle tap
+	//occlusion *= 2.0;
+	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(-2, 0), 0).r;
 	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(-1, 1), 0).r * 2.0;
-	//occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(0, 2), 0).r;
+	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(0, 2), 0).r;
 	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(1, 1), 0).r * 2.0;
-	//occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(2, 0), 0).r;
+	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(2, 0), 0).r;
 	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(1, -1), 0).r * 2.0;
-	//occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(0, -2), 0).r;
+	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(0, -2), 0).r;
 	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(-1, -1), 0).r * 2.0;
-	//occlusion *= 0.0833333333333; // 1/12
+	occlusion *= 0.0833333333333; // 1/12
 	//occlusion *= 0.125; // 1/8
 	//occlusion *= 0.25; // 1/8
 	//occlusion *= 0.2; // 1/5
-	occlusion *= 0.1; // 1/10
+	//occlusion *= 0.1; // 1/10
 	//occlusion *= 0.07692; // 1/13
 	//occlusion *= 0.07143; // 1/14
 	return occlusion;
