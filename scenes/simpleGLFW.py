@@ -10,7 +10,7 @@ from pyrr import Matrix44, Vector3, vector, vector3
 # ----------------------------
 WINDOW_W, WINDOW_H = 1800, 900
 TITLE = "OpenGL 4.3 Window"
-MODEL_PATH = 'scenes/resources/heightmap_mesh.glb'
+MODEL_PATH = 'scenes/resources/rooftop_utility_pole.glb'
 
 # ----------------------------
 # Minimal shader (keep or replace with your BetterShader)
@@ -288,8 +288,7 @@ def main():
     loc_uProj  = glGetUniformLocation(program, "uProj")
     loc_uLight = glGetUniformLocation(program, "uLightDir")
 
-    # model (scale to 0.01 like your DrawModelEx)
-    scale = 0.01
+    scale = 5.0
     model_mat = Matrix44.from_scale([scale, scale, scale], dtype=np.float32)
 
     # light dir (normalize((30,30,25) - (0,0,-20)))
@@ -301,16 +300,17 @@ def main():
     gl_mesh = load_gltf_first_mesh(MODEL_PATH)
 
     start_t = time.time()
-    fps_accum = 0.0
+    frame_start = 0.0
     fps_frames = 0
 
     while not glfw.window_should_close(window):
-        # per-frame timing
-        now = time.time()
-        elapsed = now - start_t
 
         # inputs/events
         glfw.poll_events()
+
+        # per-frame timing
+        now = time.time()
+        elapsed = now - start_t
 
         # orbit update
         global orbit, camera_dist, camera
@@ -342,11 +342,10 @@ def main():
         glfw.swap_buffers(window)
 
         # simple FPS to console
-        fps_accum += (time.time() - now)
         fps_frames += 1
-        if fps_accum >= 1.0:
+        if now - frame_start >= 1.0:
             print(f"fps {fps_frames}")
-            fps_accum = 0.0
+            frame_start = time.time()
             fps_frames = 0
 
     # cleanup

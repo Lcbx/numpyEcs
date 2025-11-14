@@ -12,7 +12,7 @@ from nanogui import glfw as nglfw   # for key enums
 # ----------------------------
 WINDOW_W, WINDOW_H = 1800, 900
 TITLE = "NanoGUI + OpenGL 4.3"
-MODEL_PATH = 'scenes/resources/heightmap_mesh.glb'
+MODEL_PATH = 'scenes/resources/rooftop_utility_pole.glb'
 
 # ----------------------------
 # Minimal shader (unchanged)
@@ -195,7 +195,7 @@ class MyCanvas(Canvas):
         self._init_done = False
 
         # scene state
-        self.scale = 0.01
+        self.scale = 5.0
         l = np.array([30.0, 30.0, 25.0]) - np.array([0.0, 0.0, -20.0])
         self.light_dir = (l / np.linalg.norm(l)).astype(np.float32)
 
