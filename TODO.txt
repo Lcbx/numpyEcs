@@ -1,4 +1,7 @@
 * idea : apply directional shadow map on the AO buffer ? (simple + blur comes free)
+* idea? : migrate to pyglet for its more hackable/pythonish api
+  -> try injecting BetterShader class into pyglet's ShaderSource
+  -> implement gpu animation using custom vertex attributes and animation texture atlas
 * add frustum culling
 * batch same shader calls (raylib does so for static meshes under the hood iirc)
 * use openAL for binaural audio

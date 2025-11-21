@@ -92,9 +92,10 @@ def load_shaders():
 
 	except Exception as ex:
 		print('--------------> failed compiling', ex.args[0])
-		print(newShader.vertex_glsl)
+		withLineNumbers = lambda text: '\n'.join([f'{i+1:>3}:{l}' for i,l in enumerate(text.splitlines())])
+		print(withLineNumbers(newShader.vertex_glsl))
 		print('______________________')
-		print(newShader.fragment_glsl)
+		print(withLineNumbers(newShader.fragment_glsl))
 
 #WINDOW_w, WINDOW_h = 1000, 650
 #WINDOW_w, WINDOW_h = 1920, 1080
