@@ -254,7 +254,7 @@ class BetterShader:
 	"""
 
 	# Regex to capture qualifier, type, and name from declarations
-	_decl_pattern = re.compile(r"\n(?>layout\(location = (\d+)\) )?(uniform|in|out|varying|const)\s+(\S+)\s+([^;]+).*?;", re.MULTILINE)
+	_decl_pattern = re.compile(r"^(?>layout\(location = (\d+)\) )?(uniform|in|out|varying|const)\s+(\S+)\s+([^;]+).*?;", re.MULTILINE)
 
 	# Regex to extract function definitions with bodies
 	_func_pattern = re.compile(
