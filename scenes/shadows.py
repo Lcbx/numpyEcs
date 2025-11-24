@@ -62,9 +62,9 @@ def load_shaders():
 	try:
 		shaders_dir = 'scenes/shaders/'
 
-		newShader = su.BetterShader(shaders_dir + 'shadowmesh.shader');
+		newShader = su.BetterShader(shaders_dir + 'shadowmesh_simple.shader');
 		if newShader.valid(): shadowMeshShader = newShader
-		else: raise Exception('shadowmesh.shader')
+		else: raise Exception('shadowmesh_simple.shader')
 
 		newShader = su.BetterShader(shaders_dir + 'lightmap.compute');
 		if newShader.valid(): shadowBlurShader = newShader
@@ -139,14 +139,10 @@ unused_camera = None
 prepass_buffer = su.create_render_buffer(WINDOW_w, WINDOW_h, None, depth_map=True)
 AO_w, AO_h = WINDOW_w//2, WINDOW_h//2
 AO_buffer = su.create_render_buffer(AO_w, AO_h, su.rl.PIXELFORMAT_UNCOMPRESSED_R16)
-AO_buffer2 = su.create_render_buffer(AO_w//2, AO_h//2, su.rl.PIXELFORMAT_UNCOMPRESSED_R16)
-AO_buffer3 = su.create_render_buffer(AO_w//4, AO_h//4, su.rl.PIXELFORMAT_UNCOMPRESSED_R16)
 
 SM_SIZE = 1024
 INV_SM_SIZE = 1.0 / float(SM_SIZE)
-SHADOW_FORMAT = su.rl.PIXELFORMAT_UNCOMPRESSED_R16G16B16
-shadow_buffer = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT, depth_map=True)
-shadow_buffer2 = su.create_render_buffer(SM_SIZE,SM_SIZE,colorFormat=SHADOW_FORMAT)
+shadow_buffer = su.create_render_buffer(SM_SIZE,SM_SIZE,None, depth_map=True)
 
 
 # model
@@ -180,27 +176,13 @@ def run():
 					su.SetPolygonOffset(3.0) # should increase to 3 for perspective light
 					
 					lightDir = su.rl.Vector3Normalize(su.rl.Vector3Subtract(light_camera.position, light_camera.target))
-					lightVP = su.rl.MatrixMultiply(su.rl.rlGetMatrixModelview(), su.rl.rlGetMatrixProjection())
+					lightView = su.rl.rlGetMatrixModelview()
+					lightProj = su.rl.rlGetMatrixProjection()
+					lightViewProj = su.rl.MatrixMultiply(lightView, lightProj)
 
-					draw_scene(render,randomize_color=True)
+					draw_scene(render)
 					
 					su.DisablePolygonOffset()
-
-				# NOTE : the custom shadow pass is cool but pretty costly...
-
-				# populate fuzzy shadow map with passes
-				read_buffer = shadow_buffer
-				write_buffer = shadow_buffer2
-				step = 8.0
-				last = 1.0
-				
-				su.DisableDepth()
-				while step > last:
-					with su.RenderContext(shader=shadowBlurShader, texture=write_buffer) as render:
-						step *= 0.5
-						shadowBlurShader.stepSize = step * INV_SM_SIZE
-						su.DrawTexture(read_buffer.texture, SM_SIZE, SM_SIZE)
-						read_buffer, write_buffer = write_buffer, read_buffer
 
 			# main camera
 			with su.WatchTimer('main camera'):
@@ -210,7 +192,9 @@ def run():
 				with su.WatchTimer('prepass'):
 					with su.RenderContext(shader=prepassShader, texture=prepass_buffer, clipPlanes=camera_nearFar, camera=camera) as render:
 						su.EnableDepth()
+						view = su.rl.rlGetMatrixModelview()
 						proj = su.rl.rlGetMatrixProjection()
+						viewProj = su.rl.MatrixMultiply(view, proj)
 						su.ClearBuffers()
 						su.SetPolygonOffset(0.1)
 						draw_scene(render)
@@ -224,30 +208,10 @@ def run():
 
 						su.DisableDepth()
 
-						# TODO : make AO depth aware
-
+						# TODO : make AO depth aware ?
 						with su.RenderContext(shader=AOshader, texture=AO_buffer) as render:
 							AOshader.invProj = su.rl.MatrixInvert(proj)
 							su.DrawTexture(prepass_buffer.depth, AO_w, AO_h)
-
-						# kawase-blur : good perf no matter the kernel size
-						# + easy choose a compromise between quality ands cost
-						# link: https://community.arm.com/cfs-file/__key/communityserver-blogs-components-weblogfiles/00-00-00-20-66/siggraph2015_2D00_mmg_2D00_marius_2D00_notes.pdf
-
-						# NOTE: with enough taps and the upsampling in default matrial
-						# -> we can get rid of blur pass with minimal artifacts
-
-						#with su.RenderContext(shader=kawaseBlur_downSampleShader, texture=AO_buffer2) as render:
-						#	su.DrawTexture(AO_buffer.texture, AO_w, AO_h)
-
-						#with su.RenderContext(shader=kawaseBlur_downSampleShader, texture=AO_buffer3) as render:
-						#	su.DrawTexture(AO_buffer2.texture, AO_w, AO_h)
-
-						#with su.RenderContext(shader=kawaseBlur_upSampleShader, texture=AO_buffer2) as render:
-						#	su.DrawTexture(AO_buffer3.texture, AO_w, AO_h)
-
-						#with su.RenderContext(shader=kawaseBlur_upSampleShader, texture=AO_buffer) as render:
-						#	su.DrawTexture(AO_buffer2.texture, AO_w, AO_h)
 				
 				with su.WatchTimer('forward pass'):
 
@@ -262,10 +226,12 @@ def run():
 						su.ClearColorBuffer() # do not clear depth !
 						
 						sceneShader.lightDir = lightDir
-						sceneShader.lightVP  = lightVP
-						sceneShader.shadowSamplingRadius = 3.5 * INV_SM_SIZE
+						#sceneShader.lightView = lightView
+						#sceneShader.lightProj = lightProj
+						sceneShader.lightVP = lightViewProj
+						#sceneShader.invView = su.rl.MatrixInvert(view)
+						#sceneShader.invVP = su.rl.MatrixInvert(viewProj)
 						sceneShader.shadowDepthMap = shadow_buffer.depth
-						sceneShader.shadowPenumbraMap = read_buffer.texture
 						sceneShader.ambientOcclusionMap = AO_buffer.texture
 						draw_scene(render)
 				
