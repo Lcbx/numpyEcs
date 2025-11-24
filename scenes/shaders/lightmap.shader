@@ -20,6 +20,7 @@ varying vec2 fragTexCoord;
 varying vec4 fragColor;
 varying vec4 fragPos;
 varying vec3 fragNormal;
+varying float fragDepth;
 varying vec3 fragShadow;
 
 
@@ -35,10 +36,11 @@ void vertex(){
 	//fragPos = matProjection*matView*matModel*vertex;
 	fragPos = mvp*vertex;
 	gl_Position = fragPos;
+	fragDepth = (fragPos.z / fragPos.w) *0.5 + 0.5;
 	
 	//vec4 fragShadowClipSpace = lightVP*invVP*fragPos;
 	vec4 fragShadowClipSpace = lightVP*matModel*vertex;
-	fragShadow = (fragShadowClipSpace.xyz /= fragShadowClipSpace.w) *0.5 + 0.5;
+	fragShadow = (fragShadowClipSpace.xyz / fragShadowClipSpace.w) *0.5 + 0.5;
 }
 
 
@@ -61,12 +63,12 @@ vec2 get_dir(vec2 encoded){
 	return encoded * 2.0 - 1.0;
 }
 
-float randAngle()
+float randAngle(vec2 param)
 {
-	ivec2 uv = ivec2(gl_FragCoord.xy);
+	ivec2 uv = ivec2(param);
 	float angle = 0;
 	angle = 30u * uv.x ^ uv.y + 10u * uv.x * uv.y;
-	//angle = interleavedGradientNoise(fragTexCoord);
+	//angle = interleavedGradientNoise(uv);
 	return angle;
 }
 
@@ -87,40 +89,69 @@ float sampleAO() {
 	return occlusion;
 }
 
-// NOTE : try using poisson sampling in the taps ?
-// also try moving ao here
-float tapShadow(vec2 uv){
+
+
+const float POISSON_RADIUS = 2.5;
+const int NUM_SAMPLES = 4;
+const float INV_NUM_SAMPLES = 1.0 / float(NUM_SAMPLES);
+const float NUM_SPIRAL_TURNS = 3;
+
+
+// NOTE : try moving ao with shadow sampling ?
+float tapShadowPoisson(vec2 step, float startAngle) {
 	float shadow = 0;
-	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(-2,  0), 0).r);
-	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(-1,  1), 0).r) * 2.0;
-	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(0,   2), 0).r);
-	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(1,   1), 0).r) * 2.0;
-	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(2,   0), 0).r);
-	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(1,  -1), 0).r) * 2.0;
-	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(0,  -2), 0).r);
-	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(-1, -1), 0).r) * 2.0;
+	vec2 uv = fragShadow.xy + step;
+	vec2 depthSize = textureSize(shadowDepthMap,0);
+	// poisson sampling
+	float alpha = 0.5 * INV_NUM_SAMPLES;
+	float angle = startAngle; // randAngle(gl_FragCoord.xy* (1-step) );
+	float angleInc = NUM_SPIRAL_TURNS * INV_NUM_SAMPLES * twoPI;
+	for (int i = 0; i < NUM_SAMPLES; ++i) {
+	        alpha += INV_NUM_SAMPLES;
+	        angle += angleInc;
+	        vec2 disk = vec2(cos(angle), sin(angle)) * alpha * POISSON_RADIUS;
+	        vec2 pixel = (uv * depthSize + disk);
+	        shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel), 0).r);
+	}
+	shadow *= INV_NUM_SAMPLES;
+	return shadow;
+}
+
+
+float tapShadowSimple(vec2 step) {
+	float shadow = 0;
+	vec2 depthSize = textureSize(shadowDepthMap,0);
+	vec2 uv = (fragShadow.xy + step) * depthSize;
+	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(-2, 0), 0).r);
+	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(-1, 1), 0).r) * 2.0;
+	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(0,  2), 0).r);
+	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(1,  1), 0).r) * 2.0;
+	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(2,  0), 0).r);
+	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(1, -1), 0).r) * 2.0;
+	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(0, -2), 0).r);
+	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(-1,-1), 0).r) * 2.0;
 	shadow *= 0.0833333333333; // 1/12
 	return shadow;
 }
 
 
+
 float sampleShadows()
 {
 	float shadow = 0.0;
-
-	vec2 depthMapSize = textureSize(shadowDepthMap, 0);
-	vec2 uv = fragShadow.xy * depthMapSize;
-
-	// 0 was for easy swizzling
-	vec3 stepX = vec3( dFdx(fragShadow.xy) * 5 * depthMapSize, 0);
-	vec3 stepY = vec3( dFdy(fragShadow.xy) * 5 * depthMapSize, 0);
-
-	//shadow += tapShadow( uv );
-	shadow += tapShadow( uv - stepX.xy );
-	shadow += tapShadow( uv + stepX.xy );
-	shadow += tapShadow( uv - stepY.xy );
-	shadow += tapShadow( uv + stepY.xy );
+	//shadow += tapShadowPoisson( vec2(0) );
+	float factor = 2100 * (1 - fragDepth);
+	vec2 stepX = dFdx(fragShadow.xy) * factor;
+	vec2 stepY = dFdy(fragShadow.xy) * factor;
+	float startAngle = randAngle(gl_FragCoord.xy);
+	shadow += tapShadowPoisson( - stepX.xy, startAngle );
+	shadow += tapShadowPoisson(   stepX.xy, startAngle );
+	shadow += tapShadowPoisson( - stepY.xy, startAngle );
+	shadow += tapShadowPoisson(   stepY.xy, startAngle );
+	//shadow *= INV_NUM_SAMPLES;
+	//shadow *= 0.5; // 1/2
 	shadow *= 0.25; // 1/4
+	//shadow *= 0.2; // 1/5
 	return shadow;
 }
 
