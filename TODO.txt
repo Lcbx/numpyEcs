@@ -1,4 +1,6 @@
-* idea : apply directional shadow map on the AO buffer ? (simple + blur comes free)
+* bug : adding even comments in AO shader breaks it.. did opengl drivers get corrupted ?
+-> try modifying AO on another machine
+* idea : apply AO in main pass ?
 * idea? : migrate to pyglet for its more hackable/pythonish api
   -> try injecting BetterShader class into pyglet's ShaderSource
   -> implement gpu animation using custom vertex attributes and animation texture atlas

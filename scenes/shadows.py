@@ -173,7 +173,7 @@ def run():
 
 				with su.RenderContext(shader=shadowMeshShader, texture=shadow_buffer, camera=light_camera, clipPlanes=light_nearFar) as render:
 					su.ClearBuffers()
-					su.SetPolygonOffset(3.0) # should increase to 3 for perspective light
+					su.SetPolygonOffset(1.5) # should increase to 3 for perspective light
 					
 					lightDir = su.rl.Vector3Normalize(su.rl.Vector3Subtract(light_camera.position, light_camera.target))
 					lightView = su.rl.rlGetMatrixModelview()
