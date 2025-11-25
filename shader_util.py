@@ -448,10 +448,9 @@ class RenderContext:
 		return self
 
 	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
-		#if self.shader: rl.EndShaderMode()
+		if self.shader: rl.EndShaderMode()
 		if self.camera: rl.EndMode3D()
 		if self.texture: rl.EndTextureMode()
-		rl.EndShaderMode()
 
 class WatchTimer:
 	nesting : int = 0

@@ -173,15 +173,13 @@ def run():
 
 				with su.RenderContext(shader=shadowMeshShader, texture=shadow_buffer, camera=light_camera, clipPlanes=light_nearFar) as render:
 					su.ClearBuffers()
+					su.EnableDepth()
 					su.SetPolygonOffset(1.5) # should increase to 3 for perspective light
-					
 					lightDir = su.rl.Vector3Normalize(su.rl.Vector3Subtract(light_camera.position, light_camera.target))
 					lightView = su.rl.rlGetMatrixModelview()
 					lightProj = su.rl.rlGetMatrixProjection()
 					lightViewProj = su.rl.MatrixMultiply(lightView, lightProj)
-
 					draw_scene(render)
-					
 					su.DisablePolygonOffset()
 
 			# main camera
@@ -191,46 +189,37 @@ def run():
 				# z prepass
 				with su.WatchTimer('prepass'):
 					with su.RenderContext(shader=prepassShader, texture=prepass_buffer, clipPlanes=camera_nearFar, camera=camera) as render:
+						su.ClearBuffers()
 						su.EnableDepth()
 						view = su.rl.rlGetMatrixModelview()
 						proj = su.rl.rlGetMatrixProjection()
 						viewProj = su.rl.MatrixMultiply(view, proj)
-						su.ClearBuffers()
 						su.SetPolygonOffset(0.1)
 						draw_scene(render)
 						su.DisablePolygonOffset()
 				
 				# AO
 				with su.WatchTimer('AO'):
-					if applyAO:
-						# TODO : maybe generate mipmaps earlier and use them at other places ?
-						su.GenTextureMipmaps(prepass_buffer.depth)
+					# TODO : maybe generate mipmaps earlier and use them at other places ?
+					su.GenTextureMipmaps(prepass_buffer.depth)
 
-						su.DisableDepth()
-
-						# TODO : make AO depth aware ?
-						with su.RenderContext(shader=AOshader, texture=AO_buffer) as render:
+					with su.RenderContext(shader=AOshader, texture=AO_buffer) as render:
+						if applyAO:
+							su.DisableDepth()
 							AOshader.invProj = su.rl.MatrixInvert(proj)
 							su.DrawTexture(prepass_buffer.depth, AO_w, AO_h)
+						else:
+							su.ClearBuffers() 
 				
 				with su.WatchTimer('forward pass'):
-
-					su.EnableDepth()
 					su.rl.BeginDrawing()
-					
 					# transfer depth to main buffer for early z discard
 					su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
-
-					with su.RenderContext(shader=sceneShader, clipPlanes=camera_nearFar, camera=camera) as render:
-					
+					with su.RenderContext(shader=sceneShader, camera=camera) as render:
+						su.EnableDepth()
 						su.ClearColorBuffer() # do not clear depth !
-						
 						sceneShader.lightDir = lightDir
-						#sceneShader.lightView = lightView
-						#sceneShader.lightProj = lightProj
 						sceneShader.lightVP = lightViewProj
-						#sceneShader.invView = su.rl.MatrixInvert(view)
-						#sceneShader.invVP = su.rl.MatrixInvert(viewProj)
 						sceneShader.shadowDepthMap = shadow_buffer.depth
 						sceneShader.ambientOcclusionMap = AO_buffer.texture
 						draw_scene(render)
@@ -247,8 +236,7 @@ def run():
 			# sleeps for vsync / target fps
 			su.rl.EndDrawing()
 
-			# a lot of stuff happening ain EndDrawing it seems...
-			# shadow map cost seems to determine perf the most
+			# a lot of stuff happening in EndDrawing it seems...
 			su.WatchTimer.capture()
 
 
@@ -298,9 +286,6 @@ def inputs():
 	if su.rl.IsKeyPressed(su.rl.KEY_O):
 		orbit = not orbit
 	if su.rl.IsKeyPressed(su.rl.KEY_I):
-		if applyAO:
-			with su.RenderContext(texture=AO_buffer) as render:
-				su.ClearColorBuffer()
 		applyAO = not applyAO
 
 	if su.rl.IsKeyPressed(su.rl.KEY_P):
