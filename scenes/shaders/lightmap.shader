@@ -35,22 +35,34 @@ void vertex(){
 }
 
 
-
 const float PI =  3.141593;
 const float twoPI = 6.283186;
-const float POISSON_RADIUS_MULT = 15;
-const float MIN_POISSON_RADIUS = 0.0001;
-const float MAX_POISSON_RADIUS = 0.006;	
-const int NUM_SAMPLES = 4;
+
+// used by shadow map and AO
+const int NUM_SAMPLES = 3;
 const float INV_NUM_SAMPLES = 1.0 / float(NUM_SAMPLES);
-const float NUM_SPIRAL_TURNS = 3;
+const float NUM_SPIRAL_TURNS = (NUM_SAMPLES > 3 ? round(NUM_SAMPLES * 0.5) + 0.99 : NUM_SAMPLES * 0.85 - 0.5);
+
+// used by shadow map
+const float POISSON_RADIUS_MULT = 10;
+const float MIN_POISSON_RADIUS = 0.001;
+const float MAX_POISSON_RADIUS = 0.003;
+
+// used by AO
+const float radiusWS = 0.06;
+const float radiusWS2 = radiusWS * radiusWS;
+const float invRadius2 = 1.0 / radiusWS2;
+const float bias = 0.05;
+const float intensity = 3.0;
 
 uniform sampler2D texture0; // diffuse
 
 uniform vec3 lightDir;
-uniform sampler2D shadowDepthMap;	   // classic depth map (R channel)
+uniform sampler2D shadowDepthMap; // classic depth map (R channel)
 uniform sampler2D ambientOcclusionMap; // R: intensity
 
+uniform mat4 invProj; // inverse proj matrix
+uniform sampler2D viewDepthMap;	   // classic depth map (R channel)
 
 float random(vec2 co) {
 	return fract(dot(co, vec2(3,8)) * dot(co.yx, vec2(7,5)) * 0.03);
@@ -78,19 +90,79 @@ float randAngle(vec2 param)
 	return angle;
 }
 
+vec3 getPositionVS(ivec2 pixel, vec2 toUv, int mip_level) {
+	float z = texelFetch(viewDepthMap, pixel, mip_level).x;
+	vec3 clip = vec3(vec2(pixel)*toUv,z)*2.0 - vec3(1.0);
+	vec4 view = invProj * vec4(clip, 1);
+	return view.xyz / view.w * 0.5 + 0.5;
+}
+
+// different AO formulas
+float calculateAO(vec3 position, vec3 position2, vec3 normal)
+{
+	vec3 v = position2 - position;
+	
+	float vv = dot(v, v);
+	float vn = dot(v, normal) - bias;
+
+
+	const float epsilon = 0.001;
+	
+	/// (from the HPG12 paper)
+	//return float(vv < radiusWS2) * max(vn / (epsilon + vv), 0.0);
+	
+	// default / recommended
+	//float f = max(radiusWS2 - vv, 0.0) / radiusWS2;
+	//return f * f * f * max(vn / (epsilon + vv), 0.0);
+	
+	return max(1.0 - vv, 0.0) * max(vn, 0.0);
+	
+	//return float(vv < radiusWS2)* max(vn, 0.0);
+}
+
 float sampleAO() {
-	// AO, sampled based on screen uv (from half-res)
-	ivec2 viewPx = ivec2(gl_FragCoord.xy * 0.5);
-	float occlusion = 0;
-	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(-2,  0), 0).r;
-	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(-1,  1), 0).r * 2.0;
-	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(0,   2), 0).r;
-	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(1,   1), 0).r * 2.0;
-	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(2,   0), 0).r;
-	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(1,  -1), 0).r * 2.0;
-	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(0,  -2), 0).r;
-	occlusion += texelFetch(ambientOcclusionMap, viewPx + ivec2(-1, -1), 0).r * 2.0;
-	occlusion *= 0.0833333333333; // 1/12
+
+	vec2 toFullUv = 1.0 / textureSize(viewDepthMap, 0);
+	vec2 uv = gl_FragCoord.xy * toFullUv;
+
+	vec3 position = getPositionVS(ivec2(gl_FragCoord.xy), toFullUv, 0);
+	
+	// estimate normal from depth
+	vec3 dx = dFdx(position);
+	vec3 dy = dFdy(position);
+	vec3 normal = normalize(cross(dx, dy));
+
+	float perspectiveRadius = radiusWS / position.z;
+	float angle = randAngle(gl_FragCoord.xy);
+	float angleInc = NUM_SPIRAL_TURNS * INV_NUM_SAMPLES * twoPI;
+	float radiusInc = INV_NUM_SAMPLES * perspectiveRadius;
+	float radius = 0.5 * radiusInc;
+	
+	//int max_mip = textureQueryLevels(viewDepthMap) - 1;
+	int miplevel = 0; //clamp(findMSB(int(radius * 300)), 0, max_mip);
+
+	vec2 fromUv = textureSize(viewDepthMap, miplevel);
+	vec2 toUv = vec2(1) / fromUv;
+	
+	float occlusion = 0.0;
+	for (int i = 0; i < NUM_SAMPLES; ++i) {
+		radius += radiusInc;
+		angle += angleInc;
+		
+		vec2 disk = vec2(cos(angle), sin(angle));		
+		vec2 uv2 = uv + disk * radius;
+
+		float total = 0;
+		//ivec2 viewPx2 = ivec2(uv2 * fromUv);
+		ivec2 viewPx2 = ivec2(uv2 * fromUv);
+		total += calculateAO(position, getPositionVS( viewPx2, toUv, miplevel), normal);
+		occlusion += total;
+	}
+	occlusion *= INV_NUM_SAMPLES;
+	occlusion *= intensity;
+	occlusion = 1.0 - occlusion;
+	occlusion = clamp(occlusion, 0.0, 1.0);
+
 	return occlusion;
 }
 
@@ -101,33 +173,39 @@ float sampleAO() {
 float tapShadowPoisson() {
 	vec2 depthSize = textureSize(shadowDepthMap,0);
 	vec2 uv = fragShadow.xy * depthSize;
-	float distToOccluder = max(0.01, fragShadow.z - texelFetch(shadowDepthMap, ivec2(uv), 0).r);
-	float invFragDepth = max(0, 1.0 - fragPos.z);
-	float factor = min( POISSON_RADIUS_MULT * distToOccluder * invFragDepth, MAX_POISSON_RADIUS);
-	float total = 0;
-	// poisson sampling
-	float alpha = 0.5 * INV_NUM_SAMPLES;
+
+	//if(between(uv, vec2(0), vec2(1))) return 1;
+
+	float distToOccluder = max(0, fragShadow.z - texelFetch(shadowDepthMap, ivec2(uv), 0).r);
+	float invFragDepth = 1.0 - fragPos.z;
+	float factor = clamp(POISSON_RADIUS_MULT * invFragDepth * distToOccluder, MIN_POISSON_RADIUS, MAX_POISSON_RADIUS);
+	
+	float shadow = 0;
 	float angle = randAngle(uv + gl_FragCoord.xy);
 	float angleInc = NUM_SPIRAL_TURNS * INV_NUM_SAMPLES * twoPI;
+	vec2 radiusInc = INV_NUM_SAMPLES * factor * depthSize;
+	vec2 radius = 0.5 * radiusInc;
+
 	for (int i = 0; i < NUM_SAMPLES; ++i) {
-	        alpha += INV_NUM_SAMPLES;
+	        radius += radiusInc;
 	        angle += angleInc;
-	        vec2 disk = vec2(cos(angle), sin(angle)) * alpha * factor;
-	        vec2 pixel = uv + disk * depthSize;
-			float shadow = 0;
-			shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(-2, 0), 0).r);
-			shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(-1, 1), 0).r) * 2.0;
-			shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(0,  2), 0).r);
-			shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(1,  1), 0).r) * 2.0;
-			shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(2,  0), 0).r);
-			shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(1, -1), 0).r) * 2.0;
-			shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(0, -2), 0).r);
-			shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(-1,-1), 0).r) * 2.0;
-			shadow *= 0.0833333333333; // 1/12
-			total += shadow;
+	        vec2 disk = vec2(cos(angle), sin(angle));
+	        vec2 pixel = uv + disk * radius;
+			float total = 0;
+			//total += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel), 0).r);
+			total += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(-2, 0), 0).r);
+			total += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(-1, 1), 0).r) * 2.0;
+			total += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(0,  2), 0).r);
+			total += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(1,  1), 0).r) * 2.0;
+			total += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(2,  0), 0).r);
+			total += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(1, -1), 0).r) * 2.0;
+			total += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(0, -2), 0).r);
+			total += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel) + ivec2(-1,-1), 0).r) * 2.0;
+			total*= 0.0833333333333; // 1/12
+			shadow += total;
 	}
-	total *= INV_NUM_SAMPLES;
-	return total;
+	shadow *= INV_NUM_SAMPLES;
+	return shadow;
 }
 
 

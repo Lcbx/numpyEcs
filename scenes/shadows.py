@@ -51,24 +51,11 @@ for e in world.create_entities(200):
 
 
 def load_shaders():
-	global shadowMeshShader
-	global shadowBlurShader
 	global sceneShader
 	global prepassShader
-	global AOshader
-	global kawaseBlur_downSampleShader
-	global kawaseBlur_upSampleShader
 
 	try:
 		shaders_dir = 'scenes/shaders/'
-
-		newShader = su.BetterShader(shaders_dir + 'shadowmesh_simple.shader');
-		if newShader.valid(): shadowMeshShader = newShader
-		else: raise Exception('shadowmesh_simple.shader')
-
-		newShader = su.BetterShader(shaders_dir + 'lightmap.compute');
-		if newShader.valid(): shadowBlurShader = newShader
-		else: raise Exception('lightmap.compute')
 
 		newShader = su.BetterShader(shaders_dir + 'lightmap.shader')
 		if newShader.valid(): sceneShader = newShader
@@ -77,18 +64,6 @@ def load_shaders():
 		newShader = su.BetterShader(shaders_dir + 'prepass.shader')
 		if newShader.valid(): prepassShader = newShader
 		else: raise Exception('prepass.shader')
-		
-		newShader = su.BetterShader(shaders_dir + 'AO.compute')
-		if newShader.valid(): AOshader = newShader
-		else: raise Exception('AO.compute')
-		
-		newShader = su.BetterShader(shaders_dir + 'kawaseBlur_downSample.compute')
-		if newShader.valid(): kawaseBlur_downSampleShader = newShader
-		else: raise Exception('kawaseBlur_downSample.compute')
-
-		newShader = su.BetterShader(shaders_dir + 'kawaseBlur_upSample.compute')
-		if newShader.valid(): kawaseBlur_upSampleShader = newShader
-		else: raise Exception('kawaseBlur_upSampleShader.compute')
 
 	except Exception as ex:
 		print('--------------> failed compiling', ex.args[0])
@@ -104,13 +79,7 @@ su.InitWindow(WINDOW_w, WINDOW_h, "Hello")
 
 
 sceneShader : su.BetterShader = None
-shadowMeshShader : su.BetterShader = None
-shadowBlurShader : su.BetterShader = None
 prepassShader : su.BetterShader = None
-AOshader : su.BetterShader = None
-depthBlurShader : su.BetterShader = None
-kawaseBlur_downSampleShader : su.BetterShader = None
-kawaseBlur_upSampleShader : su.BetterShader = None
 load_shaders()
 
 camera_dist = 30
@@ -137,11 +106,8 @@ unused_camera = None
 # TODO : handle resolution changes (rebuild buffers)
 # None is for color format, means we dont actually draw into it
 prepass_buffer = su.create_render_buffer(WINDOW_w, WINDOW_h, None, depth_map=True)
-AO_w, AO_h = WINDOW_w//2, WINDOW_h//2
-AO_buffer = su.create_render_buffer(AO_w, AO_h, su.rl.PIXELFORMAT_UNCOMPRESSED_R16)
 
-SM_SIZE = 1024
-INV_SM_SIZE = 1.0 / float(SM_SIZE)
+SM_SIZE = 2048
 shadow_buffer = su.create_render_buffer(SM_SIZE,SM_SIZE,None, depth_map=True)
 
 
@@ -171,7 +137,7 @@ def run():
 			
 			with su.WatchTimer('shadow'):
 
-				with su.RenderContext(shader=shadowMeshShader, texture=shadow_buffer, camera=light_camera, clipPlanes=light_nearFar) as render:
+				with su.RenderContext(shader=prepassShader, texture=shadow_buffer, camera=light_camera, clipPlanes=light_nearFar) as render:
 					su.ClearBuffers()
 					su.EnableDepth()
 					su.SetPolygonOffset(1.5) # should increase to 3 for perspective light
@@ -193,35 +159,26 @@ def run():
 						su.EnableDepth()
 						view = su.rl.rlGetMatrixModelview()
 						proj = su.rl.rlGetMatrixProjection()
-						viewProj = su.rl.MatrixMultiply(view, proj)
+						#viewProj = su.rl.MatrixMultiply(view, proj)
 						su.SetPolygonOffset(0.1)
 						draw_scene(render)
 						su.DisablePolygonOffset()
 				
-				# AO
-				with su.WatchTimer('AO'):
-					# TODO : maybe generate mipmaps earlier and use them at other places ?
-					su.GenTextureMipmaps(prepass_buffer.depth)
-
-					with su.RenderContext(shader=AOshader, texture=AO_buffer) as render:
-						if applyAO:
-							su.DisableDepth()
-							AOshader.invProj = su.rl.MatrixInvert(proj)
-							su.DrawTexture(prepass_buffer.depth, AO_w, AO_h)
-						else:
-							su.ClearBuffers() 
+				#su.GenTextureMipmaps(prepass_buffer.depth)
 				
+				# transfer depth to main buffer for early z discard
+				su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
+
 				with su.WatchTimer('forward pass'):
 					su.rl.BeginDrawing()
-					# transfer depth to main buffer for early z discard
-					su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
 					with su.RenderContext(shader=sceneShader, camera=camera) as render:
 						su.EnableDepth()
 						su.ClearColorBuffer() # do not clear depth !
+						sceneShader.invProj = su.rl.MatrixInvert(proj)
 						sceneShader.lightDir = lightDir
 						sceneShader.lightVP = lightViewProj
+						sceneShader.viewDepthMap = prepass_buffer.depth
 						sceneShader.shadowDepthMap = shadow_buffer.depth
-						sceneShader.ambientOcclusionMap = AO_buffer.texture
 						draw_scene(render)
 				
 				# maybe add toggles for drawing buffers
@@ -241,28 +198,20 @@ def run():
 
 
 rotation = 0
+DFLT_VIEW_RATIO =  1 / 6.0
 def draw_shadow_buffer():
-	display_size = WINDOW_w / 5.0
+	display_size = WINDOW_w * DFLT_VIEW_RATIO
 	display_scale = display_size / float(shadow_buffer.depth.width)
 	su.rl.DrawTextureEx(shadow_buffer.texture, (WINDOW_w - display_size, 0.0), rotation, display_scale, su.rl.RAYWHITE)
 	su.rl.DrawTextureEx(shadow_buffer2.texture, (WINDOW_w - display_size, display_size), rotation, display_scale, su.rl.RAYWHITE)
 	su.rl.DrawTextureEx(shadow_buffer.depth, (WINDOW_w - display_size, 2 * display_size), rotation, display_scale, su.rl.RAYWHITE)
 def draw_prepass():
-	display_size = WINDOW_w / 5.0
+	display_size = WINDOW_w * DFLT_VIEW_RATIO
 	display_scale = display_size / float(prepass_buffer.texture.width)
 	su.rl.DrawTextureEx(prepass_buffer.texture, (WINDOW_w - display_size, 0.0), rotation, display_scale, su.rl.RAYWHITE)
-def draw_AO():
-	# NOTE: this is after goin on the downsampling / upsampling roller-coaster
-	# if you want the downsampling results you have to comment the upsampling
-	display_size = WINDOW_w / 5.0
-	display_scale = display_size / float(AO_buffer.texture.width)
-	su.rl.DrawTextureEx(AO_buffer.texture, (WINDOW_w - display_size, 0), rotation, display_scale, su.rl.RAYWHITE)
-	display_scale = display_size / float(AO_buffer2.texture.width)
-	su.rl.DrawTextureEx(AO_buffer2.texture, (WINDOW_w - display_size, display_size), rotation, display_scale, su.rl.RAYWHITE)
-	display_scale = display_size / float(AO_buffer3.texture.width)
-	su.rl.DrawTextureEx(AO_buffer3.texture, (WINDOW_w - display_size, 2 * display_size), rotation, display_scale, su.rl.RAYWHITE)
+	su.rl.DrawTextureEx(prepass_buffer.depth, (WINDOW_w - display_size, display_size), rotation, display_scale, su.rl.RAYWHITE)
 def draw_mat_tex(model):
-	display_size = WINDOW_w / 5.0
+	display_size = WINDOW_w * DFLT_VIEW_RATIO
 	i = 0
 	for i in range(model.materialCount):
 		mat = model.materials[i]
