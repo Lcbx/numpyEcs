@@ -212,9 +212,9 @@ def TransferDepth(from_fbo:int, f_w:int, f_h:int, to_fbo:int, t_w:int, t_h:int):
 def ClearColorBuffer():
 	glClear(GL_COLOR_BUFFER_BIT)
 
-def SetPolygonOffset(value:float):
+def SetPolygonOffset(value:float, flat:float=0.0):
 	glEnable(GL_POLYGON_OFFSET_FILL)
-	glPolygonOffset(value, 0.0)
+	glPolygonOffset(value, flat)
 def DisablePolygonOffset():
 	glDisable(GL_POLYGON_OFFSET_FILL)
 

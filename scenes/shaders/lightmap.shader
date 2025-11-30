@@ -231,14 +231,14 @@ vec3 hsv2rgb(vec3 c)
 
 vec3 fastSaturation(vec3 c, float saturation)
 {
-	return mix(vec3(dot(c, vec3(0.25, 0.65, 0.1)) + 0.3), c, saturation);
+	return mix(vec3(dot(c, vec3(0.3, 0.7, 0.15)) + 0.2), c, saturation);
 }
 
 
 void fragment() {
 	vec4 albedo = fragColor;
 	//albedo = vec4(1);
-	albedo = vec4(0.8,0.3,0.6,1);
+	albedo = vec4(0.9,0.4,0.6,1);
 	//albedo *= texture(texture0, fragTexCoord);
 	
 	// 0 = in shadow, 1 = lit

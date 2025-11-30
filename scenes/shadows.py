@@ -140,11 +140,11 @@ def run():
 				with su.RenderContext(shader=prepassShader, texture=shadow_buffer, camera=light_camera, clipPlanes=light_nearFar) as render:
 					su.ClearBuffers()
 					su.EnableDepth()
-					su.SetPolygonOffset(1.5) # should increase to 3 for perspective light
 					lightDir = su.rl.Vector3Normalize(su.rl.Vector3Subtract(light_camera.position, light_camera.target))
 					lightView = su.rl.rlGetMatrixModelview()
 					lightProj = su.rl.rlGetMatrixProjection()
 					lightViewProj = su.rl.MatrixMultiply(lightView, lightProj)
+					su.SetPolygonOffset(1)
 					draw_scene(render)
 					su.DisablePolygonOffset()
 
@@ -159,21 +159,22 @@ def run():
 						su.EnableDepth()
 						view = su.rl.rlGetMatrixModelview()
 						proj = su.rl.rlGetMatrixProjection()
-						#viewProj = su.rl.MatrixMultiply(view, proj)
-						su.SetPolygonOffset(0.1)
+						#su.SetPolygonOffset(0.1)
 						draw_scene(render)
-						su.DisablePolygonOffset()
+						#su.DisablePolygonOffset()
 				
 				#su.GenTextureMipmaps(prepass_buffer.depth)
 				
 				# transfer depth to main buffer for early z discard
-				su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
+				# TODO: for msaa, take the min depth of neighboring pixels
+				#su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
 
 				with su.WatchTimer('forward pass'):
 					su.rl.BeginDrawing()
 					with su.RenderContext(shader=sceneShader, camera=camera) as render:
 						su.EnableDepth()
-						su.ClearColorBuffer() # do not clear depth !
+						su.ClearBuffers()
+						#su.ClearColorBuffer() # do not clear depth !
 						sceneShader.invProj = su.rl.MatrixInvert(proj)
 						sceneShader.lightDir = lightDir
 						sceneShader.lightVP = lightViewProj
