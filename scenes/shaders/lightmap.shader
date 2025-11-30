@@ -13,6 +13,7 @@ uniform mat4 lightVP;
 varying vec2 fragTexCoord;
 varying vec4 fragColor;
 varying vec3 fragPos;
+varying float fragDepth;
 varying vec3 fragNormal;
 varying vec3 fragShadow;
 
@@ -27,11 +28,13 @@ void vertex(){
 	vec4 vertex = vec4(vertexPosition, 1.0);
 	vec4 pos = mvp*vertex;
 	gl_Position = pos;
-	fragPos = (pos.xyz / pos.w) *0.5 + 0.5;
+	pos = invProj * pos;
+	fragDepth = pos.z * -0.001; // poor man's depth conversion (camera's far is 1000)  
+	fragPos = pos.xyz; // / pos.w;
 	
 	//vec4 fragShadowClipSpace = lightVP*invVP*fragPos;
 	vec4 fragShadowClipSpace = lightVP*matModel*vertex;
-	fragShadow = (fragShadowClipSpace.xyz / fragShadowClipSpace.w) *0.5 + 0.5;
+	fragShadow = fragShadowClipSpace.xyz / fragShadowClipSpace.w*0.5+0.5;
 }
 
 
@@ -44,12 +47,12 @@ const float INV_NUM_SAMPLES = 1.0 / float(NUM_SAMPLES);
 const float NUM_SPIRAL_TURNS = (NUM_SAMPLES > 3 ? round(NUM_SAMPLES * 0.5) + 0.99 : NUM_SAMPLES * 0.85 - 0.5);
 
 // used by shadow map
-const float POISSON_RADIUS_MULT = 10;
+const float POISSON_RADIUS_MULT = 0.1;
 const float MIN_POISSON_RADIUS = 0.001;
 const float MAX_POISSON_RADIUS = 0.003;
 
 // used by AO
-const float radiusWS = 0.06;
+const float radiusWS = 0.15;
 const float radiusWS2 = radiusWS * radiusWS;
 const float invRadius2 = 1.0 / radiusWS2;
 const float bias = 0.05;
@@ -65,10 +68,15 @@ uniform mat4 invProj; // inverse proj matrix
 uniform sampler2D viewDepthMap;	   // classic depth map (R channel)
 
 float random(vec2 co) {
-	return fract(dot(co, vec2(3,8)) * dot(co.yx, vec2(7,5)) * 0.03);
+	return fract(dot(co, ivec2(3,8)) * dot(co.yx, ivec2(7,5)) * 0.03);
 }
 
-float interleavedGradientNoise(vec2 co){
+// NOTE : goes over PI
+float randomAngle(ivec2 co){
+	return 30u * co.x ^ co.y + 10u * co.x * co.y;
+}
+
+float interleavedGradientNoise(ivec2 co){
 	return fract(52.9829189 * fract(dot(co, vec2(0.06711056, 0.00583715))));
 }
 
@@ -83,16 +91,12 @@ vec2 get_dir(vec2 encoded){
 
 float randAngle(vec2 param)
 {
-	ivec2 uv = ivec2(param);
-	float angle = 0;
-	//angle += 30u * uv.x ^ uv.y + 10u * uv.x * uv.y;
-	angle += interleavedGradientNoise(uv) * twoPI;
-	return angle;
+	return interleavedGradientNoise(ivec2(param)) * twoPI;
 }
 
 vec3 getPositionVS(ivec2 pixel, vec2 toUv, int mip_level) {
 	float z = texelFetch(viewDepthMap, pixel, mip_level).x;
-	vec3 clip = vec3(vec2(pixel)*toUv,z)*2.0 - vec3(1.0);
+	vec3 clip = vec3(vec2(pixel)*toUv,z);
 	vec4 view = invProj * vec4(clip, 1);
 	return view.xyz / view.w * 0.5 + 0.5;
 }
@@ -177,8 +181,7 @@ float tapShadowPoisson() {
 	//if(between(uv, vec2(0), vec2(1))) return 1;
 
 	float distToOccluder = max(0, fragShadow.z - texelFetch(shadowDepthMap, ivec2(uv), 0).r);
-	float invFragDepth = 1.0 - fragPos.z;
-	float factor = clamp(POISSON_RADIUS_MULT * invFragDepth * distToOccluder, MIN_POISSON_RADIUS, MAX_POISSON_RADIUS);
+	float factor = clamp(POISSON_RADIUS_MULT * distToOccluder, MIN_POISSON_RADIUS, MAX_POISSON_RADIUS);
 	
 	float shadow = 0;
 	float angle = randAngle(uv + gl_FragCoord.xy);
@@ -208,10 +211,34 @@ float tapShadowPoisson() {
 	return shadow;
 }
 
+vec3 rgb2hsv(vec3 c)
+{
+    vec4 K = vec4(0.0, -0.33333333, 0.6666666, -1.0);
+    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+vec3 hsv2rgb(vec3 c)
+{
+    vec4 K = vec4(1.0, 0.6666666, 0.33333333, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+vec3 fastSaturation(vec3 c, float saturation)
+{
+	return mix(vec3(dot(c, vec3(0.25, 0.65, 0.1)) + 0.3), c, saturation);
+}
+
 
 void fragment() {
 	vec4 albedo = fragColor;
 	//albedo = vec4(1);
+	albedo = vec4(0.8,0.3,0.6,1);
 	//albedo *= texture(texture0, fragTexCoord);
 	
 	// 0 = in shadow, 1 = lit
@@ -220,7 +247,7 @@ void fragment() {
 		shadow = tapShadowPoisson();
 
 	// 0 = in shadow, 1 = lit
-	float occlusion = sampleAO();	
+	float occlusion = sampleAO();
 	
 	// blinn-phong
 	vec3 ambient = vec3(0.35 * albedo.rgb);
@@ -242,15 +269,28 @@ void fragment() {
 	lighting += diffuse * albedo.rgb; // = diffuse * light.Color * attenuation;
 
 	// specular
-	//vec3 viewDir  = normalize(-fragPos.xyz);
-	//vec3 halfwayDir = normalize(lightDir + viewDir);  
-	//float specular = pow(max(dot(fragNormal, halfwayDir), 0.0), 8.0);
-	//lighting += vec3(specular) * 0.1; // = light.Color * specular * attenuation;
+	vec3 viewDir  = normalize(-fragPos.xyz);
+	vec3 halfwayDir = normalize(lightDir + viewDir);  
+	float specular = pow(max(dot(fragNormal, halfwayDir), 0.0), 8.0);
+	lighting += vec3(specular) * 0.15; // = light.Color * specular * attenuation;
 	
 	//lighting *= occlusion;
 
+	// desaturate based on fragment depth 
+	float effect = 1 - pow(fragDepth, 0.35) * 0.5;
+	effect = clamp(effect, 0.5, 1);
+	lighting = fastSaturation(lighting, effect);
+
+	// proper hue saturation brightness
+	//vec3 hsv = rgb2hsv(lighting);
+	//hsv.g *= effect;
+	//lighting = hsv2rgb(hsv);
+
+	// debug view
+	//lighting = mix(vec3(0.5, 0.5, 0.8), lighting, effect);
+
 	finalColor = vec4(lighting, albedo.a);
-	
+	//finalColor = vec4(vec3(fragDepth), albedo.a);
 	//finalColor = vec4( (0.5 + fragColor.rgb) * occlusion * 0.5, albedo.a);
 	//finalColor = vec4( vec3(occlusion) , albedo.a);
 	//finalColor = vec4(vec3(1)*shadow, 1);
