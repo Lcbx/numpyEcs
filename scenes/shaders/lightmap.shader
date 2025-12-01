@@ -94,9 +94,9 @@ float randAngle(vec2 param)
 	return interleavedGradientNoise(ivec2(param)) * twoPI;
 }
 
-vec3 getPositionVS(ivec2 pixel, vec2 toUv, int mip_level) {
-	float z = texelFetch(viewDepthMap, pixel, mip_level).x;
-	vec3 clip = vec3(vec2(pixel)*toUv,z);
+vec3 getPositionVS(vec2 uv, vec2 toPx, int mip_level) {
+	float z = texelFetch(viewDepthMap, ivec2(uv * toPx), mip_level).x;
+	vec3 clip = vec3(uv,z);
 	vec4 view = invProj * vec4(clip, 1);
 	return view.xyz / view.w * 0.5 + 0.5;
 }
@@ -126,10 +126,11 @@ float calculateAO(vec3 position, vec3 position2, vec3 normal)
 
 float sampleAO() {
 
+	vec2 toFullPx = textureSize(viewDepthMap, 0);
 	vec2 toFullUv = 1.0 / textureSize(viewDepthMap, 0);
 	vec2 uv = gl_FragCoord.xy * toFullUv;
 
-	vec3 position = getPositionVS(ivec2(gl_FragCoord.xy), toFullUv, 0);
+	vec3 position = getPositionVS(uv, toFullPx, 0);
 	
 	// estimate normal from depth
 	vec3 dx = dFdx(position);
@@ -145,8 +146,8 @@ float sampleAO() {
 	//int max_mip = textureQueryLevels(viewDepthMap) - 1;
 	int miplevel = 0; //clamp(findMSB(int(radius * 300)), 0, max_mip);
 
-	vec2 fromUv = textureSize(viewDepthMap, miplevel);
-	vec2 toUv = vec2(1) / fromUv;
+	vec2 toPx = textureSize(viewDepthMap, miplevel);
+	vec2 toUv = vec2(1) / toPx;
 	
 	float occlusion = 0.0;
 	for (int i = 0; i < NUM_SAMPLES; ++i) {
@@ -157,9 +158,7 @@ float sampleAO() {
 		vec2 uv2 = uv + disk * radius;
 
 		float total = 0;
-		//ivec2 viewPx2 = ivec2(uv2 * fromUv);
-		ivec2 viewPx2 = ivec2(uv2 * fromUv);
-		total += calculateAO(position, getPositionVS( viewPx2, toUv, miplevel), normal);
+		total += calculateAO(position, getPositionVS(uv2, toPx, miplevel), normal);
 		occlusion += total;
 	}
 	occlusion *= INV_NUM_SAMPLES;
@@ -237,7 +236,7 @@ vec3 fastSaturation(vec3 c, float saturation)
 
 void fragment() {
 	vec4 albedo = fragColor;
-	//albedo = vec4(1);
+	//albedo = vec4(vec3(0.8), 1);
 	albedo = vec4(0.9,0.4,0.6,1);
 	//albedo *= texture(texture0, fragTexCoord);
 	
@@ -247,11 +246,15 @@ void fragment() {
 		shadow = tapShadowPoisson();
 
 	// 0 = in shadow, 1 = lit
-	float occlusion = sampleAO();
+	float occlusion = 1;
+	if(fragDepth < 0.05)
+		occlusion = sampleAO();
 	
 	// blinn-phong
 	vec3 ambient = vec3(0.35 * albedo.rgb);
 	ambient *= occlusion;
+	//ambient *= 2;
+
 	vec3 lighting = ambient; 
 	
 	// TODO : accumulate per light
@@ -262,7 +265,6 @@ void fragment() {
 	float diffuse = max(dot(fragNormal, lightDir), 0.0); // * albedo * light.Color;
 	diffuse = min(shadow, diffuse);
 	diffuse = mix(0.4, 0.8, clamp(diffuse, 0.0, 1.0));
-
 	// attenuation
 	//float dist = length(light.Position - FragPos);
 	//float attenuation = 1.0 / (1.0 + light.Linear * dist + light.Quadratic * dist * dist);
@@ -277,8 +279,10 @@ void fragment() {
 	//lighting *= occlusion;
 
 	// desaturate based on fragment depth 
-	float effect = 1 - pow(fragDepth, 0.35) * 0.5;
-	effect = clamp(effect, 0.5, 1);
+	float effect = 1.3 - pow(fragDepth, 0.3);
+	//effect = clamp(effect, 0, 1);
+	//effect = clamp(effect, 0.5, 1);
+	effect = mix(0.4, 1, effect);
 	lighting = fastSaturation(lighting, effect);
 
 	// proper hue saturation brightness
