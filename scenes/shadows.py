@@ -166,7 +166,7 @@ def run():
 				#su.GenTextureMipmaps(prepass_buffer.depth)
 				
 				# transfer depth to main buffer for early z discard
-				# TODO: for msaa, take the min depth of neighboring pixels
+				# TODO: for msaa, take the min depth of neighboring pixels or enable msaa on prepass buffer
 				#su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
 
 				with su.WatchTimer('forward pass'):
