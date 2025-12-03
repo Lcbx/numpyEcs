@@ -53,6 +53,7 @@ for e in world.create_entities(200):
 def load_shaders():
 	global sceneShader
 	global prepassShader
+	global depthTransferShader
 
 	try:
 		shaders_dir = 'scenes/shaders/'
@@ -60,6 +61,10 @@ def load_shaders():
 		newShader = su.BetterShader(shaders_dir + 'lightmap.shader')
 		if newShader.valid(): sceneShader = newShader
 		else: raise Exception('lightmap.shader')
+
+		newShader = su.BetterShader(shaders_dir + 'depthTransfer.shader')
+		if newShader.valid(): depthTransferShader = newShader
+		else: raise Exception('depthTransfer.shader')
 
 		newShader = su.BetterShader(shaders_dir + 'prepass.shader')
 		if newShader.valid(): prepassShader = newShader
@@ -79,6 +84,7 @@ su.InitWindow(WINDOW_w, WINDOW_h, "Hello")
 
 
 sceneShader : su.BetterShader = None
+depthTransferShader : su.BetterShader = None
 prepassShader : su.BetterShader = None
 load_shaders()
 
@@ -139,7 +145,6 @@ def run():
 
 				with su.RenderContext(shader=prepassShader, texture=shadow_buffer, camera=light_camera, clipPlanes=light_nearFar) as render:
 					su.ClearBuffers()
-					su.EnableDepth()
 					lightDir = su.rl.Vector3Normalize(su.rl.Vector3Subtract(light_camera.position, light_camera.target))
 					lightView = su.rl.rlGetMatrixModelview()
 					lightProj = su.rl.rlGetMatrixProjection()
@@ -156,25 +161,28 @@ def run():
 				with su.WatchTimer('prepass'):
 					with su.RenderContext(shader=prepassShader, texture=prepass_buffer, clipPlanes=camera_nearFar, camera=camera) as render:
 						su.ClearBuffers()
-						su.EnableDepth()
 						view = su.rl.rlGetMatrixModelview()
 						proj = su.rl.rlGetMatrixProjection()
-						#su.SetPolygonOffset(0.1)
+						su.SetPolygonOffset(0.1)
 						draw_scene(render)
-						#su.DisablePolygonOffset()
+						su.DisablePolygonOffset()
 				
 				#su.GenTextureMipmaps(prepass_buffer.depth)
 				
 				# transfer depth to main buffer for early z discard
-				# TODO: for msaa, take the min depth of neighboring pixels or enable msaa on prepass buffer
-				#su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
-
 				with su.WatchTimer('forward pass'):
 					su.rl.BeginDrawing()
-					with su.RenderContext(shader=sceneShader, camera=camera) as render:
-						su.EnableDepth()
-						su.ClearBuffers()
-						#su.ClearColorBuffer() # do not clear depth !
+					su.ClearBuffers()
+					#su.ClearColorBuffer()
+					
+					# transfer depth to main buffer for early z discard
+					su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
+					
+					# trying to pass depth with a shader for msaa
+					#with su.RenderContext(shader=depthTransferShader, camera=camera) as render:
+					#	su.DrawTexture(prepass_buffer.depth, WINDOW_w, WINDOW_h)
+					
+					with su.RenderContext(shader=sceneShader, camera=camera) as render:	
 						sceneShader.invProj = su.rl.MatrixInvert(proj)
 						sceneShader.lightDir = lightDir
 						sceneShader.lightVP = lightViewProj
