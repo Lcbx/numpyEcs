@@ -247,7 +247,19 @@ class DefaultFalseDict(Dict):
 	def __missing__(self, key):
 		return False
 
-class BetterShader:
+class PassthroughShaderSource:
+    """GLSL source container for making source parsing simpler. """
+    _type: object
+    _lines: list[str]
+
+    def __init__(self, source: str, source_type: object) -> None:
+        self._type = source_type
+        self._source = source
+
+    def validate(self) -> str:
+        return self._source
+
+class BetterShaderSource:
 	"""
 	Parses a shader definition file containing two functions: vertex() and fragment().
 	Extracts uniforms, varying, in, and out variables, then generates GLSL code for both stages.
@@ -274,7 +286,6 @@ class BetterShader:
 	def __init__(
 		self,
 		filepath: str,
-		*,
 		features: Optional[Sequence[str]] = None,
 		params: Optional[Dict[str, Any]] = None,
 		glsl_version: str = '#version 430'
@@ -289,7 +300,6 @@ class BetterShader:
 		self._basedir = os.path.dirname(os.path.abspath(filepath))
 		self._opengl_version = glsl_version
 		self.uniforms = []	   # list[(type, name)]
-		self.uniform_locs = {}   # name -> location id
 		self.varyings = []	   # list[(type, name)]
 		self.ins = []			# list[(loc, type, name)]
 		self.outs = []		   # list[(loc, type, name)]
@@ -309,32 +319,6 @@ class BetterShader:
 
 		# Generate final vertex/fragment GLSL
 		self._generate_glsl()
-
-		rl.TraceLog(rl.LOG_INFO, f'compiling {filepath}'.encode())
-
-		# Compile via raylib
-		self.shaderStruct = rl.LoadShaderFromMemory(
-			self.vertex_glsl.encode(),
-			self.fragment_glsl.encode()
-		)
-
-		for typ, name in self.uniforms:
-			self.uniform_locs[name] = rl.GetShaderLocation(self.shaderStruct, name.encode('utf-8'))
-
-	def valid(self) -> bool:
-		return self.shaderStruct.id > 0
-
-	def __enter__(self) -> None:
-		rl.BeginShaderMode(self.shaderStruct)
-
-	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
-		rl.EndShaderMode()
-
-	def __setattr__(self, name: str, value: Any) -> None:
-		try:
-			SetShaderValue(self.shaderStruct, self.uniform_locs[name], value)
-		except: pass
-		object.__setattr__(self, name, value)
 
 	def _render_template(self, features: Sequence[str], params: Dict[str, Any]) -> str:
 		"""
@@ -426,6 +410,53 @@ class BetterShader:
 			self.functions[self._fragment_body].replace(self._fragment_start, self._main_start)
 		]
 		self.fragment_glsl = '\n'.join(f_lines)
+
+
+
+class BetterShader:
+	"""
+	Parses a shader definition file containing two functions: vertex() and fragment().
+	Extracts uniforms, varying, in, and out variables, then generates GLSL code for both stages.
+	"""
+
+	def __init__(
+		self,
+		filepath: str,
+		features: Optional[Sequence[str]] = None,
+		params: Optional[Dict[str, Any]] = None,
+		glsl_version: str = '#version 430'
+	):
+		self.uniform_locs = {}   # name -> location id
+
+		source = BetterShaderSource(
+			filepath,
+			features,
+			params,
+			glsl_version)
+
+		# Compile via raylib
+		self.shaderStruct = rl.LoadShaderFromMemory(
+			source.vertex_glsl.encode(),
+			source.fragment_glsl.encode()
+		)
+
+		for typ, name in source.uniforms:
+			self.uniform_locs[name] = rl.GetShaderLocation(self.shaderStruct, name.encode())
+
+	def valid(self) -> bool:
+		return self.shaderStruct.id > 0
+
+	def __enter__(self) -> None:
+		rl.BeginShaderMode(self.shaderStruct)
+
+	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
+		rl.EndShaderMode()
+
+	def __setattr__(self, name: str, value: Any) -> None:
+		try:
+			SetShaderValue(self.shaderStruct, self.uniform_locs[name], value)
+		except: pass
+		object.__setattr__(self, name, value)
 
 
 class RenderContext:
