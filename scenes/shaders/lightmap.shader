@@ -44,11 +44,13 @@ const float twoPI = 6.283186;
 // used by shadow map
 const int SHADOW_SAMPLES = 3;
 const float SHADOW_INV_SAMPLES = SHADOW_SAMPLES > 0 ? 1.0 / float(SHADOW_SAMPLES) : 0;
+const float SHADOW_WEIGHT = SHADOW_SAMPLES > 0 ? 0.2 + 0.7 / float(SHADOW_SAMPLES) : 1;
 const float SHADOW_SPIRAL_TURNS = (SHADOW_SAMPLES > 3 ? round(SHADOW_SAMPLES * 0.5) + 0.99 : SHADOW_SAMPLES * 0.85 - 0.5);
 
 // used by AO
 const int AO_SAMPLES = 2;
 const float AO_INV_SAMPLES = AO_SAMPLES > 0 ? 1.0 / float(AO_SAMPLES) : 0;
+const float AO_WEIGHT = AO_SAMPLES > 0 ? 0.2 + 0.7 / float(AO_SAMPLES) : 1;
 const float AO_SPIRAL_TURNS = (AO_SAMPLES > 3 ? round(AO_SAMPLES * 0.5) + 0.99 : AO_SAMPLES * 0.85 - 0.5);
 
 // used by shadow map
@@ -59,8 +61,8 @@ const float MAX_POISSON_RADIUS = 0.003;
 // used by AO
 const float AO_radiusWS = 0.04;
 const float AO_radiusWS2 = AO_radiusWS * AO_radiusWS;
-const float AO_bias = 0.05;
-const float AO_intensity = 2.0;
+const float AO_bias = 0.03;
+const float AO_intensity = 1.5;
 
 uniform sampler2D texture0; // diffuse
 
@@ -163,8 +165,8 @@ float sampleAO() {
 		float perspectiveRadius = min(AO_radiusWS, AO_radiusWS2 / fragDepth);
 		float angle = randAngle(gl_FragCoord.xy);
 		float angleInc = AO_SPIRAL_TURNS * AO_INV_SAMPLES * twoPI;
-		float radiusInc = AO_INV_SAMPLES * perspectiveRadius;
-		float radius = 0.5 * radiusInc;
+		float radiusInc = AO_INV_SAMPLES * 0.9 * perspectiveRadius;
+		float radius = radiusInc;
 		
 		float total = 0;
 		for (int i = 0; i < AO_SAMPLES; ++i) {
@@ -176,7 +178,7 @@ float sampleAO() {
 
 			total += calculateAO(position, getPositionVS(uv2, toPx, miplevel), normal);
 		}
-		occlusion = mix(total * AO_INV_SAMPLES, occlusion, AO_INV_SAMPLES *0.8 + 0.2);
+		occlusion = mix(total * AO_INV_SAMPLES, occlusion, AO_WEIGHT);
 	}
 
 	occlusion *= AO_intensity;
@@ -213,7 +215,7 @@ float tapShadowPoisson() {
 		float angle = randAngle(uv + gl_FragCoord.xy);
 		float angleInc = SHADOW_SPIRAL_TURNS * SHADOW_INV_SAMPLES * twoPI;
 		vec2 radiusInc = SHADOW_INV_SAMPLES * factor * depthSize;
-		vec2 radius = 0.5 * radiusInc;
+		vec2 radius = radiusInc;
 
 		float total = 0;
 		for (int i = 0; i < SHADOW_SAMPLES; ++i) {
@@ -223,7 +225,7 @@ float tapShadowPoisson() {
 		        vec2 pixel = uv + disk * radius;
 				total += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(pixel), 0).r);
 		}
-		shadow = mix(total * SHADOW_INV_SAMPLES, shadow, SHADOW_INV_SAMPLES *0.8 + 0.2);
+		shadow = mix(total * SHADOW_INV_SAMPLES, shadow, SHADOW_WEIGHT);
 	}
 	
 	return shadow;
