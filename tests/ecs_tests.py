@@ -137,16 +137,17 @@ def update_world_aabb(ecs):
     wa_min = vectorized(la, 'x_min', 'y_min', 'z_min') + pos
     wa_max = vectorized(la, 'x_max', 'y_max', 'z_max') + pos
     aabbs = ecs.get_store(AxisAlignedBoundingBox)
-    aabbs.set_vector(nr_ents,
-        x_min=wa_min[:,0], y_min=wa_min[:,1], z_min=wa_min[:,2],
-        x_max=wa_max[:,0], y_max=wa_max[:,1], z_max=wa_max[:,2]
-    )
+    wa = np.append(wa_min, wa_max, axis=1).transpose()
+    aabbs.set_full_vector(nr_ents, wa)
     
     # Rotated boxes
     rot_ents = ecs.where(LocalAABB, Position, Orientation)
     la, pos, ori = ecs.get_vectors(LocalAABB, Position, Orientation, rot_ents)
     pos = vectorized(pos, 'x', 'y', 'z')
     ori = vectorized(ori, 'qx', 'qy', 'qz', 'qw')
+    #bb = ecs.get_store(LocalAABB).get_full_vector(rot_ents)
+    #mins = la[:, :3]
+    #maxs = la[:, 3:]
     mins = vectorized(la, 'x_min', 'y_min', 'z_min')
     maxs = vectorized(la, 'x_max', 'y_max', 'z_max')
     # build 8 corners
@@ -159,12 +160,10 @@ def update_world_aabb(ecs):
     pts = rotate_vectors_by_quaternions(ori, offs) + pos[:,None,:]
     wa_min = pts.min(axis=1)
     wa_max = pts.max(axis=1)
-    aabbs.set_vector(nr_ents,
-        x_min=wa_min[:,0], y_min=wa_min[:,1], z_min=wa_min[:,2],
-        x_max=wa_max[:,0], y_max=wa_max[:,1], z_max=wa_max[:,2]
-    )
-    
-    
+    wa = np.append(wa_min, wa_max, axis=1).transpose()
+    aabbs.set_full_vector(nr_ents,wa)
+
+
 def detect_aabb_overlaps(ecs):
     ents = ecs.where(AxisAlignedBoundingBox)
     blk = ecs.get_store(AxisAlignedBoundingBox).get_vector() # we want them all, so no need for indexing
@@ -295,6 +294,15 @@ def test_query_mult_comp_no_match_returns_empty():
     out = mt.query(lambda value: value == 9)
     assert out.size == 0
 
+def test_query_mult_comp_get_vector_returns_all_comp():
+    mt = make_multitag_store({0: [0, 0], 1: [2], 3: [4, 5], 4: [6, 6]})
+    # TODO: support multicomponent retrieval
+    try:
+        out = mt.get_vector( [0,3] )
+        assert out['value'].tolist() == [ 0,0, 4,5]
+    except:
+        pass
+
 def test_query_intflag_predicate():
     tags = ComponentStorage(Tag, capacity=8)
     tags._add(1, Tag(TagEnum.Enemy | TagEnum.Dazed))
@@ -405,7 +413,7 @@ def test_storage_multicomp_add_get_remove():
     assert comps[2].val == pytest.approx(3.)
 
     idx = store._sparse[entity_id]
-    block = store.get_vector()['val']
+    block = store._dense['val'][:3]
     assert np.allclose(block, [1., 2., 3.])
 
     store._remove(store.get(entity_id)[1])

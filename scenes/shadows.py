@@ -73,9 +73,9 @@ def load_shaders():
 	except Exception as ex:
 		print('--------------> failed compiling', ex.args[0])
 		withLineNumbers = lambda text: '\n'.join([f'{i+1:>3}:{l}' for i,l in enumerate(text.splitlines())])
-		print(withLineNumbers(newShader.vertex_glsl))
+		print(withLineNumbers(newShader.source.vertex_glsl))
 		print('______________________')
-		print(withLineNumbers(newShader.fragment_glsl))
+		print(withLineNumbers(newShader.source.fragment_glsl))
 
 #WINDOW_w, WINDOW_h = 1000, 650
 #WINDOW_w, WINDOW_h = 1920, 1080
@@ -286,7 +286,7 @@ def update(frameTime):
 	#if animFrameCounter >= anims[0].frameCount: animFrameCounter = 0
 
 	pv = world.where(Position, Velocity)
-	p_vec, v_vec = (positions.get_vector(pv), velocities.get_vector(pv))
+	p_vec, v_vec = (positions.get_full_vector(pv), velocities.get_full_vector(pv))
 	p_vec += v_vec * frameTime
 
 	# bounce when out of bounds
@@ -298,8 +298,8 @@ def update(frameTime):
 	p_vec[mask_x, 0] = np.sign(p_vec[mask_x, 0]) * 0.99 * SPACE_SIZE
 	p_vec[mask_z, 2] = np.sign(p_vec[mask_z, 2]) * 0.99 * SPACE_SIZE
 
-	positions.set_vector(pv, p_vec)
-	velocities.set_vector(pv, v_vec)
+	positions.set_full_vector(pv, p_vec.transpose())
+	velocities.set_full_vector(pv, v_vec.transpose())
 
 
 def draw_scene(render:su.RenderContext, randomize_color=False):
@@ -322,20 +322,20 @@ def draw_scene(render:su.RenderContext, randomize_color=False):
 		su.rl.DrawModelEx(pole, (0,0,-10), (1,0,0), 0.0, (scale,scale,scale), su.rl.WHITE) 
 
 		ents = world.where(Position, Mesh, BoundingBox)
-		pos_vec, mesh_vec, bb_vec, = (positions.get_vector(ents), meshes.get_vector(ents), bboxes.get_vector(ents))
-		bmins = bb_vec[:,:3] # entity (int), bounding box (6 floats)
+		pos_vec, mesh_vec, bb_vec, = (positions.get_full_vector(ents), meshes.get_vector(ents), bboxes.get_full_vector(ents))
+		bmins = bb_vec[:,:3]
 		bmaxs = bb_vec[:,3:]
 		sizes = bmaxs - bmins
 		centers = pos_vec + (bmaxs + bmins) * 0.5
 		meshIds = ents / np.max(ents)
 		
-		for meshId, center, size, mesh in zip(meshIds, centers, sizes, mesh_vec):
+		for meshId, center, size, color in zip(meshIds, centers, sizes, mesh_vec['color']):
 			su.rl.DrawCube(
 				tuple(center),
 				size[0], # x
 				size[1], # y
 				size[2], # z
-				(int(255 * meshId),255,255,255) if randomize_color else mesh[meshes.color_id]
+				(int(255 * meshId),255,255,255) if randomize_color else color
 			)
 
 

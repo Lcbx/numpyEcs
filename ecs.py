@@ -61,7 +61,7 @@ class ComponentStorage:
 
 	@property
 	def live_entities(self) -> np.ndarray:
-		return self._entities[:self._size] != ComponentStorage.NONE
+		return np.nonzero(self._entities[:self._size] != ComponentStorage.NONE)[0]
 
 	def _grow_sparse(self, entity: int):
 		old = self.sparse_size
@@ -77,7 +77,7 @@ class ComponentStorage:
 		new_entities = np.full(new_cap, ComponentStorage.NONE, dtype=int)
 
 		if self.mult_comp:
-			valid_idx = np.nonzero(self.live_entities)[0]
+			valid_idx = self.live_entities
 			new_size  = valid_idx.shape[0]
 			new_entities[:new_size] = self._entities[valid_idx]
 		else:
@@ -217,33 +217,43 @@ class ComponentStorage:
 			while idx < self._size and self._entities[idx] == ComponentStorage.NONE:
 				idx += 1
 		return proxies
-
+	
+	
+	""" vectorized accessors
+		NOTE: these do not handle multicomponent storage!
+	"""
+	def _get_rows(self, entities:np.ndarray|None=None):
+		if entities is None:
+			return self.live_entities
+		else:
+			entities = np.atleast_1d(entities).astype(int)
+			return self._sparse[entities]
+	
 	def get_vector(self, entities:np.ndarray|None=None):
 		"""
 		Usage:
-			get_vector(			 # component fields, for all entities
+			get_vector()		 # component fields, for all entities
 			get_vector(entities) # component fields for given entities
 		"""
-
-		if entities is None:
-			# only live range [0:_size]
-			rows = range(self._size)
-		else:
-			entities = np.atleast_1d(entities).astype(int)
-			rows = self._sparse[entities]
-
-		return LazyDict(self._dense, rows)
+		if self.mult_comp: raise Exception("get_vector() is not supported in multi-component storage")
+		return LazyDict(self._dense, self._get_rows(entities))
+	
+	def get_full_vector(self, entities:np.ndarray|None=None):
+		rows = self._get_rows(entities)
+		return np.stack( tuple(self._dense[f][rows] for f in self.fields), axis=1)
 
 	def set_vector(self, entities: np.ndarray, **value_arrays: dict) -> None:
 		"""
 		Overwrite the rows at `entities` for component fields in dict
 		(except the internal 'entity' column) with the columns of `vector`.
 		"""
-		es  = np.atleast_1d(entities).astype(int)
-		idx = self._sparse[es]
-
+		if self.mult_comp: raise Exception("set_vector() is not supported in multi-component storage")
+		rows = self._get_rows(entities)
 		for field in value_arrays.keys():
-			self._dense[field][idx] = value_arrays[field]
+			self._dense[field][rows] = value_arrays[field]
+	
+	def set_full_vector(self, entities: np.ndarray, vector : np.ndarray) -> None:
+		self.set_vector(entities, **dict(zip(self.fields, vector)))
 
 	def query(self,
 			  condition: Callable,
@@ -254,7 +264,7 @@ class ComponentStorage:
 
 		- `condition` is a vectorized predicate with keyword args: lambda x, y: ...
 		- `entities` is a susbset of entities we want apply the match on
-		- entity is optioinnally injected as a param named `entity` if `include_entity=True`.
+		- entity is optionally injected as a param named `entity` if `include_entity=True`.
 		  ex: pos.query(lambda x, entity: ..., include_entity=True)
 		- If `mult_comp=True`, an entity matches if ANY of its rows match
 		"""
@@ -263,7 +273,7 @@ class ComponentStorage:
 			return np.empty(0, dtype=int)
 
 		if self.mult_comp:
-			idx_all = np.nonzero(self.live_entities)[0]
+			idx_all = self.live_entities
 			ent_all = self._entities[idx_all]
 
 			if entities is not None:
@@ -528,7 +538,7 @@ class LazyDict(dict):
 		return '{' + ','.join( [f'"{k}":{v}' for k,v in self] ) +  '}'
 
 
-# utilisty function for constructing multi-field vectors
+# utility function for constructing multi-field vectors
 # usage : array_dict, name0, name1, etc
 # returns : stacked ndarray of fields named 
 def vectorized(*args) -> np.ndarray:

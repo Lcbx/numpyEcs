@@ -303,7 +303,7 @@ void fragment() {
 	float effect = 1.2 - fragDepth;
 	//effect = clamp(effect, 0, 1);
 	//effect = clamp(effect, 0.5, 1);
-	effect = mix(0.4, 1, effect);
+	effect = mix(0.4, 1.0, effect);
 	lighting = fastSaturation(lighting, effect);
 
 	// proper hue saturation brightness
