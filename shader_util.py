@@ -428,7 +428,7 @@ class BetterShader:
 	):
 		self.uniform_locs = {}   # name -> location id
 
-		source = BetterShaderSource(
+		self.source = BetterShaderSource(
 			filepath,
 			features,
 			params,
@@ -436,11 +436,11 @@ class BetterShader:
 
 		# Compile via raylib
 		self.shaderStruct = rl.LoadShaderFromMemory(
-			source.vertex_glsl.encode(),
-			source.fragment_glsl.encode()
+			self.source.vertex_glsl.encode(),
+			self.source.fragment_glsl.encode()
 		)
 
-		for typ, name in source.uniforms:
+		for typ, name in self.source.uniforms:
 			self.uniform_locs[name] = rl.GetShaderLocation(self.shaderStruct, name.encode())
 
 	def valid(self) -> bool:

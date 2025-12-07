@@ -1,6 +1,6 @@
 import numpy as np
 #from inspect import signature as inspect_signature
-from typing import Type, Dict, Callable, Any, List, Tuple
+from typing import Type, Dict, Callable, Any, List, Tuple 
 from dataclasses import dataclass
 from enum import Flag, IntFlag, auto
 
@@ -32,24 +32,18 @@ class ComponentStorage:
 
 		# Inspect dataclass annotations to build structured dtype
 		ann = getattr(component_cls, "__annotations__", {})
-		self._fields = list(ann.keys())
+		self.fields = list(ann.keys())
 
 		self._dense = {}
-		for nm, typ in ann.items():
+		for field, typ in ann.items():
 			dtype = (
 				np.float64 if typ is float else
 				# issubclass is for IntFlag
 				int if issubclass(typ, int) else
 				object
 			) if isinstance(typ, type) else object
-			#print(nm, typ, dtype)
-			self._dense[nm] = np.zeros(capacity, dtype=dtype)
-
-		# Expose object-field names
-		for i, (name, typ) in enumerate(ann.items()):
-			if typ is not float:
-				object.__setattr__(self, f"{name}_str", name)
-				object.__setattr__(self, f"{name}_id", i)
+			#print(field, typ, dtype)
+			self._dense[field] = np.zeros(capacity, dtype=dtype)
 
 		# buffers
 		self._capacity  = capacity
@@ -139,7 +133,7 @@ class ComponentStorage:
 
 	def _set(self, idx:int, entity:Entity, component:Any) -> None:
 		self._entities[idx] = entity
-		for field in self._fields:
+		for field in self.fields:
 			self._dense[field][idx] = getattr(component, field)
 
 	def _relocate_to_end(self, entity: Entity, length: int):
@@ -224,53 +218,32 @@ class ComponentStorage:
 				idx += 1
 		return proxies
 
-	def get_vector(self, *args) -> np.ndarray:
+	def get_vector(self, entities:np.ndarray|None=None):
 		"""
 		Usage:
-			get_vector()							# all component fields, for all entities
-			get_vector(f1, f2, ...)					# only f1,f2,..., for all entities
-			get_vector(f1, f2, ..., entities_array) # f1,f2,... for given entities
+			get_vector(			 # component fields, for all entities
+			get_vector(entities) # component fields for given entities
 		"""
-		# Parse args
-		entities = None
-		fields = []
-		if args:
-			if isinstance(args[-1], np.ndarray):
-				*fields, entities = args
-				entities = np.atleast_1d(entities).astype(int)
-			else:
-				fields = list(args)
 
-		# Default to all fields if none specified
-		if not fields:
-			fields = self._fields
-
-		arrays = [ self._dense[f] for f in fields ]
 		if entities is None:
 			# only live range [0:_size]
-			mats = [arr[:self._size] for arr in arrays]
+			rows = range(self._size)
 		else:
-			rows = self._sparse[np.atleast_1d(entities).astype(int)]
-			mats = [arr[rows] for arr in arrays]
+			entities = np.atleast_1d(entities).astype(int)
+			rows = self._sparse[entities]
 
-		# stack into an (N × len(fields)) array
-		return np.stack(mats, axis=1)
+		return LazyDict(self._dense, rows)
 
-	def set_vector(self, entities: np.ndarray, vector: np.ndarray) -> None:
+	def set_vector(self, entities: np.ndarray, **value_arrays: dict) -> None:
 		"""
-		Overwrite the rows at `entities` for *all* component fields
+		Overwrite the rows at `entities` for component fields in dict
 		(except the internal 'entity' column) with the columns of `vector`.
-		
-		`vector` must be a 2-D array of shape (len(entities), Nfields),
-		in the same order as get_vector() would return.
 		"""
 		es  = np.atleast_1d(entities).astype(int)
 		idx = self._sparse[es]
 
-		arr = np.atleast_2d(vector)
-
-		for j, field in enumerate(self._fields):
-			self._dense[field][idx] = arr[:, j]
+		for field in value_arrays.keys():
+			self._dense[field][idx] = value_arrays[field]
 
 	def query(self,
 			  condition: Callable,
@@ -510,7 +483,7 @@ class ComponentProxy:
 	def __repr__(self):
 		store = self._store
 		idx = self._idx
-		vals = {field: store._dense[field][idx] for field in store._fields }
+		vals = {field: store._dense[field][idx] for field in store.fields }
 		return f"<{store.component_cls.__name__}Proxy e={self._entity} {vals}>"
 
 	def build(self) -> Any:
@@ -519,6 +492,45 @@ class ComponentProxy:
 		"""
 		store = self._store
 		kwargs = {}
-		for field in store._fields:
+		for field in store.fields:
 			kwargs[field] = store._dense[field][self._idx]
 		return store.component_cls(**kwargs)
+
+
+class LazyDict(dict):
+	"""
+	Lazy dictionary for component field vectors in a structured‐array storage.
+	Returned by get_vector method from ComponentStorage.
+	"""
+
+	def __init__(self, dense:dict, rows:np.ndarray):
+		self._dense = dense
+		self._rows = rows
+
+	def __getitem__(self, field):
+		if field in self:
+			return dict.__getitem__(self, field)
+
+		item = self._dense[field][self._rows] 
+		dict.__setitem__(self, field, item)
+		return item
+
+	def __len__(self):
+		return len(self._dense)
+
+	def keys(self):
+		return self._dense.keys()
+
+	def __iter__(self):
+		yield from [ (field, self.__getitem__(field)) for field in self.keys() ]
+
+	def __repr__(self):
+		return '{' + ','.join( [f'"{k}":{v}' for k,v in self] ) +  '}'
+
+
+# utilisty function for constructing multi-field vectors
+# usage : array_dict, name0, name1, etc
+# returns : stacked ndarray of fields named 
+def vectorized(*args) -> np.ndarray:
+	arrays = tuple(args[0][name] for name in args[1:])
+	return np.stack(arrays, axis=1)

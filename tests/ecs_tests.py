@@ -131,19 +131,24 @@ def update_world_aabb(ecs):
     
     # Non‐rotated boxes
     nr_ents = ecs.where(LocalAABB, Position)
-    la, pos, wa = ecs.get_vectors(LocalAABB, Position, AxisAlignedBoundingBox, nr_ents)
+    la, pos = ecs.get_vectors(LocalAABB, Position, nr_ents)
+    pos = vectorized(pos, 'x', 'y', 'z')
     # just translate
-    wa[:, :3] = la[:, :3] + pos
-    wa[:, 3:] = la[:, 3:] + pos
+    wa_min = vectorized(la, 'x_min', 'y_min', 'z_min') + pos
+    wa_max = vectorized(la, 'x_max', 'y_max', 'z_max') + pos
     aabbs = ecs.get_store(AxisAlignedBoundingBox)
-    aabbs.set_vector(nr_ents, wa)
+    aabbs.set_vector(nr_ents,
+        x_min=wa_min[:,0], y_min=wa_min[:,1], z_min=wa_min[:,2],
+        x_max=wa_max[:,0], y_max=wa_max[:,1], z_max=wa_max[:,2]
+    )
     
     # Rotated boxes
     rot_ents = ecs.where(LocalAABB, Position, Orientation)
-    la, pos, ori, wa = ecs.get_vectors(LocalAABB, Position, Orientation, AxisAlignedBoundingBox, rot_ents)
-    # la:(N,6), pos:(N,3), ori:(N,4), wa:(N,6)
-    mins = la[:, :3]
-    maxs = la[:, 3:]
+    la, pos, ori = ecs.get_vectors(LocalAABB, Position, Orientation, rot_ents)
+    pos = vectorized(pos, 'x', 'y', 'z')
+    ori = vectorized(ori, 'qx', 'qy', 'qz', 'qw')
+    mins = vectorized(la, 'x_min', 'y_min', 'z_min')
+    maxs = vectorized(la, 'x_max', 'y_max', 'z_max')
     # build 8 corners
     corners = np.array([[x,y,z] for x in (0,1)
                                  for y in (0,1)
@@ -152,16 +157,19 @@ def update_world_aabb(ecs):
           maxs[:,None,:]*corners[None,:,:]
     # rotate & translate
     pts = rotate_vectors_by_quaternions(ori, offs) + pos[:,None,:]
-    wa[:, :3] = pts.min(axis=1)
-    wa[:, 3:] = pts.max(axis=1)
-    aabbs.set_vector(rot_ents, wa)
+    wa_min = pts.min(axis=1)
+    wa_max = pts.max(axis=1)
+    aabbs.set_vector(nr_ents,
+        x_min=wa_min[:,0], y_min=wa_min[:,1], z_min=wa_min[:,2],
+        x_max=wa_max[:,0], y_max=wa_max[:,1], z_max=wa_max[:,2]
+    )
     
     
 def detect_aabb_overlaps(ecs):
     ents = ecs.where(AxisAlignedBoundingBox)
     blk = ecs.get_store(AxisAlignedBoundingBox).get_vector() # we want them all, so no need for indexing
-    mins = blk[:, :3]
-    maxs = blk[:, 3:]
+    mins = vectorized(blk, 'x_min', 'y_min', 'z_min')
+    maxs = vectorized(blk, 'x_max', 'y_max', 'z_max')
 
     ok1 = mins[:,None,:] <= maxs[None,:,:]
     ok2 = maxs[:,None,:] >= mins[None,:,:]
@@ -179,7 +187,7 @@ class Position2D:
 
 @component
 class Velocity2D:
-    vx: float; vy: float
+    x: float; y: float
 
 class TagEnum(IntFlag):
     Enemy=auto()
@@ -221,6 +229,13 @@ def make_multitag_store(blocks_per_entity):
         for v in values:
             store._add(eid, Tag(v))
     return store
+
+def test_get_whole_vector():
+    pos = make_pos2d_store([(0, 0), (1, 1), (2, 2)])
+    vec = pos.get_vector()
+    vec = vectorized(vec, *pos.fields)
+    for i, v in enumerate(vec):
+        assert np.allclose((i, i), v)
 
 def test_query_simple_vectorized():
     pos = make_pos2d_store([(0, 0), (1, 2), (5, -3), (-1, 1), (4, 10)])
@@ -311,8 +326,9 @@ def test_movement_system():
     # Apply movement only for Tag
     targets = ecs.where(Tag, Position2D, Velocity2D)
     p_vec, v_vec = ecs.get_vectors(Position2D, Velocity2D, targets)
-    p_vec -= v_vec * 0.5
-    ecs.get_store(Position2D).set_vector(targets, p_vec)
+    p_vec['x'] -= v_vec['x'] * 0.5
+    p_vec['y'] -= v_vec['y'] * 0.5
+    ecs.get_store(Position2D).set_vector(targets, **p_vec)
 
     # Check updated position for entity 2
     p2_after = ecs.get_store(Position2D).get(2)
@@ -389,7 +405,7 @@ def test_storage_multicomp_add_get_remove():
     assert comps[2].val == pytest.approx(3.)
 
     idx = store._sparse[entity_id]
-    block = store.get_vector().transpose()
+    block = store.get_vector()['val']
     assert np.allclose(block, [1., 2., 3.])
 
     store._remove(store.get(entity_id)[1])

@@ -1,3 +1,5 @@
+from scenes.benchmarks.benchmark_loop import *
+import scenes.benchmarks.benchmark_loop as loop
 from pyray import *
 from dataclasses import dataclass
 
@@ -20,13 +22,6 @@ ground = Cube(
 
 cubes = [ground]
 
-
-rnd_uint8 = lambda : get_random_value(0, 255)
-rnd_color = lambda : Color(rnd_uint8(),rnd_uint8(),rnd_uint8(),255)
-
-SPACE_SIZE = 30
-CUBE_MAX = 7
-
 def add_cubes():
     for e in range(250):
         cubes.append(Cube(
@@ -43,46 +38,26 @@ def add_cubes():
             Vector3(get_random_value(1, CUBE_MAX), get_random_value(1, CUBE_MAX), get_random_value(1, CUBE_MAX) ),
         ))
 
-
-camera = Camera3D(
-    Vector3(30, 70,-25),
-    Vector3(0,0,-25),
-    Vector3(0,1,0),
-    60.0,
-    CAMERA_PERSPECTIVE
-)
-
-
-init_window(800, 450, "Hello")
-set_target_fps(60)
-
-frame_index = 0
-
-while not window_should_close():
-    
-    frameTime = get_frame_time()
-
-    for c in cubes:
-        c.position = vector3_add(c.position, vector3_scale(c.velocity, frameTime))
-    
-    begin_drawing()
-    begin_mode_3d(camera)
-    clear_background(WHITE)
-    
+def draw():
     for c in cubes:
         center = vector3_scale( vector3_add(c.BoundingBox_min, c.BoundingBox_max), 0.5)
-        size = vector3_subtract(c.BoundingBox_min, c.BoundingBox_max)
+        size = vector3_subtract(c.BoundingBox_max, c.BoundingBox_min)
         draw_cube(
             vector3_add(c.position, center),
             size.x, size.y, size.z,
             c.color
         )
 
-    frame_index+=1
-    if frame_index%10 == 0 and get_fps() > 50: add_cubes()
-    
-    end_mode_3d()
-    draw_text(f"fps {get_fps()} cubes {len(cubes)} ", 10, 10, 20, LIGHTGRAY)
-    end_drawing()
-close_window()
+def update(frameTime):
+    for c in cubes:
+        c.position = vector3_add(c.position, vector3_scale(c.velocity, frameTime))
+
+def cubes_len():
+    return len(cubes)
+
+loop.add_cubes = add_cubes
+loop.draw = draw
+loop.update = update
+loop.cubes_len = cubes_len
+loop.run()
 

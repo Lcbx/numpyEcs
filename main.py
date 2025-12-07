@@ -29,11 +29,13 @@ if args.test:
 	failed = True
 	for m in modules:
 		try:
-			getattr(m, args.test)()
-			print(f'{args.test} executed.')
+			testFunc = getattr(m, args.test.split('::')[-1])
 			failed = False
-		except: pass
-
+			testFunc()
+			print(f'{args.test} executed.')
+		except AttributeError as ex:
+			if not str(ex).startswith('module'):
+				raise ex
 	if failed:
 		print(f'could not find "{args.test}" test. candidates:')
 		from pprint import pp 
