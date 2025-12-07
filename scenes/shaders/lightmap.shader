@@ -42,21 +42,21 @@ const float PI =  3.141593;
 const float twoPI = 6.283186;
 
 // used by shadow map
-const int SHADOW_SAMPLES = 3;
+const int SHADOW_SAMPLES = 5;
 const float SHADOW_INV_SAMPLES = SHADOW_SAMPLES > 0 ? 1.0 / float(SHADOW_SAMPLES) : 0;
-const float SHADOW_WEIGHT = SHADOW_SAMPLES > 0 ? 0.2 + 0.7 / float(SHADOW_SAMPLES) : 1;
+const float SHADOW_WEIGHT = mix(0.1, 1.0, SHADOW_INV_SAMPLES);
 const float SHADOW_SPIRAL_TURNS = (SHADOW_SAMPLES > 3 ? round(SHADOW_SAMPLES * 0.5) + 0.99 : SHADOW_SAMPLES * 0.85 - 0.5);
 
 // used by AO
 const int AO_SAMPLES = 2;
 const float AO_INV_SAMPLES = AO_SAMPLES > 0 ? 1.0 / float(AO_SAMPLES) : 0;
-const float AO_WEIGHT = AO_SAMPLES > 0 ? 0.2 + 0.7 / float(AO_SAMPLES) : 1;
+const float AO_WEIGHT = mix(0.1, 1.0, AO_INV_SAMPLES);
 const float AO_SPIRAL_TURNS = (AO_SAMPLES > 3 ? round(AO_SAMPLES * 0.5) + 0.99 : AO_SAMPLES * 0.85 - 0.5);
 
 // used by shadow map
-const float POISSON_RADIUS_MULT = 0.1;
+const float POISSON_RADIUS_MULT = 0.03;
 const float MIN_POISSON_RADIUS = 0.001;
-const float MAX_POISSON_RADIUS = 0.003;
+const float MAX_POISSON_RADIUS = 0.004;
 
 // used by AO
 const float AO_radiusWS = 0.04;
@@ -160,7 +160,7 @@ float sampleAO() {
 	occlusion += calculateAO(position, getPositionVS(uv+ vec2(-3,-3) * toUv, toPx, miplevel), normal) * 2.0;
 	occlusion *= 0.0833333333333; // 1/12
 
-	if(AO_INV_SAMPLES > 0)
+	if(AO_SAMPLES > 0)
 	{
 		float perspectiveRadius = min(AO_radiusWS, AO_radiusWS2 / fragDepth);
 		float angle = randAngle(gl_FragCoord.xy);
@@ -173,14 +173,13 @@ float sampleAO() {
 			radius += radiusInc;
 			angle += angleInc;
 			
-			vec2 disk = vec2(cos(angle), sin(angle));		
+			vec2 disk = vec2(cos(angle), sin(angle));
 			vec2 uv2 = uv + disk * radius;
 
 			total += calculateAO(position, getPositionVS(uv2, toPx, miplevel), normal);
 		}
 		occlusion = mix(total * AO_INV_SAMPLES, occlusion, AO_WEIGHT);
 	}
-
 	occlusion *= AO_intensity;
 	occlusion = 1.0 - occlusion;
 	occlusion = clamp(occlusion, 0.0, 1.0);
@@ -207,7 +206,7 @@ float tapShadowPoisson() {
 	shadow += float(fragShadow.z < texelFetch(shadowDepthMap, ivec2(uv) + ivec2(-1,-1), 0).r) * 2.0;
 	shadow *= 0.0833333333333; // 1/12
 
-	if(SHADOW_INV_SAMPLES > 0)
+	if(SHADOW_SAMPLES > 0)
 	{
 		float distToOccluder = max(0, fragShadow.z - texelFetch(shadowDepthMap, ivec2(uv), 0).r);
 		float factor = clamp(POISSON_RADIUS_MULT * distToOccluder, MIN_POISSON_RADIUS, MAX_POISSON_RADIUS);

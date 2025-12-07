@@ -149,7 +149,7 @@ def run():
 					lightView = su.rl.rlGetMatrixModelview()
 					lightProj = su.rl.rlGetMatrixProjection()
 					lightViewProj = su.rl.MatrixMultiply(lightView, lightProj)
-					su.SetPolygonOffset(1)
+					su.SetPolygonOffset(3, 1)
 					draw_scene(render)
 					su.DisablePolygonOffset()
 
@@ -163,7 +163,7 @@ def run():
 						su.ClearBuffers()
 						view = su.rl.rlGetMatrixModelview()
 						proj = su.rl.rlGetMatrixProjection()
-						su.SetPolygonOffset(0.1)
+						su.SetPolygonOffset(0.1,0.1)
 						draw_scene(render)
 						su.DisablePolygonOffset()
 				
