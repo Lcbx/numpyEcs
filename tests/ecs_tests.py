@@ -60,7 +60,7 @@ class Foo:
     b: str
 
 def test_single_component_storage_basic():
-    s = ComponentStorage(Foo, mult_comp=False, capacity=2)
+    s = ComponentStorage(Foo, capacity=2)
     assert s.get(1) is None
     
     s._add(1, Foo(1.23, "first"))
@@ -95,7 +95,7 @@ def test_single_component_storage_basic():
     assert s.get(2) is None
 
 def test_single_component_storage_sparse_dense_integrity():
-    s = ComponentStorage(Foo, mult_comp=False, capacity=1)
+    s = ComponentStorage(Foo, capacity=1)
     
     for eid, val in enumerate([10.0, 20.0, 30.0], start=5):
         s._add(eid, Foo(val, f"val{eid}"))
@@ -166,7 +166,7 @@ def update_world_aabb(ecs):
 
 def detect_aabb_overlaps(ecs):
     ents = ecs.where(AxisAlignedBoundingBox)
-    blk = ecs.get_store(AxisAlignedBoundingBox).get_vector() # we want them all, so no need for indexing
+    blk = ecs.get_store(AxisAlignedBoundingBox).get_vector(ents)
     mins = vectorized(blk, 'x_min', 'y_min', 'z_min')
     maxs = vectorized(blk, 'x_max', 'y_max', 'z_max')
 
@@ -223,7 +223,7 @@ def make_pos2d_store(vals):
     return store
 
 def make_multitag_store(blocks_per_entity):
-    store = ComponentStorage(Tag, capacity=64, mult_comp=True)
+    store = ComponentStorage(Tag, mult_comp=True, capacity=64)
     for eid, values in blocks_per_entity.items():
         for v in values:
             store._add(eid, Tag(v))
@@ -235,6 +235,17 @@ def test_get_whole_vector():
     vec = vectorized(vec, *pos.fields)
     for i, v in enumerate(vec):
         assert np.allclose((i, i), v)
+
+def test_get_rows():
+    pos = make_pos2d_store([(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)])
+    pos._remove(pos.get(3))
+    pos._remove(pos.get(0))
+    pos._add(5, Position2D(-1,-1))
+    # remember : rows are the indices in the dense array
+    rows = pos._get_rows(range(4))
+    assert rows.tolist() == [1,2]
+    rows = pos._get_rows()
+    assert sorted(rows.tolist()) == [0,1,2,3]
 
 def test_query_simple_vectorized():
     pos = make_pos2d_store([(0, 0), (1, 2), (5, -3), (-1, 1), (4, 10)])

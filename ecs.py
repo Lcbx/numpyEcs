@@ -14,21 +14,25 @@ component = dataclass
 ComponentProxy = lambda s,e: None
 
 
+##### TODO: restore support for multiple components per entity
+### current idea : use a 'count' column in dense to store the amount of components associated with an entity
+### -> simple (even though we have 32 bits unused for each additional component over the first)
+### -> index = sparse[entity]; count = sparse[index]; components = dense[index:index+count]
+### -> adding and removing components is still annoying
+
 class ComponentStorage:
 	"""
 	Stores one component type using:
 	  - structured numpy array (_dense) for all fields
 	  - numpy arrays for sparse (entity -> head index)
-	  - optional multi-component support (contiguous blocks per entity)
 	"""
 	NONE = -1
 
 	def __init__(self,
 				 component_cls: Type,
-				 capacity: int = 128,
-				 mult_comp: bool = False):
+				 mult_comp : bool = False,
+				 capacity: int = 128):
 		self.component_cls = component_cls
-		self.mult_comp	 = mult_comp
 
 		# Inspect dataclass annotations to build structured dtype
 		ann = getattr(component_cls, "__annotations__", {})
@@ -44,12 +48,16 @@ class ComponentStorage:
 			) if isinstance(typ, type) else object
 			#print(field, typ, dtype)
 			self._dense[field] = np.zeros(capacity, dtype=dtype)
+		
+		# useful metadata fields
+		self._dense['entities'] = np.full(capacity, ComponentStorage.NONE, dtype=int)
+		if mult_comp:
+			self._dense['count'] = np.zeros(capacity, dtype=int)
 
 		# buffers
 		self._capacity  = capacity
-		self._size	  = 0
-		self._sparse	= np.full(self._capacity, ComponentStorage.NONE, dtype=int)
-		self._entities  = np.full(self._capacity, ComponentStorage.NONE, dtype=int)
+		self._size      = 0
+		self._sparse    = np.full(self._capacity, ComponentStorage.NONE, dtype=int)
 
 	@property
 	def capacity(self) -> int:
@@ -58,46 +66,30 @@ class ComponentStorage:
 	@property
 	def sparse_size(self) -> int:
 		return self._sparse.shape[0]
-
+	
 	@property
-	def live_entities(self) -> np.ndarray:
-		return np.nonzero(self._entities[:self._size] != ComponentStorage.NONE)[0]
+	def entities_contained(self) -> np.ndarray:
+		return self._dense['entities']
+	
+	@property
+	def component_counts(self) -> np.ndarray:
+		return self._dense['count']
 
-	def _grow_sparse(self, entity: int):
-		old = self.sparse_size
-		new_cap = max(old * 2, entity + 32)
+	def _grow_sparse(self, entity: int) -> None:
+		size = self.sparse_size
+		new_cap = max(size * 2, entity + 32)
 		sp = np.full(new_cap, ComponentStorage.NONE, dtype=int)
-		sp[:old] = self._sparse
+		sp[:size] = self._sparse
 		self._sparse = sp
 
-	def _grow_dense(self, needed: int = 0):
-
+	def _grow_dense(self, needed: int = 0) -> None:
+		size = self._size
 		new_cap =  max(self._capacity * 2, needed + 32)
-
-		new_entities = np.full(new_cap, ComponentStorage.NONE, dtype=int)
-
-		if self.mult_comp:
-			valid_idx = self.live_entities
-			new_size  = valid_idx.shape[0]
-			new_entities[:new_size] = self._entities[valid_idx]
-		else:
-			new_size = self._size
-			new_entities[:new_size] = self._entities[:new_size]
-
 		for field_name, arr in self._dense.items():
 			new_arr = np.zeros(new_cap, dtype=arr.dtype)
-			new_arr[:new_size] = (arr[valid_idx] if self.mult_comp else arr[:new_size])
+			new_arr[:size] = arr[:size]
 			self._dense[field_name] = new_arr
-
-		new_sparse = np.full(new_cap, ComponentStorage.NONE, dtype=int)
-		for idx, ent in enumerate(new_entities[:new_size]):
-			if new_sparse[ent] == ComponentStorage.NONE:
-				new_sparse[ent] = idx
-		
 		self._capacity = new_cap
-		self._sparse   = new_sparse
-		self._entities = new_entities
-		self._size	 = new_size
 
 	def _add(self, entity: Entity, component: Any) -> None:
 		# ensure sparse space
@@ -107,36 +99,19 @@ class ComponentStorage:
 		if self._size >= self.capacity:
 			self._grow_dense()
 
-		head = self._sparse[entity]
-		if not self.mult_comp or head == ComponentStorage.NONE:
-			# first or only
-			idx = self._size
-			self._sparse[entity] = idx
-			self._size += 1
-		else:
-			# find end of current block
-			idx = head
-			while idx < self._size and self._entities[idx] == entity:
-				idx += 1
-			if idx == self._size:
-				self._size += 1
-			elif self._entities[idx] == ComponentStorage.NONE:
-				pass
-			else:
-				length = idx - head
-				self._relocate_to_end(entity, length)
-				idx = self._size
-				self._size += 1
+		idx = self._size
+		self._sparse[entity] = idx
+		self._size += 1
 
 		# write record at idx
 		self._set(idx, entity, component)
 
 	def _set(self, idx:int, entity:Entity, component:Any) -> None:
-		self._entities[idx] = entity
+		self.entities_contained[idx] = entity
 		for field in self.fields:
 			self._dense[field][idx] = getattr(component, field)
 
-	def _relocate_to_end(self, entity: Entity, length: int):
+	def _relocate_to_end(self, entity: Entity, length: int) -> None:
 		"""
 		Move the `length`‐sized block of `entity` from wherever it sits
 		to the end of the live region [0:_size], updating head and _size.
@@ -153,92 +128,52 @@ class ComponentStorage:
 		new_block = slice(new_head, needed)
 		old_block = slice(head, head + length)
 
-		# copy entity IDs
-		self._entities[new_block] = self._entities[old_block]
-
 		# copy each field
 		for arr in self._dense.values():
 			arr[new_block] = arr[old_block]
-
-		# mark the old slots as holes
-		self._entities[old_block] = ComponentStorage.NONE
 
 		# update head & size
 		self._sparse[entity] = new_head
 		self._size = needed
 
 	# NOTE: bool return tells ecs to update entity_masks for this entity
-	def _remove(self, component : ComponentProxy) -> bool:
+	def _remove(self, component:ComponentProxy) -> bool:
 		entity = component._entity
 		head = self._sparse[entity]
-
 		if head == ComponentStorage.NONE: return False
+		# swap-pop last into head
+		last = self._size - 1
+		if head != last:
+			for arr in self._dense.values(): 
+				arr[head] = arr[last]
+			moved = self.entities_contained[head]
+			self._sparse[moved] = head
+		self._sparse[entity] = ComponentStorage.NONE
+		self.entities_contained[last] = ComponentStorage.NONE
+		self._size -= 1
+		return True
 
-		if not self.mult_comp:
-			# swap-pop last into head
-			last = self._size - 1
-			if head != last:
-				for arr in self._dense.values(): 
-					arr[head] = arr[last]
-				moved = self._entities[head]
-				self._sparse[moved] = head
-			self._sparse[entity] = ComponentStorage.NONE
-			self._entities[last] = ComponentStorage.NONE
-			self._size -= 1
-			return True
-		else:
-			rem_idx = component._idx
-			self._entities[rem_idx] = ComponentStorage.NONE
-			# if we just removed the first component
-			# set head to next component of the entity
-			if head == rem_idx:
-				nxt = rem_idx + 1
-				while nxt < self._size and self._entities[nxt] == ComponentStorage.NONE:
-					nxt += 1
-				# if there are none, tell ecs there are none left
-				if self._entities[nxt] != entity: return True
-				self._sparse[entity] = nxt
-			return False
-
-	def get(self, entity: Entity) -> Any:
+	def get(self, entity: Entity) -> ComponentProxy:
 		head = self._sparse[entity]
+		if head == ComponentStorage.NONE: return None
+		return ComponentProxy(self, entity, head)
 
-		if head == ComponentStorage.NONE:
-			return [] if self.mult_comp else None
-
-		if not self.mult_comp:
-			return ComponentProxy(self, entity, head)
-
-		proxies = []
-		idx = head
-		while idx < self._size and self._entities[idx] == entity:
-			proxies.append(ComponentProxy(self, entity, idx))
-			idx += 1
-			while idx < self._size and self._entities[idx] == ComponentStorage.NONE:
-				idx += 1
-		return proxies
-	
-	
-	""" vectorized accessors
-		NOTE: these do not handle multicomponent storage!
-	"""
-	def _get_rows(self, entities:np.ndarray|None=None):
+	def _get_rows(self, entities:np.ndarray|None=None, returnEntities:bool=False) -> np.ndarray:
 		if entities is None:
-			return self.live_entities
-		else:
-			entities = np.atleast_1d(entities).astype(int)
-			return self._sparse[entities]
+			ent = self.entities_contained
+			ent = np.unique(ent[ent != ComponentStorage.NONE])
+		else: ent = np.atleast_1d(entities).astype(int)
+		idx = self._sparse[ent]
+		valid = idx != ComponentStorage.NONE
+		idx = idx[valid]
+		if returnEntities: return idx, ent[valid]
+		return idx
 	
-	def get_vector(self, entities:np.ndarray|None=None):
-		"""
-		Usage:
-			get_vector()		 # component fields, for all entities
-			get_vector(entities) # component fields for given entities
-		"""
-		if self.mult_comp: raise Exception("get_vector() is not supported in multi-component storage")
-		return LazyDict(self._dense, self._get_rows(entities))
+	def get_vector(self, entities:np.ndarray|None=None) -> np.ndarray:
+		""" returns component fields for given entities """
+		return LazyDict( dict( tuple( (f, self._dense[f]) for f in self.fields) ), self._get_rows(entities))
 	
-	def get_full_vector(self, entities:np.ndarray|None=None):
+	def get_full_vector(self, entities:np.ndarray|None=None) -> np.ndarray:
 		rows = self._get_rows(entities)
 		return np.stack( tuple(self._dense[f][rows] for f in self.fields), axis=1)
 
@@ -247,7 +182,6 @@ class ComponentStorage:
 		Overwrite the rows at `entities` for component fields in dict
 		(except the internal 'entity' column) with the columns of `vector`.
 		"""
-		if self.mult_comp: raise Exception("set_vector() is not supported in multi-component storage")
 		rows = self._get_rows(entities)
 		for field in value_arrays.keys():
 			self._dense[field][rows] = value_arrays[field]
@@ -257,7 +191,7 @@ class ComponentStorage:
 
 	def query(self,
 			  condition: Callable,
-			  entities: np.ndarray = None,
+			  entities: np.ndarray|None = None,
 			  include_entity: bool = False) -> np.ndarray:
 		"""
 		Return entity ids for which `condition` holds.
@@ -266,36 +200,17 @@ class ComponentStorage:
 		- `entities` is a susbset of entities we want apply the match on
 		- entity is optionally injected as a param named `entity` if `include_entity=True`.
 		  ex: pos.query(lambda x, entity: ..., include_entity=True)
-		- If `mult_comp=True`, an entity matches if ANY of its rows match
 		"""
 
 		if self._size == 0:
 			return np.empty(0, dtype=int)
 
-		if self.mult_comp:
-			idx_all = self.live_entities
-			ent_all = self._entities[idx_all]
-
-			if entities is not None:
-				es = np.atleast_1d(entities).astype(int)
-				keep = np.isin(ent_all, es, assume_unique=False)
-				idx, ent = idx_all[keep], ent_all[keep]
-			else:
-				idx, ent = idx_all, ent_all
-		else:
-			if entities is not None:
-				es = np.atleast_1d(entities).astype(int)
-				head = self._sparse[es]
-				valid = head != ComponentStorage.NONE
-				idx, ent = head[valid], es[valid]
-			else:
-				idx = np.arange(self._size, dtype=int)
-				ent = self._entities[:self._size]
+		idx, ent = self._get_rows(entities, returnEntities=True)
 
 		if idx.size == 0:
 			return np.empty(0, dtype=int)
 
-		ns = {field: arr[idx] for field, arr in self._dense.items()}
+		ns = {field: arr[idx] for field, arr in self._dense.items() if field in self.fields}
 		if include_entity:
 			ns["entity"] = ent
 		#print(ns.keys())
@@ -316,11 +231,7 @@ class ComponentStorage:
 		if matched.size == 0:
 			return np.empty(0, dtype=int)
 
-		if self.mult_comp:
-			return np.unique(matched).astype(int)
-
 		return matched.astype(int)
-
 
 
 
@@ -403,13 +314,7 @@ class ECS:
 				self._comp_bits[cls] = 1 << self._next_bit
 				self._next_bit += 1
 			if cls not in self._stores:
-				self._stores[cls] = ComponentStorage(cls,
-					mult_comp=allow_same_type_components_per_entity,
-					capacity=128)
-	
-	def allow_multiple_components_per_entity(self, comp_cls: Type) -> None:
-		store = self._stores.get(comp_cls)
-		store.mult_comp = True
+				self._stores[cls] = ComponentStorage(cls, mult_comp = allow_same_type_components_per_entity, capacity=128)
 	
 	def add_component(self, entity: Entity, *components) -> None:
 		bits = self.entity_masks[entity]
