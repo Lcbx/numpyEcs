@@ -48,7 +48,7 @@ const float SHADOW_WEIGHT = mix(0.1, 1.0, SHADOW_INV_SAMPLES);
 const float SHADOW_SPIRAL_TURNS = (SHADOW_SAMPLES > 3 ? round(SHADOW_SAMPLES * 0.5) + 0.99 : SHADOW_SAMPLES * 0.85 - 0.5);
 
 // used by AO
-const int AO_SAMPLES = 2;
+const int AO_SAMPLES = 4;
 const float AO_INV_SAMPLES = AO_SAMPLES > 0 ? 1.0 / float(AO_SAMPLES) : 0;
 const float AO_WEIGHT = mix(0.1, 1.0, AO_INV_SAMPLES);
 const float AO_SPIRAL_TURNS = (AO_SAMPLES > 3 ? round(AO_SAMPLES * 0.5) + 0.99 : AO_SAMPLES * 0.85 - 0.5);
@@ -59,10 +59,10 @@ const float MIN_POISSON_RADIUS = 0.001;
 const float MAX_POISSON_RADIUS = 0.004;
 
 // used by AO
-const float AO_radiusWS = 0.04;
+const float AO_radiusWS = 0.05;
 const float AO_radiusWS2 = AO_radiusWS * AO_radiusWS;
 const float AO_bias = 0.03;
-const float AO_intensity = 1.5;
+const float AO_intensity = 2;
 
 uniform sampler2D texture0; // diffuse
 
@@ -77,9 +77,8 @@ float random(vec2 co) {
 	return fract(dot(co, ivec2(3,8)) * dot(co.yx, ivec2(7,5)) * 0.03);
 }
 
-// NOTE : goes over PI
 float randomAngle(ivec2 co){
-	return 30u * co.x ^ co.y + 10u * co.x * co.y;
+	return fract( float( 30u * co.x ^ co.y + 10u * co.x * co.y ) *0.0001);
 }
 
 float interleavedGradientNoise(ivec2 co){
@@ -91,10 +90,6 @@ bool between(vec2 v, vec2 bottomLeft, vec2 topRight){
 	return bool(s.x * s.y);
 }
 
-vec2 get_dir(vec2 encoded){
-	return encoded * 2.0 - 1.0;
-}
-
 float randAngle(vec2 param)
 {
 	return interleavedGradientNoise(ivec2(param)) * twoPI;
@@ -102,9 +97,9 @@ float randAngle(vec2 param)
 
 vec3 getPositionVS(vec2 uv, vec2 toPx, int mip_level) {
 	float z = texelFetch(viewDepthMap, ivec2(uv * toPx), mip_level).x;
-	vec3 clip = vec3(uv,z);
+	vec3 clip = vec3(uv,z) * 1.2 - 0.2;
 	vec4 view = invProj * vec4(clip, 1);
-	return view.xyz / view.w * 0.5 + 0.5;
+	return view.xyz / view.w;
 }
 
 // different AO formulas
