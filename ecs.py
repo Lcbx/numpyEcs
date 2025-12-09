@@ -1,5 +1,5 @@
 import numpy as np
-#from inspect import signature as inspect_signature
+from inspect import signature as inspect_signature
 from typing import Type, Dict, Callable, Any, List, Tuple 
 from dataclasses import dataclass
 from enum import Flag, IntFlag, auto
@@ -50,9 +50,9 @@ class ComponentStorage:
 			self._dense[field] = np.zeros(capacity, dtype=dtype)
 		
 		# useful metadata fields
-		self._dense['entities'] = np.full(capacity, ComponentStorage.NONE, dtype=int)
+		self._dense['entity'] = np.full(capacity, ComponentStorage.NONE, dtype=int)
 		if mult_comp:
-			self._dense['count'] = np.zeros(capacity, dtype=int)
+			self._dense['count'] = np.zeros(capacity, dtype=np.uint16)
 
 		# buffers
 		self._capacity  = capacity
@@ -69,7 +69,7 @@ class ComponentStorage:
 	
 	@property
 	def entities_contained(self) -> np.ndarray:
-		return self._dense['entities']
+		return self._dense['entity']
 	
 	@property
 	def component_counts(self) -> np.ndarray:
@@ -158,7 +158,7 @@ class ComponentStorage:
 		if head == ComponentStorage.NONE: return None
 		return ComponentProxy(self, entity, head)
 
-	def _get_rows(self, entities:np.ndarray|None=None, returnEntities:bool=False) -> np.ndarray:
+	def _get_rows(self, entities:np.ndarray|None=None) -> np.ndarray:
 		if entities is None:
 			ent = self.entities_contained
 			ent = np.unique(ent[ent != ComponentStorage.NONE])
@@ -166,7 +166,6 @@ class ComponentStorage:
 		idx = self._sparse[ent]
 		valid = idx != ComponentStorage.NONE
 		idx = idx[valid]
-		if returnEntities: return idx, ent[valid]
 		return idx
 	
 	def get_vector(self, entities:np.ndarray|None=None) -> np.ndarray:
@@ -191,29 +190,26 @@ class ComponentStorage:
 
 	def query(self,
 			  condition: Callable,
-			  entities: np.ndarray|None = None,
-			  include_entity: bool = False) -> np.ndarray:
+			  entities: np.ndarray|None = None) -> np.ndarray:
 		"""
 		Return entity ids for which `condition` holds.
 
 		- `condition` is a vectorized predicate with keyword args: lambda x, y: ...
 		- `entities` is a susbset of entities we want apply the match on
-		- entity is optionally injected as a param named `entity` if `include_entity=True`.
-		  ex: pos.query(lambda x, entity: ..., include_entity=True)
+		- entity is optionally injected as a param named `entity`
+		  ex: pos.query(lambda x, entity: ...)
 		"""
 
 		if self._size == 0:
 			return np.empty(0, dtype=int)
 
-		idx, ent = self._get_rows(entities, returnEntities=True)
+		idx = self._get_rows(entities)
+		ent = self.entities_contained[idx]
 
 		if idx.size == 0:
 			return np.empty(0, dtype=int)
 
-		ns = {field: arr[idx] for field, arr in self._dense.items() if field in self.fields}
-		if include_entity:
-			ns["entity"] = ent
-		#print(ns.keys())
+		ns = {field: self._dense[field][idx] for field in inspect_signature(condition).parameters.keys()}
 
 		def raiseError():
 			raise ValueError("Condition must accept all component properties as params and return a boolean array of the same length as the evaluated rows.")

@@ -254,6 +254,14 @@ def test_query_simple_vectorized():
     assert out.dtype == int
     assert out.tolist() == [1]
 
+def test_query_annotated_types():
+    pos = make_pos2d_store([(0, 0), (1, 2), (5, -3), (-1, 1), (4, 10)])
+    def condition(x:float, y:float)->bool:
+        return (x > 0) & (np.abs(y) < 3)
+    out = pos.query(condition)
+    assert out.dtype == int
+    assert out.tolist() == [1]
+
 def test_query_subset_filtering():
     pos = make_pos2d_store([(10, 0), (9, 0), (11, 0), (8, 0)])
     subset = np.array([0, 1, 3], dtype=int)  # exclude entity 2 even though it matches
@@ -268,7 +276,7 @@ def test_query_returns_empty_when_no_match():
 
 def test_query_can_use_entity_id_in_predicate():
     pos = make_pos2d_store([(5, 0), (5, 0), (5, 0)])
-    out = pos.query( lambda x, y, entity: (x == 5) & (entity != 1), include_entity=True)
+    out = pos.query( lambda x, y, entity: (x == 5) & (entity != 1))
     assert out.tolist() == [0, 2]
 
 def test_query_raises_on_length_mismatch():
