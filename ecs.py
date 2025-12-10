@@ -1,6 +1,6 @@
 import numpy as np
 from inspect import signature as inspect_signature
-from typing import Type, Dict, Callable, Any, List, Tuple 
+from typing import Type, Dict, Callable, Any, List, Tuple
 from dataclasses import dataclass
 from enum import Flag, IntFlag, auto
 
@@ -33,6 +33,7 @@ class ComponentStorage:
 				 mult_comp : bool = False,
 				 capacity: int = 128):
 		self.component_cls = component_cls
+		self.mult_comp = mult_comp
 
 		# Inspect dataclass annotations to build structured dtype
 		ann = getattr(component_cls, "__annotations__", {})
@@ -50,14 +51,11 @@ class ComponentStorage:
 			self._dense[field] = np.zeros(capacity, dtype=dtype)
 		
 		# useful metadata fields
-		self._dense['entity'] = np.full(capacity, ComponentStorage.NONE, dtype=int)
-		if mult_comp:
-			self._dense['count'] = np.zeros(capacity, dtype=np.uint16)
-
-		# buffers
-		self._capacity  = capacity
-		self._size      = 0
-		self._sparse    = np.full(self._capacity, ComponentStorage.NONE, dtype=int)
+		self._dense['entity']   = np.full(capacity, ComponentStorage.NONE, dtype=int)
+		self._capacity    : int = capacity
+		self._size        : int = 0
+		self._sparse : np.array = np.full(self._capacity, ComponentStorage.NONE, dtype=int)
+		if self.mult_comp: self._count : Dict[int, np.uint16] = {}
 
 	@property
 	def capacity(self) -> int:
@@ -66,14 +64,10 @@ class ComponentStorage:
 	@property
 	def sparse_size(self) -> int:
 		return self._sparse.shape[0]
-	
+
 	@property
 	def entities_contained(self) -> np.ndarray:
 		return self._dense['entity']
-	
-	@property
-	def component_counts(self) -> np.ndarray:
-		return self._dense['count']
 
 	def _grow_sparse(self, entity: int) -> None:
 		size = self.sparse_size
@@ -92,15 +86,27 @@ class ComponentStorage:
 		self._capacity = new_cap
 
 	def _add(self, entity: Entity, component: Any) -> None:
+		
 		# ensure sparse space
 		if entity >= self.sparse_size:
 			self._grow_sparse(entity)
+		
+		idx = self._size
+		
+		if self.mult_comp:
+			count = self._count.get(entity, np.uint16(0))
+			self._count[entity] = count + 1
+			if count > 0:
+				self._relocate_to_end(entity, count)
+			else:
+				self._sparse[entity] = idx
+		else:
+			self._sparse[entity] = idx
+		
 		# ensure dense space
 		if self._size >= self.capacity:
 			self._grow_dense()
-
-		idx = self._size
-		self._sparse[entity] = idx
+		
 		self._size += 1
 
 		# write record at idx
@@ -119,9 +125,14 @@ class ComponentStorage:
 		head = self._sparse[entity]
 		if head == ComponentStorage.NONE:
 			return
-
+		
 		new_head = self._size
-		needed   = new_head + length
+		current_end = head + length
+		
+		# already at end
+		if current_end == new_head: return
+		
+		needed = new_head + length
 		if needed > self._capacity:
 			self._grow_dense(needed)
 
@@ -132,40 +143,79 @@ class ComponentStorage:
 		for arr in self._dense.values():
 			arr[new_block] = arr[old_block]
 
-		# update head & size
-		self._sparse[entity] = new_head
+		# book-keeping
 		self._size = needed
+		self._sparse[entity] = new_head
+		self.entities_contained[old_block] = ComponentStorage.NONE
 
 	# NOTE: bool return tells ecs to update entity_masks for this entity
 	def _remove(self, component:ComponentProxy) -> bool:
 		entity = component._entity
 		head = self._sparse[entity]
-		if head == ComponentStorage.NONE: return False
-		# swap-pop last into head
-		last = self._size - 1
-		if head != last:
-			for arr in self._dense.values(): 
-				arr[head] = arr[last]
-			moved = self.entities_contained[head]
-			self._sparse[moved] = head
+		if head == ComponentStorage.NONE: return True
+		
+		if self.mult_comp:
+			# update count, swap deleted with last
+			newCount = self._count[entity] -1
+			self._count[entity] = newCount
+			last = head + newCount
+			deleted = component._idx
+			if deleted != last:
+				for arr in self._dense.values(): 
+					arr[deleted] = arr[last]
+			self.entities_contained[last] = ComponentStorage.NONE
+			if newCount > 0:
+				return False
+		else:
+			# swap-pop last into head
+			last = self._size - 1
+			self._size = last # decrement size
+			if head != last:
+				for arr in self._dense.values(): 
+					arr[head] = arr[last]
+				moved = self.entities_contained[last]
+				self._sparse[moved] = head
+			self.entities_contained[last] = ComponentStorage.NONE
+		
 		self._sparse[entity] = ComponentStorage.NONE
-		self.entities_contained[last] = ComponentStorage.NONE
-		self._size -= 1
 		return True
 
 	def get(self, entity: Entity) -> ComponentProxy:
+		
 		head = self._sparse[entity]
+		
+		if self.mult_comp:
+			count = self._count[entity]
+			return [ ComponentProxy(self, entity, idx) for idx in range(head, head + count) ]
+		
 		if head == ComponentStorage.NONE: return None
 		return ComponentProxy(self, entity, head)
 
 	def _get_rows(self, entities:np.ndarray|None=None) -> np.ndarray:
 		if entities is None:
 			ent = self.entities_contained
-			ent = np.unique(ent[ent != ComponentStorage.NONE])
-		else: ent = np.atleast_1d(entities).astype(int)
-		idx = self._sparse[ent]
-		valid = idx != ComponentStorage.NONE
-		idx = idx[valid]
+			idx = np.arange(ent.size)[ent != ComponentStorage.NONE]
+		else:
+			if self.mult_comp:
+				ent = np.atleast_1d(entities).astype(int)
+				ent = np.unique(ent)
+				
+				startIdx = self._sparse[ent]
+				counts = np.vectorize(self._count.__getitem__, otypes=(np.uint16,))(ent)
+				
+				base_idx = np.repeat(startIdx, counts)
+				total = counts.sum()
+				single_offsets = np.arange(total) # [0, 1, 2, 3, ...] size total
+				cum_counts = np.cumsum(counts) - counts # [0, c0, c0+c1, ...] size counts
+				large_offsets = np.repeat(cum_counts, counts) # [[0] * c0, [c0] * c1, [c0+c1] * c2, ...] size total
+				offsets = single_offsets - large_offsets
+				
+				idx = base_idx + offsets
+				idx = idx.astype(int)
+			else:
+				ent = np.atleast_1d(entities).astype(int)
+				idx = self._sparse[ent]
+				idx = idx[idx!=ComponentStorage.NONE]
 		return idx
 	
 	def get_vector(self, entities:np.ndarray|None=None) -> np.ndarray:

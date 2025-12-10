@@ -300,11 +300,12 @@ def test_query_mult_comp_any_row_matches_once_stable_order():
 
 def test_query_mult_comp_subset_filtering():
     mt = make_multitag_store({
+        2: [4, 5],
         5: [3, 3],
         7: [1, 2],
         9: [1],
     })
-    subset = np.array([7, 9], dtype=int)
+    subset = np.array([5, 7, 9], dtype=int)
     out = mt.query(lambda value: value == 1, entities=subset)
     assert out.tolist() == [7, 9]
 
@@ -457,20 +458,14 @@ def test_ecs_multicomp_reassignment():
     store._remove(store.get(e)[1]) # 3.3
     proxies = store.get(e)
     assert len(proxies) == 2
-    assert proxies[0].val == pytest.approx(1.1)
-    assert proxies[1].val == pytest.approx(5.5)
+    assert sorted( map(lambda p: p.val, proxies) ) == [1.1, 5.5]
     
     ecs.add_component(e, MultiComp(6.6))
     proxies = store.get(e)
     assert len(proxies) == 3
-    assert proxies[0].val == pytest.approx(1.1)
-    assert proxies[1].val == pytest.approx(6.6)
-    assert proxies[2].val == pytest.approx(5.5)
+    assert sorted( map(lambda p: p.val, proxies) ) == [1.1, 5.5, 6.6]
     
     ecs.add_component(e, MultiComp(7.7))
     proxies = store.get(e)
     assert len(proxies) == 4
-    assert proxies[0].val == pytest.approx(1.1)
-    assert proxies[1].val == pytest.approx(6.6)
-    assert proxies[2].val == pytest.approx(7.7)
-    assert proxies[3].val == pytest.approx(5.5)
+    assert sorted( map(lambda p: p.val, proxies) ) == [1.1, 5.5, 6.6, 7.7]
