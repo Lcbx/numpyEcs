@@ -445,7 +445,7 @@ def test_storage_multicomp_add_get_remove():
 
 def test_ecs_multicomp_reassignment():
     ecs = ECS()
-    ecs.register(MultiComp, allow_same_type_components_per_entity=True, initial_capacity=5)
+    ecs.register(MultiComp, allow_same_type_components_per_entity=True, capacity=5)
     store = ecs.get_store(MultiComp)
 
     ecs.create_entities(12)
@@ -454,8 +454,9 @@ def test_ecs_multicomp_reassignment():
     ecs.add_component(e, MultiComp(5.5))
     proxies = store.get(e)
     assert len(proxies) == 4
-    store._remove(store.get(e)[1]) # 2.2
-    store._remove(store.get(e)[1]) # 3.3
+    assert sorted( map(lambda p: p.val, proxies) ) == [1.1, 2.2, 3.3, 5.5]
+    store._remove(next(filter(lambda p: p.val==2.2, proxies)))
+    store._remove(next(filter(lambda p: p.val==3.3, proxies)))
     proxies = store.get(e)
     assert len(proxies) == 2
     assert sorted( map(lambda p: p.val, proxies) ) == [1.1, 5.5]

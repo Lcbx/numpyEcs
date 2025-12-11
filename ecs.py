@@ -14,12 +14,6 @@ component = dataclass
 ComponentProxy = lambda s,e: None
 
 
-##### TODO: restore support for multiple components per entity
-### current idea : use a 'count' column in dense to store the amount of components associated with an entity
-### -> simple (even though we have 32 bits unused for each additional component over the first)
-### -> index = sparse[entity]; count = sparse[index]; components = dense[index:index+count]
-### -> adding and removing components is still annoying
-
 class ComponentStorage:
 	"""
 	Stores one component type using:
@@ -35,11 +29,18 @@ class ComponentStorage:
 		self.component_cls = component_cls
 		self.mult_comp = mult_comp
 
+		
+		self._capacity    : int = capacity
+		self._size        : int = 0
+		self._dense = {}
+		self._sparse : np.array = np.full(self._capacity, ComponentStorage.NONE, dtype=int)
+		self._dense['entity']   = np.full(self._capacity, ComponentStorage.NONE, dtype=int)
+		if self.mult_comp: self._count : Dict[int, np.uint16] = {}
+
 		# Inspect dataclass annotations to build structured dtype
 		ann = getattr(component_cls, "__annotations__", {})
 		self.fields = list(ann.keys())
 
-		self._dense = {}
 		for field, typ in ann.items():
 			dtype = (
 				np.float64 if typ is float else
@@ -48,14 +49,7 @@ class ComponentStorage:
 				object
 			) if isinstance(typ, type) else object
 			#print(field, typ, dtype)
-			self._dense[field] = np.zeros(capacity, dtype=dtype)
-		
-		# useful metadata fields
-		self._dense['entity']   = np.full(capacity, ComponentStorage.NONE, dtype=int)
-		self._capacity    : int = capacity
-		self._size        : int = 0
-		self._sparse : np.array = np.full(self._capacity, ComponentStorage.NONE, dtype=int)
-		if self.mult_comp: self._count : Dict[int, np.uint16] = {}
+			self._dense[field] = np.zeros(self._capacity, dtype=dtype)
 
 	@property
 	def capacity(self) -> int:
@@ -92,61 +86,55 @@ class ComponentStorage:
 			self._grow_sparse(entity)
 		
 		idx = self._size
-		
+
+		def _simpleAdd():
+			new_size = idx + 1
+			# ensure dense space
+			if new_size >= self.capacity:
+				self._grow_dense(new_size)
+			self._size = new_size
+			# write record at idx
+			self._set(idx, entity, component)
+
+
 		if self.mult_comp:
 			count = self._count.get(entity, np.uint16(0))
-			self._count[entity] = count + 1
-			if count > 0:
-				self._relocate_to_end(entity, count)
-			else:
-				self._sparse[entity] = idx
-		else:
-			self._sparse[entity] = idx
-		
-		# ensure dense space
-		if self._size >= self.capacity:
-			self._grow_dense()
-		
-		self._size += 1
+			newCount = count+1
+			self._count[entity] = newCount
 
-		# write record at idx
-		self._set(idx, entity, component)
+			if count > 0:
+				head = self._sparse[entity]
+				last = head+count
+
+				if self.entities_contained[last] == ComponentStorage.NONE:
+					if last == idx:
+						_simpleAdd()
+						return
+					else:
+						self._set(last, entity, component)
+						return
+
+				needed = idx + newCount
+				newLast = idx + count
+				if needed >= self._capacity:
+					self._grow_dense(needed)
+				self._size = needed
+				new_block = slice(idx, newLast)
+				old_block = slice(head, last)
+				for arr in self._dense.values():
+					arr[new_block] = arr[old_block]
+				self.entities_contained[old_block] = ComponentStorage.NONE
+				self._set(newLast, entity, component)
+				self._sparse[entity] = idx
+				return
+
+		self._sparse[entity] = idx
+		_simpleAdd()
 
 	def _set(self, idx:int, entity:Entity, component:Any) -> None:
 		self.entities_contained[idx] = entity
 		for field in self.fields:
 			self._dense[field][idx] = getattr(component, field)
-
-	def _relocate_to_end(self, entity: Entity, length: int) -> None:
-		"""
-		Move the `length`‐sized block of `entity` from wherever it sits
-		to the end of the live region [0:_size], updating head and _size.
-		"""
-		head = self._sparse[entity]
-		if head == ComponentStorage.NONE:
-			return
-		
-		new_head = self._size
-		current_end = head + length
-		
-		# already at end
-		if current_end == new_head: return
-		
-		needed = new_head + length
-		if needed > self._capacity:
-			self._grow_dense(needed)
-
-		new_block = slice(new_head, needed)
-		old_block = slice(head, head + length)
-
-		# copy each field
-		for arr in self._dense.values():
-			arr[new_block] = arr[old_block]
-
-		# book-keeping
-		self._size = needed
-		self._sparse[entity] = new_head
-		self.entities_contained[old_block] = ComponentStorage.NONE
 
 	# NOTE: bool return tells ecs to update entity_masks for this entity
 	def _remove(self, component:ComponentProxy) -> bool:
@@ -156,15 +144,17 @@ class ComponentStorage:
 		
 		if self.mult_comp:
 			# update count, swap deleted with last
-			newCount = self._count[entity] -1
-			self._count[entity] = newCount
-			last = head + newCount
+			# NOTE: this is simple and fine
+			# BUT I don't like that the components relative position are not kept
+			count = self._count[entity]-1
+			self._count[entity] = count
+			last = head + count
 			deleted = component._idx
 			if deleted != last:
 				for arr in self._dense.values(): 
 					arr[deleted] = arr[last]
 			self.entities_contained[last] = ComponentStorage.NONE
-			if newCount > 0:
+			if count > 1:
 				return False
 		else:
 			# swap-pop last into head
@@ -196,8 +186,8 @@ class ComponentStorage:
 			ent = self.entities_contained
 			idx = np.arange(ent.size)[ent != ComponentStorage.NONE]
 		else:
+			ent = np.atleast_1d(entities).astype(int)
 			if self.mult_comp:
-				ent = np.atleast_1d(entities).astype(int)
 				ent = np.unique(ent)
 				
 				startIdx = self._sparse[ent]
@@ -213,7 +203,6 @@ class ComponentStorage:
 				idx = base_idx + offsets
 				idx = idx.astype(int)
 			else:
-				ent = np.atleast_1d(entities).astype(int)
 				idx = self._sparse[ent]
 				idx = idx[idx!=ComponentStorage.NONE]
 		return idx
@@ -354,13 +343,13 @@ class ECS:
 				self.remove_component(entity, comp_cls)
 		self._free_entities.append(entity)
 	
-	def register(self, *component_types, allow_same_type_components_per_entity : bool = False, initial_capacity=128):
+	def register(self, *component_types, allow_same_type_components_per_entity : bool = False, capacity=128):
 		for cls in component_types:
 			if cls not in self._comp_bits:
 				self._comp_bits[cls] = 1 << self._next_bit
 				self._next_bit += 1
 			if cls not in self._stores:
-				self._stores[cls] = ComponentStorage(cls, mult_comp = allow_same_type_components_per_entity, capacity=128)
+				self._stores[cls] = ComponentStorage(cls, mult_comp = allow_same_type_components_per_entity, capacity=capacity)
 	
 	def add_component(self, entity: Entity, *components) -> None:
 		bits = self.entity_masks[entity]
