@@ -470,3 +470,43 @@ def test_ecs_multicomp_reassignment():
     proxies = store.get(e)
     assert len(proxies) == 4
     assert sorted( map(lambda p: p.val, proxies) ) == [1.1, 5.5, 6.6, 7.7]
+
+def test_ecs_multicomp_defragment():
+    ecs = ECS()
+    ecs.register(MultiComp, allow_same_type_components_per_entity=True, capacity=12)
+    store = ecs.get_store(MultiComp)
+
+    ecs.create_entities(16)
+    for i in range(4):
+        j = i * 4
+        ecs.add_component(j, MultiComp(j), MultiComp(j+1), MultiComp(j+2))
+        comps = store.get(j)
+        ecs.remove_component(comps[1])
+        ecs.remove_component(comps[1])
+
+    #print(store._count)
+    #print(store.entities_contained)
+    #print(store._dense['val'])
+
+    assert store._count == {0: np.uint16(1), 4: np.uint16(1), 8: np.uint16(1), 12: np.uint16(1)}
+    assert np.unique(store.entities_contained).tolist() == [-1, 0, 4,  8, 12]
+    assert np.unique(store._dense['val'][store.entities_contained != ComponentStorage.NONE]).tolist() == [0., 4., 8., 12.]
+
+    for i in range(4):
+        j = i * 4
+        ecs.add_component(j,MultiComp(j+1), MultiComp(j+2))
+
+    assert store._count == {0: np.uint16(3), 4: np.uint16(3), 8: np.uint16(3), 12: np.uint16(3)}
+    assert np.unique(store.entities_contained).tolist() == [-1, 0, 4,  8, 12]
+    assert np.unique(store._dense['val'][store.entities_contained != ComponentStorage.NONE]).tolist() == [0.,1.,2., 4.,5.,6., 8.,9.,10., 12.,13.,14.]
+
+    #print("** results")
+    #print("*", store._count)
+    #print("*", store.entities_contained)
+    #print("*", store._dense['val'])
+
+    for i in range(4):
+        j = i * 4
+        assert np.unique([ p.val for p in store.get(j) ]).tolist() == [j, j+1, j+2]
+
+
