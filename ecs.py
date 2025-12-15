@@ -52,16 +52,12 @@ class ComponentStorage:
 			self._dense[field] = np.zeros(self._capacity, dtype=dtype)
 
 	@property
-	def capacity(self) -> int:
-		return self._capacity
-
-	@property
 	def sparse_size(self) -> int:
 		return self._sparse.shape[0]
 
 	@property
 	def _entities_contained(self) -> np.ndarray:
-		return self._dense['entity']
+		return self._dense['entity'][:self._size+1]
 
 	def _grow_sparse(self, entity: int) -> None:
 		size = self.sparse_size
@@ -93,7 +89,7 @@ class ComponentStorage:
 		def _simpleAdd():
 			new_size = idx + 1
 			# ensure dense space
-			if new_size >= self.capacity:
+			if new_size >= self._capacity:
 				self._grow_dense(new_size)
 			self._size = new_size
 			# write record at idx
@@ -128,7 +124,7 @@ class ComponentStorage:
 					else:
 						size = self._size
 						new_cap = max(real_size * 2, needed + real_size - size + 32)
-						dense_idx = np.flatnonzero(self._entities_contained[:size] != ComponentStorage.NONE)
+						dense_idx = np.flatnonzero(self._entities_contained != ComponentStorage.NONE)
 						new_size = len(dense_idx)
 						for field_name, arr in self._dense.items():
 							new_arr = np.zeros(new_cap, dtype=arr.dtype)

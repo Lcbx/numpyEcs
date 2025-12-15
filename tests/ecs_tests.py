@@ -492,7 +492,7 @@ def test_ecs_multicomp_defragment():
 
     assert store._count == {0: np.uint16(1), 4: np.uint16(1), 8: np.uint16(1), 12: np.uint16(1)}
     assert np.unique(store._entities_contained).tolist() == [-1, 0, 4,  8, 12]
-    assert np.unique(store._dense['val'][store._entities_contained != ComponentStorage.NONE]).tolist() == [0., 4., 8., 12.]
+    assert np.unique(store._dense['val'][:store._size+1][store._entities_contained != ComponentStorage.NONE]).tolist() == [0., 4., 8., 12.]
 
     for i in range(4):
         j = i * 4
@@ -500,7 +500,7 @@ def test_ecs_multicomp_defragment():
 
     assert store._count == {0: np.uint16(3), 4: np.uint16(3), 8: np.uint16(3), 12: np.uint16(3)}
     assert np.unique(store._entities_contained).tolist() == [-1, 0, 4,  8, 12]
-    assert np.unique(store._dense['val'][store._entities_contained != ComponentStorage.NONE]).tolist() == [0.,1.,2., 4.,5.,6., 8.,9.,10., 12.,13.,14.]
+    assert np.unique(store._dense['val'][:store._size+1][store._entities_contained != ComponentStorage.NONE]).tolist() == [0.,1.,2., 4.,5.,6., 8.,9.,10., 12.,13.,14.]
 
     for i in range(4):
         j = i * 4
