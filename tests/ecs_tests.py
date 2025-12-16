@@ -246,6 +246,8 @@ def test_get_rows():
     assert rows.tolist() == [1,2]
     rows = pos._get_rows()
     assert sorted(rows.tolist()) == [0,1,2,3]
+    rows = pos._get_rows([])
+    assert not rows
 
 def test_query_simple_vectorized():
     pos = make_pos2d_store([(0, 0), (1, 2), (5, -3), (-1, 1), (4, 10)])
@@ -426,7 +428,7 @@ def test_storage_multicomp_add_get_remove():
     store._add(entity_id, MultiComp(3.))
 
     comps = store.get(entity_id)
-    assert isinstance(comps, list)
+    assert isinstance(comps, Sequence)
     assert len(comps) == 3
     assert comps[0].val == pytest.approx(1.)
     assert comps[1].val == pytest.approx(2.)
@@ -438,7 +440,7 @@ def test_storage_multicomp_add_get_remove():
 
     store._remove(store.get(entity_id)[1])
     comps = store.get(entity_id)
-    assert isinstance(comps, list)
+    assert isinstance(comps, Sequence)
     assert len(comps) == 2
     assert comps[0].val == pytest.approx(1.0)
     assert comps[1].val == pytest.approx(3.)
@@ -448,7 +450,7 @@ def test_ecs_multicomp_reassignment():
     ecs.register(MultiComp, allow_same_type_components_per_entity=True, capacity=5)
     ecs.register(Position2D, capacity=5)
     store = ecs.get_store(MultiComp)
-    positions = ecs.get_store(MultiComp)
+    positions = ecs.get_store(Position2D)
 
     ecs.create_entities(12)
     e = ecs.create_entity(MultiComp(1.1), MultiComp(2.2), MultiComp(3.3), Position2D(1,1))
@@ -463,14 +465,21 @@ def test_ecs_multicomp_reassignment():
     assert len(proxies) == 2
     assert sorted( map(lambda p: p.val, proxies) ) == [1.1, 4.4]
 
+    proxies = store.get(e2)
+    assert len(proxies) == 3
+    assert sorted( map(lambda p: p.val, proxies) ) == [5.5, 6.6, 7.7]
+
+    proxy = positions.get(e2)
+    assert proxy.x == 2 and proxy.y == 2
+
     ecs.delete_entity(e2)
     assert not store.get(e2)
     assert not positions.get(e2)
     
     ecs.add_component(e, MultiComp(8.8))
-    proxies = store.get(e)
-    assert len(proxies) == 3
-    assert sorted( map(lambda p: p.val, proxies) ) == [1.1, 4.4, 8.8]
+    vec = store.get_full_vector([e,e2,8])
+    assert vec.shape == (3, 1)
+    assert sorted( vec.flatten().tolist() ) == [1.1, 4.4, 8.8]
     
     ecs.add_component(e, MultiComp(9.9))
     proxies = store.get(e)

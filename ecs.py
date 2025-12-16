@@ -1,6 +1,6 @@
 import numpy as np
 from inspect import signature as inspect_signature
-from typing import Type, Dict, Callable, Any, List, Tuple
+from typing import Type, Dict, Callable, Any, List, Tuple, Sequence
 from dataclasses import dataclass
 from enum import Flag, IntFlag, auto
 
@@ -202,8 +202,9 @@ class ComponentStorage:
 	def _remove_entity(self, entity:Entity) -> None:
 		if self.mult_comp:
 			rows = self._get_rows([entity])
+			self._sparse[entity] = ComponentStorage.NONE
 			self._entities_contained[rows] = ComponentStorage.NONE
-			self._count[entity] = 0
+			del self._count[entity]
 			return
 
 		head = self._sparse[entity]
@@ -213,12 +214,12 @@ class ComponentStorage:
 	def get(self, entity: Entity) -> ComponentProxy:
 		
 		head = self._sparse[entity]
+
+		if head == ComponentStorage.NONE: return None
 		
 		if self.mult_comp:
-			count = self._count[entity]
-			return [ ComponentProxy(self, entity, idx) for idx in range(head, head + count) ]
+			return tuple( ComponentProxy(self, entity, idx) for idx in range(head, head + self._count[entity]) )
 		
-		if head == ComponentStorage.NONE: return None
 		return ComponentProxy(self, entity, head)
 
 	def _get_rows(self, entities:np.ndarray|None=None) -> np.ndarray:
@@ -227,16 +228,22 @@ class ComponentStorage:
 			idx = np.arange(ent.size)[ent != ComponentStorage.NONE]
 		else:
 			ent = np.atleast_1d(entities).astype(int)
+			if ent.size == 0:
+				return []
+
 			if self.mult_comp:
-				ent = np.unique(ent)
+				ent = np.unique(ent) 
 				
 				startIdx = self._sparse[ent]
-				counts = np.vectorize(self._count.__getitem__, otypes=(np.uint16,))(ent)
+				counts = np.vectorize(self._count.get, otypes=(np.uint16,))(ent,0)
+
+				if ent.size == 1:
+					return range(startIdx[0], startIdx[0] + counts[0])
 				
 				base_idx = np.repeat(startIdx, counts)
 				total = counts.sum()
 				single_offsets = np.arange(total) # [0, 1, 2, 3, ...] size total
-				cum_counts = np.cumsum(counts) - counts # [0, c0, c0+c1, ...] size counts
+				cum_counts = np.r_[0, np.cumsum(counts)[:-1]] # [0, c0, c0+c1, ...] size counts
 				large_offsets = np.repeat(cum_counts, counts) # [[0] * c0, [c0] * c1, [c0+c1] * c2, ...] size total
 				offsets = single_offsets - large_offsets
 				
@@ -407,12 +414,10 @@ class ECS:
 
 	def remove_component(self, component: ComponentProxy) -> None:
 		entity = component._entity
-		comp_cls = component._store.component_cls
+		store = component._store
 		if entity >= self.entity_masks_size: return
-		store = self._stores.get(comp_cls)
 		# _remove returns True if there are no components of that type left in entity
-		if store and store._remove(component):
-			bit = self._comp_bits.get(comp_cls, 0)
+		if store and store._remove(component) and (bit := self._comp_bits.get(comp_cls, 0))!=0:
 			self.entity_masks[entity] &= ~bit
 
 	def get_store(self, comp_cls: Type) -> ComponentStorage:
