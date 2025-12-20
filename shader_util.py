@@ -9,9 +9,28 @@ import pyglet.gl as gl
 from pyglet.image import Texture
 from pyglet.window import Window
 
+from pyglet.graphics import Batch
+import pyglet.graphics.shader as pygletShaders
+Shader = pygletShaders.Shader
+Program = pygletShaders.ShaderProgram
+
 from pygltflib import GLTF2, BufferView, Accessor
-from pyrr import Matrix44, Vector3
+from pyrr import Matrix44 as Mat4, Vector3
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
+
+
+class PassthroughShaderSource:
+	"""GLSL source container for making source parsing simpler. """
+	_type: object
+	_lines: list[str]
+
+	def __init__(self, source: str, source_type: object) -> None:
+		self._type = source_type
+		self._source = source
+
+	def validate(self) -> str:
+		return self._source
+Shader.ShaderSource = PassthroughShaderSource
 
 
 def InitWindow(w:float, h:float, title:str) -> Window:
@@ -19,18 +38,18 @@ def InitWindow(w:float, h:float, title:str) -> Window:
 	# NOTE: using MSAA with prepass generate z-artifacts
 
 	#config = pyglet.gl.Config(
-	#    double_buffer=True,
-	#    major_version=4,
-	#    minor_version=3,
-	#    samples = 1, # msaa
+	#	double_buffer=True,
+	#	major_version=4,
+	#	minor_version=3,
+	#	samples = 1, # msaa
 	#)
 	window = Window(
-	    width=w,
-	    height=h,
-	    caption=title,
-	    #config=config,
-	    resizable=False,
-	    vsync=False
+		width=w,
+		height=h,
+		caption=title,
+		#config=config,
+		resizable=False,
+		vsync=False
 	)
 
 	window.set_location(window.screen.width - w, 0)
@@ -39,107 +58,105 @@ def InitWindow(w:float, h:float, title:str) -> Window:
 
 
 def _get_data_from_accessor(gltf: GLTF2, accessor_index: int) -> np.ndarray:
-    acc: Accessor = gltf.accessors[accessor_index]
-    bv: BufferView = gltf.bufferViews[acc.bufferView]
-    buf = gltf.buffers[bv.buffer]
+	acc: Accessor = gltf.accessors[accessor_index]
+	bv: BufferView = gltf.bufferViews[acc.bufferView]
+	buf = gltf.buffers[bv.buffer]
 
-    # load buffer data
-    if buf.uri is None:  # GLB
-        bin_chunk = gltf.binary_blob()  # bytes
-    else:
-        # external .bin (not the case for .glb)
-        raise NotImplementedError("External buffers not handled")
+	# load buffer data
+	if buf.uri is None:  # GLB
+		bin_chunk = gltf.binary_blob()  # bytes
+	else:
+		# external .bin (not the case for .glb)
+		raise NotImplementedError("External buffers not handled")
 
-    # slice underlying bytes for this view
-    b = bv.byteOffset or 0
-    e = b + (bv.byteLength or 0)
-    view_bytes = memoryview(bin_chunk)[b:e]
+	# slice underlying bytes for this view
+	b = bv.byteOffset or 0
+	e = b + (bv.byteLength or 0)
+	view_bytes = memoryview(bin_chunk)[b:e]
 
-    # stride/offset into accessor
-    comp_type = acc.componentType
-    type_num_comps = {
-        "SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4, "MAT3": 9, "MAT4": 16
-    }[acc.type]
+	# stride/offset into accessor
+	comp_type = acc.componentType
+	type_num_comps = {
+		"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4, "MAT3": 9, "MAT4": 16
+	}[acc.type]
 
-    np_dtype = {
-        5120: np.int8,
-        5121: np.uint8,
-        5122: np.int16,
-        5123: np.uint16,
-        5125: np.uint32,
-        5126: np.float32
-    }[comp_type]
+	np_dtype = {
+		5120: np.int8,
+		5121: np.uint8,
+		5122: np.int16,
+		5123: np.uint16,
+		5125: np.uint32,
+		5126: np.float32
+	}[comp_type]
 
-    stride = bv.byteStride or (np.dtype(np_dtype).itemsize * type_num_comps)
-    count = acc.count
-    offset = acc.byteOffset or 0
+	stride = bv.byteStride or (np.dtype(np_dtype).itemsize * type_num_comps)
+	count = acc.count
+	offset = acc.byteOffset or 0
 
-    # read tightly into numpy (use frombuffer then stride)
-    arr = np.frombuffer(view_bytes, dtype=np_dtype, count=count*type_num_comps, offset=offset)
-    if stride != np.dtype(np_dtype).itemsize * type_num_comps:
-        raise NotImplementedError("Interleaved views not handled")
-    #    # handle interleaved views (rare in simple exports)
-    #    # fall back to manual gathering
-    #    rec = np.empty((count, type_num_comps), dtype=np_dtype)
-    #    base = offset
-    #    for i in range(count):
-    #        start = base + i*stride
-    #        rec[i] = np.frombuffer(view_bytes, dtype=np_dtype, count=type_num_comps, offset=start)
-    #    return rec
-    #else:
-    return arr.reshape(count, type_num_comps)
+	# read tightly into numpy (use frombuffer then stride)
+	arr = np.frombuffer(view_bytes, dtype=np_dtype, count=count*type_num_comps, offset=offset)
+	if stride != np.dtype(np_dtype).itemsize * type_num_comps:
+		raise NotImplementedError("Interleaved views not handled")
+	#	# handle interleaved views (rare in simple exports)
+	#	# fall back to manual gathering
+	#	rec = np.empty((count, type_num_comps), dtype=np_dtype)
+	#	base = offset
+	#	for i in range(count):
+	#		start = base + i*stride
+	#		rec[i] = np.frombuffer(view_bytes, dtype=np_dtype, count=type_num_comps, offset=start)
+	#	return rec
+	#else:
+	return arr.reshape(count, type_num_comps)
 
 
 def load_gltf_first_mesh(program, batch, glb_path: str):
-    gltf = GLTF2().load(glb_path)
+	gltf = GLTF2().load(glb_path)
 
-    # take first mesh, first primitive
-    mesh = gltf.meshes[0]
-    prim = mesh.primitives[0]
+	# take first mesh, first primitive
+	mesh = gltf.meshes[0]
+	prim = mesh.primitives[0]
 
-    pos = _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
-    nor = _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32) if prim.attributes.NORMAL is not None else np.zeros_like(pos)
-    uv  = _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float32) if prim.attributes.TEXCOORD_0 is not None else np.zeros((pos.shape[0],2), dtype=np.float32)
-    idx = _get_data_from_accessor(gltf, prim.indices)
-    if idx.dtype != np.uint32:
-        idx = idx.astype(np.uint32)
-    
+	pos = _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
+	nor = _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32) if prim.attributes.NORMAL is not None else np.zeros_like(pos)
+	uv  = _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float32) if prim.attributes.TEXCOORD_0 is not None else np.zeros((pos.shape[0],2), dtype=np.float32)
+	idx = _get_data_from_accessor(gltf, prim.indices)
+	if idx.dtype != np.uint32:
+		idx = idx.astype(np.uint32)
+	
 
-    pos_flat = pos.reshape(-1).astype('f')
-    nor_flat = nor.reshape(-1).astype('f')
-    uv_flat  = uv.reshape(-1).astype('f')
-    indices = idx.astype(int).reshape(-1)
+	pos_flat = pos.reshape(-1).astype('f')
+	nor_flat = nor.reshape(-1).astype('f')
+	uv_flat  = uv.reshape(-1).astype('f')
+	indices = idx.astype(int).reshape(-1)
 
-    vertex_count = pos.shape[0]
+	vertex_count = pos.shape[0]
 
-    vlist = program.vertex_list_indexed(
-        vertex_count,
-        gl.GL_TRIANGLES,
-        indices,
-        batch=batch,
-        aPos=('f', pos_flat),
-        aNormal=('f', nor_flat),
-        aUV=('f', uv_flat),
-    )
-    return vlist
+	vlist = program.vertex_list_indexed(
+		vertex_count,
+		gl.GL_TRIANGLES,
+		indices,
+		batch=batch,
+		aPos=('f', pos_flat),
+		aNormal=('f', nor_flat),
+		aUV=('f', uv_flat),
+	)
+	return vlist
 
 
 class Camera:
-    def __init__(self, position, target, up, fovy_deg, near=0.1, far=1000.0):
-        self.position = Vector3(position)
-        self.target = Vector3(target)
-        self.up = Vector3(up)
-        self.fovy_deg = fovy_deg
-        self.near = near
-        self.far = far
+	def __init__(self, position, target, up, fovy_deg, near=0.1, far=1000.0):
+		self.position = Vector3(position)
+		self.target = Vector3(target)
+		self.up = Vector3(up)
+		self.fovy_deg = fovy_deg
+		self.near = near
+		self.far = far
 
-    def view(self):
-        return Matrix44.look_at(self.position, self.target, self.up, dtype=np.float32)
+	def view(self):
+		return Mat4.look_at(self.position, self.target, self.up)
 
-    def proj(self, aspect):
-        return Matrix44.perspective_projection(
-            self.fovy_deg, aspect, self.near, self.far, dtype=np.float32
-        )
+	def proj(self, aspect):
+		return Mat4.perspective_projection( self.fovy_deg, aspect, self.near, self.far )
 
 
 def GenTextureMipmaps(texture : Texture):
@@ -190,22 +207,25 @@ def EnableDepth():
 	#pass
 
 
+class PassthroughShaderSource:
+	"""GLSL source container for making source parsing simpler. """
+	_type: object
+	_lines: list[str]
+
+	def __init__(self, source: str, source_type: object) -> None:
+		self._type = source_type
+		self._source = source
+
+	def validate(self) -> str:
+		return self._source
+pygletShaders.ShaderSource = PassthroughShaderSource
+
+
 class DefaultFalseDict(Dict):
 	"""Dict that returns False for any missing key; used in feature resolution"""
 	def __missing__(self, key):
 		return False
 
-class PassthroughShaderSource:
-    """GLSL source container for making source parsing simpler. """
-    _type: object
-    _lines: list[str]
-
-    def __init__(self, source: str, source_type: object) -> None:
-        self._type = source_type
-        self._source = source
-
-    def validate(self) -> str:
-        return self._source
 
 class BetterShaderSource:
 	"""
@@ -214,17 +234,17 @@ class BetterShaderSource:
 	"""
 
 	# Regex to capture qualifier, type, and name from declarations
-	_decl_pattern = re.compile(r"^(?>layout\(location = (\d+)\) )?(uniform|in|out|varying|const)\s+(\S+)\s+([^;]+).*?;", re.MULTILINE)
+	_decl_pattern = re.compile(r"^(?>layout\(location = (\d+)\) )?(uniform|in|out|(?:flat )?varying|const)\s+(\S+)\s+([^;]+).*?;", re.MULTILINE)
 
 	# Regex to extract function definitions with bodies
 	_func_pattern = re.compile(
-		r'\n'                            # start at a newline
-		r'[\w\*\s&<>]+?\s+'              # return type (e.g. void, bool, vec4, const mat4&)
-		r'([A-Za-z_]\w*)'                # function name
-		r'\s*\(([^)]*)\)\s*'             # argument list
-		r'(?:\{\n|\n\{\n)'               # opening brace on same or next line
-		r'([\s\S]*?)'                    # function body (non-greedy)
-		r'\n\}'                          # closing brace at column 0
+		r'\n'							# start at a newline
+		r'[\w\*\s&<>]+?\s+'			  # return type (e.g. void, bool, vec4, const mat4&)
+		r'([A-Za-z_]\w*)'				# function name
+		r'\s*\(([^)]*)\)\s*'			 # argument list
+		r'(?:\{\n|\n\{\n)'			   # opening brace on same or next line
+		r'([\s\S]*?)'					# function body (non-greedy)
+		r'\n\}'						  # closing brace at column 0
 	)
 
 	_vertex_start = 'void vertex()'
@@ -298,7 +318,9 @@ class BetterShaderSource:
 			if qual == 'uniform':
 				self.uniforms.append((typ, name))
 			elif qual == 'varying':
-				self.varyings.append((typ, name))
+				self.varyings.append((typ, name, False))
+			elif qual == 'flat varying':
+				self.varyings.append((typ, name, True))
 			elif qual == 'in':
 				self.ins.append((loc, typ, name))
 			elif qual == 'out':
@@ -333,7 +355,7 @@ class BetterShaderSource:
 			self._opengl_version, '',
 			*map(inStr, self.ins), '',
 			*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms), '',
-			*map(lambda kv: f'out {kv[0]} {kv[1]};', self.varyings), '',
+			*map(lambda kv: ('flat ' if kv[2] else '')+ f'out {kv[0]} {kv[1]};', self.varyings), '',
 			*map(lambda kv: f'const {kv[0]} {kv[1]};', self.consts), '',
 			*self.functions[:self._vertex_body], '',
 			self.functions[self._vertex_body].replace(self._vertex_start, self._main_start)
@@ -350,7 +372,7 @@ class BetterShaderSource:
 		# Fragment shader (required)
 		f_lines = [
 			self._opengl_version, '',
-			*map(lambda kv: f'in {kv[0]} {kv[1]};', self.varyings), '',
+			*map(lambda kv: ('flat ' if kv[2] else '')+ f'in {kv[0]} {kv[1]};', self.varyings), '',
 			*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms), '',
 			*map(outStr, self.outs), '',
 			*map(lambda kv: f'const {kv[0]} {kv[1]};', self.consts), '',
@@ -399,3 +421,71 @@ class WatchTimer:
 
 	def display(x, y, size, color):
 		rl.DrawText(WatchTimer.report.encode(), x, y, size, color)
+
+
+
+# NOTE: default shader takes tint as a uniform so this can't set color
+def addCube(program:Program, batch:Batch, position, size #, color
+	) -> None:
+
+	pos = np.array(position)
+	size = np.array(size)
+
+	_CUBE_POSITIONS_24 = np.array( (
+		# +Z (front)
+		(-0.5,-0.5,+0.5), (+0.5,-0.5,+0.5), (+0.5,+0.5,+0.5), (-0.5,+0.5,+0.5),
+		# -Z (back)
+		(+0.5,-0.5,-0.5), (-0.5,-0.5,-0.5), (-0.5,+0.5,-0.5), (+0.5,+0.5,-0.5),
+		# +X (right)
+		(+0.5,-0.5,+0.5), (+0.5,-0.5,-0.5), (+0.5,+0.5,-0.5), (+0.5,+0.5,+0.5),
+		# -X (left)
+		(-0.5,-0.5,-0.5), (-0.5,-0.5,+0.5), (-0.5,+0.5,+0.5), (-0.5,+0.5,-0.5),
+		# +Y (top)
+		(-0.5,+0.5,+0.5), (+0.5,+0.5,+0.5), (+0.5,+0.5,-0.5), (-0.5,+0.5,-0.5),
+		# -Y (bottom)
+		(-0.5,-0.5,-0.5), (+0.5,-0.5,-0.5), (+0.5,-0.5,+0.5), (-0.5,-0.5,+0.5), )
+	)
+
+	_CUBE_NORMALS_24 = (
+		# +Z
+		[ 0.0, 0.0, 1.0 ] * 4 +
+		# -Z
+		[0.0, 0.0, -1.0 ] * 4 +
+		# +X
+		[1.0, 0.0, 0.0] * 4 +
+		# -X
+		[-1.0, 0.0, 0.0] * 4 +
+		# +Y
+		[0.0, 1.0, 0.0] * 4 +
+		# -Y
+		[0.0, -1.0, 0.0] * 4
+	)
+
+	_CUBE_UVS_24 = [ 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.] * 6
+
+	# 6 faces * 2 triangles * 3 indices = 36 indices
+	_CUBE_INDICES_36 = [
+		# +Z
+		0, 1, 2,  2, 3, 0,
+		# -Z
+		4, 5, 6,  6, 7, 4,
+		# +X
+		8, 9, 10,  10, 11, 8,
+		# -X
+		12, 13, 14,  14, 15, 12,
+		# +Y
+		16, 17, 18,  18, 19, 16,
+		# -Y
+		20, 21, 22,  22, 23, 20,
+	]
+
+	program.vertex_list_indexed(
+		24,
+		gl.GL_TRIANGLES,
+		_CUBE_INDICES_36,
+		batch=batch,
+		aPos=("f", (pos + _CUBE_POSITIONS_24 * size).reshape(-1)),
+		aNormal=("f", _CUBE_NORMALS_24),
+		aUV=("f", _CUBE_UVS_24) #,
+		#aTint=("Bn", list(color) * 24)
+	)

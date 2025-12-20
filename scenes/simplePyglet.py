@@ -5,10 +5,7 @@ import ctypes
 from pyglet.app import run
 from pyglet.window import  Window, key, mouse
 import pyglet.gl as gl
-from pyglet.graphics import Batch
-import pyglet.graphics.shader as pygletShader
 from shader_util import *
-pygletShader.ShaderSource = PassthroughShaderSource
 
 
 # ----------------------------
@@ -21,9 +18,9 @@ MODEL_PATH = 'scenes/resources/rooftop_utility_pole.glb'
 
 def build_shader_program():
     source = BetterShaderSource('scenes/shaders/pyglet.shader')
-    vert = pygletShader.Shader(source.vertex_glsl, 'vertex')
-    frag = pygletShader.Shader(source.fragment_glsl, 'fragment')
-    return pygletShader.ShaderProgram(vert, frag)
+    vert = Shader(source.vertex_glsl, 'vertex')
+    frag = Shader(source.fragment_glsl, 'fragment')
+    return Program(vert, frag)
 
 
 camera_dist = 30.0
@@ -52,7 +49,7 @@ batch = Batch()
 
 # Model transform
 scale = 5.0
-model_mat = Matrix44.from_scale([scale, scale, scale], dtype=np.float32)
+model_mat = Mat4.from_scale([scale, scale, scale])
 
 # Light direction (same as original)
 l = np.array([30.0, 30.0, 25.0]) - np.array([0.0, 0.0, -20.0])
@@ -61,6 +58,7 @@ light_dir = l.astype(np.float32)
 
 # Create vertex list in a batch (this hides VBO/VAO/EBO stuff)
 mesh_vlist = load_gltf_first_mesh(program, batch, MODEL_PATH)
+addCube(program, batch, (2,0,0), (3,1,2) )
 
 # ---------------- Events ----------------
 @window.event
@@ -110,17 +108,14 @@ def on_draw():
     view = camera.view()
     proj = camera.proj(aspect)
 
-    # Bind shader, set uniforms the pyglet way, then draw batch
     program.bind()
-
-    # ShaderProgram accepts numpy arrays / sequences for uniforms.
     program['uModel'] = model_mat.reshape(-1).astype('f')
     program['uView']  = view.reshape(-1).astype('f')
     program['uProj']  = proj.reshape(-1).astype('f')
     program['uLightDir'] = light_dir
+    program['uTint'] = (0.82, 0.71, 0.55, 1.0)
 
     batch.draw()
-    pygletShader.ShaderProgram.unbind()
 
     # simple FPS to console
     fps_frames += 1

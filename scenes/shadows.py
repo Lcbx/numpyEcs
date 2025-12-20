@@ -1,6 +1,6 @@
 from ecs import *
 import shader_util as su
-from shader_util import Vector2, Vector3, Color, Camera3D, RenderTexture
+from shader_util import *
 
 @component
 class Position:

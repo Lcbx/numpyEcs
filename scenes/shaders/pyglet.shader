@@ -7,6 +7,7 @@ uniform mat4 uModel;
 uniform mat4 uView;
 uniform mat4 uProj;
 uniform vec3 uLightDir;
+uniform vec4 uTint;
 
 varying vec3 vNormalWS;
 varying vec3 vLightDirWS;
@@ -25,7 +26,7 @@ void vertex() {
 void fragment() {
     vec3 N = normalize(vNormalWS);
     float NdotL = max(dot(N, vLightDirWS), 0.0);
-    vec3 base = vec3(0.82, 0.71, 0.55); // BEIGE-ish
+    vec3 base = uTint.rgb;
     vec3 color = base * (0.2 + 0.8 * NdotL);
-    FragColor = vec4(color, 1.0);
+    FragColor = vec4(color, uTint.a);
 }
