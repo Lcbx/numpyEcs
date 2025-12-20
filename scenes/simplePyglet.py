@@ -16,13 +16,6 @@ TITLE = "pyglet + ShaderProgram + glTF"
 MODEL_PATH = 'scenes/resources/rooftop_utility_pole.glb'
 
 
-def build_shader_program():
-    source = BetterShaderSource('scenes/shaders/pyglet.shader')
-    vert = Shader(source.vertex_glsl, 'vertex')
-    frag = Shader(source.fragment_glsl, 'fragment')
-    return Program(vert, frag)
-
-
 camera_dist = 30.0
 camera = Camera(
     position=(-20.0, 70.0, 25.0),
@@ -44,7 +37,7 @@ gl.glEnable(gl.GL_DEPTH_TEST)
 gl.glClearColor(0.15, 0.16, 0.19, 1.0)
 
 # Shader program & batch
-program = build_shader_program()
+program = build_shader_program('scenes/shaders/pyglet.shader')
 batch = Batch()
 
 # Model transform

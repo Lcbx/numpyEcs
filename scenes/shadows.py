@@ -1,6 +1,7 @@
 from ecs import *
 import shader_util as su
 from shader_util import *
+from random import randint 
 
 @component
 class Position:
@@ -9,10 +10,6 @@ class Position:
 @component
 class Velocity:
 	x: float; y: float; z: float
-
-@component
-class Mesh:
-	color : Color
 	
 @component
 class BoundingBox:
@@ -20,15 +17,11 @@ class BoundingBox:
 	x_max: float; y_max: float; z_max: float
 
 world = ECS()
-world.register(Position, Velocity, Mesh, BoundingBox)
+world.register(Position, Velocity, BoundingBox)
 
 positions = world.get_store(Position)
 velocities = world.get_store(Velocity)
-meshes = world.get_store(Mesh)
 bboxes = world.get_store(BoundingBox)
-
-rnd_uint8 = lambda : su.rl.GetRandomValue(0, 255)
-rnd_color = lambda : Color(rnd_uint8(),rnd_uint8(),rnd_uint8(),255)
 
 SPACE_SIZE = 180
 CUBE_MAX_SIDE = 7
@@ -36,17 +29,16 @@ CUBE_MAX_SIDE = 7
 for e in world.create_entities(200):
 	world.add_component(e,
 		Position(
-			su.rl.GetRandomValue(-SPACE_SIZE, SPACE_SIZE),
-			su.rl.GetRandomValue(0, 20),
-			su.rl.GetRandomValue(-SPACE_SIZE, SPACE_SIZE) ),
+			randint(-SPACE_SIZE, SPACE_SIZE),
+			randint(0, 20),
+			randint(-SPACE_SIZE, SPACE_SIZE) ),
 		Velocity(
-			su.rl.GetRandomValue(-4, 4),
+			randint(-4, 4),
 			0,
-			su.rl.GetRandomValue(-4, 4) ),
+			randint(-4, 4) ),
 		BoundingBox(
-			su.rl.GetRandomValue(-CUBE_MAX_SIDE, 0), su.rl.GetRandomValue(-CUBE_MAX_SIDE, 0), su.rl.GetRandomValue(-CUBE_MAX_SIDE, 0),
-			su.rl.GetRandomValue(1, CUBE_MAX_SIDE),  su.rl.GetRandomValue(1, CUBE_MAX_SIDE),  su.rl.GetRandomValue(1, CUBE_MAX_SIDE) ),
-		Mesh(rnd_color()),
+			randint(-CUBE_MAX_SIDE, 0), randint(-CUBE_MAX_SIDE, 0), randint(-CUBE_MAX_SIDE, 0),
+			randint(1, CUBE_MAX_SIDE),  randint(1, CUBE_MAX_SIDE),  randint(1, CUBE_MAX_SIDE) )
 	)
 
 
@@ -57,18 +49,9 @@ def load_shaders():
 
 	try:
 		shaders_dir = 'scenes/shaders/'
-
-		newShader = su.BetterShader(shaders_dir + 'lightmap.shader')
-		if newShader.valid(): sceneShader = newShader
-		else: raise Exception('lightmap.shader')
-
-		newShader = su.BetterShader(shaders_dir + 'depthTransfer.shader')
-		if newShader.valid(): depthTransferShader = newShader
-		else: raise Exception('depthTransfer.shader')
-
-		newShader = su.BetterShader(shaders_dir + 'prepass.shader')
-		if newShader.valid(): prepassShader = newShader
-		else: raise Exception('prepass.shader')
+		sceneShader = build_shader_program(shaders_dir + 'lightmap.shader')
+		depthTransferShader = build_shader_program(shaders_dir + 'depthTransfer.shader')
+		prepassShader = build_shader_program(shaders_dir + 'prepass.shader')
 
 	except Exception as ex:
 		print('--------------> failed compiling', ex.args[0])
@@ -77,34 +60,31 @@ def load_shaders():
 		print('______________________')
 		print(withLineNumbers(newShader.source.fragment_glsl))
 
-#WINDOW_w, WINDOW_h = 1000, 650
-#WINDOW_w, WINDOW_h = 1920, 1080
 WINDOW_w, WINDOW_h = 1800, 900
-su.InitWindow(WINDOW_w, WINDOW_h, "Hello")
+InitWindow(WINDOW_w, WINDOW_h, "Hello")
 
 
-sceneShader : su.BetterShader = None
-depthTransferShader : su.BetterShader = None
-prepassShader : su.BetterShader = None
+sceneShader : Program = None
+depthTransferShader : Program = None
+prepassShader : Program = None
 load_shaders()
 
 camera_dist = 30
 camera_nearFar = (0.1, 1000.0)
-camera = Camera3D(
-	Vector3(-20, 70, 25),
-	Vector3(0,10,0),
-	Vector3(0,1,0),
-	60.0,
-	su.rl.CAMERA_PERSPECTIVE
+camera = Camera(
+	(-20, 70, 25),
+	(0,10,0),
+	(0,1,0),
+	60.0
 )
 
 light_nearFar = (10,300)
-light_camera = Camera3D(
-	Vector3(30, 30, 25),
-	Vector3(0,0,-20),
-	Vector3(0,1,0),
+light_camera = Camera(
+	(30, 30, 25),
+	(0,0,-20),
+	(0,1,0),
 	90.0,
-	su.rl.CAMERA_ORTHOGRAPHIC
+	False
 )
 
 unused_camera = None
@@ -119,7 +99,6 @@ shadow_buffer = su.create_render_buffer(SM_SIZE,SM_SIZE,None, depth_map=True)
 
 # model
 model_root = b'scenes/resources/'
-#model = su.rl.LoadModel(model_root + b'teapot.obj')
 model = su.rl.LoadModel(model_root + b'turret.obj')
 model_albedo = su.rl.LoadTexture(model_root + b'turret_diffuse.png')
 su.SetMaterialTexture(model.materials[0], su.rl.MATERIAL_MAP_DIFFUSE, model_albedo)

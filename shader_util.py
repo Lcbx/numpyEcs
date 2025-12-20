@@ -6,10 +6,12 @@ from typing import Any, Sequence, Dict, Optional
 import numpy as np
 
 import pyglet.gl as gl
+import pyglet.image as img
 from pyglet.image import Texture
 from pyglet.window import Window
 
 from pyglet.graphics import Batch
+from pyglet.graphics.vertexdomain import IndexedVertexList, VertexList
 import pyglet.graphics.shader as pygletShaders
 Shader = pygletShaders.Shader
 Program = pygletShaders.ShaderProgram
@@ -109,7 +111,7 @@ def _get_data_from_accessor(gltf: GLTF2, accessor_index: int) -> np.ndarray:
 	return arr.reshape(count, type_num_comps)
 
 
-def load_gltf_first_mesh(program, batch, glb_path: str):
+def load_gltf_first_mesh(program, batch, glb_path: str)-> IndexedVertexList:
 	gltf = GLTF2().load(glb_path)
 
 	# take first mesh, first primitive
@@ -144,19 +146,25 @@ def load_gltf_first_mesh(program, batch, glb_path: str):
 
 
 class Camera:
-	def __init__(self, position, target, up, fovy_deg, near=0.1, far=1000.0):
+	def __init__(self, position, target, up, fovy_deg, near=0.1, far=1000.0, perspective:bool=True):
 		self.position = Vector3(position)
 		self.target = Vector3(target)
 		self.up = Vector3(up)
 		self.fovy_deg = fovy_deg
 		self.near = near
 		self.far = far
+		self.perspective = perspective
 
 	def view(self):
 		return Mat4.look_at(self.position, self.target, self.up)
 
 	def proj(self, aspect):
-		return Mat4.perspective_projection( self.fovy_deg, aspect, self.near, self.far )
+		if self.perspective:
+			return Mat4.perspective_projection( self.fovy_deg, aspect, self.near, self.far )
+
+		top = self.fovy_deg * 0.5;
+		right = top*aspect;
+		return Mat4.orthogonal_projection(-right, right, top, -top, self.near, self.far)
 
 
 def GenTextureMipmaps(texture : Texture):
@@ -205,6 +213,24 @@ def EnableDepth():
 	gl.glDepthMask(gl.GL_TRUE)
 	gl.glEnable(gl.GL_DEPTH_TEST)
 	#pass
+
+
+def build_shader_program(path:str):
+    source = BetterShaderSource(path)
+    vert = Shader(source.vertex_glsl, 'vertex')
+    frag = Shader(source.fragment_glsl, 'fragment')
+    return Program(vert, frag)
+
+
+def create_render_buffer(width, height,
+	colorFormat:int=gl.GL_RGB8UI,
+	depth_map:bool=False):
+	color_buffer = img.Texture.create(width, height, min_filter=gl.GL_NEAREST, mag_filter=gl.GL_NEAREST)
+	depth_buffer = img.buffer.Renderbuffer(width, height, gl.GL_DEPTH_COMPONENT)
+
+	framebuffer = img.Framebuffer()
+	framebuffer.attach_texture(color_buffer, attachment=gl.GL_COLOR_ATTACHMENT0)
+	framebuffer.attach_renderbuffer(depth_buffer, attachment=gl.GL_DEPTH_ATTACHMENT)
 
 
 class PassthroughShaderSource:
@@ -426,7 +452,7 @@ class WatchTimer:
 
 # NOTE: default shader takes tint as a uniform so this can't set color
 def addCube(program:Program, batch:Batch, position, size #, color
-	) -> None:
+	) -> IndexedVertexList:
 
 	pos = np.array(position)
 	size = np.array(size)
@@ -479,7 +505,7 @@ def addCube(program:Program, batch:Batch, position, size #, color
 		20, 21, 22,  22, 23, 20,
 	]
 
-	program.vertex_list_indexed(
+	return program.vertex_list_indexed(
 		24,
 		gl.GL_TRIANGLES,
 		_CUBE_INDICES_36,
