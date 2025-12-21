@@ -96,15 +96,16 @@ prepass_buffer = su.create_render_buffer(WINDOW_w, WINDOW_h, None, depth_map=Tru
 SM_SIZE = 2048
 shadow_buffer = su.create_render_buffer(SM_SIZE,SM_SIZE,None, depth_map=True)
 
+batch = Batch()
 
 # model
-model_root = b'scenes/resources/'
-model = su.rl.LoadModel(model_root + b'turret.obj')
-model_albedo = su.rl.LoadTexture(model_root + b'turret_diffuse.png')
-su.SetMaterialTexture(model.materials[0], su.rl.MATERIAL_MAP_DIFFUSE, model_albedo)
-heightmap = su.rl.LoadModel(model_root + b'heightmap_mesh.glb')
-pole = su.rl.LoadModel(model_root + b'rooftop_utility_pole.glb')
-
+model_root = 'scenes/resources/'
+#model = su.rl.LoadModel(model_root + b'turret.obj')
+#model_albedo = su.rl.LoadTexture(model_root + b'turret_diffuse.png')
+#su.SetMaterialTexture(model.materials[0], su.rl.MATERIAL_MAP_DIFFUSE, model_albedo)
+#heightmap = load_gltf_first_mesh(sceneShader, batch, model_root + 'heightmap_mesh.glb')
+pole = load_gltf_first_mesh(sceneShader, model_root + 'rooftop_utility_pole.glb')
+pole.draw(batch)
 
 #anims = su.LoadModelAnimations(model_root + b'mixamo_toon_gisu.rl.glb')
 #animFrameCounter = 0

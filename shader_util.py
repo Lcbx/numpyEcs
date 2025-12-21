@@ -10,7 +10,7 @@ import pyglet.image as img
 from pyglet.image import Texture
 from pyglet.window import Window
 
-from pyglet.graphics import Batch
+from pyglet.graphics import Batch, Group
 from pyglet.graphics.vertexdomain import IndexedVertexList, VertexList
 import pyglet.graphics.shader as pygletShaders
 Shader = pygletShaders.Shader
@@ -19,20 +19,35 @@ Program = pygletShaders.ShaderProgram
 from pygltflib import GLTF2, BufferView, Accessor
 from pyrr import Matrix44 as Mat4, Vector3
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
+from json import dumps as json_dumps
 
 
-class PassthroughShaderSource:
-	"""GLSL source container for making source parsing simpler. """
-	_type: object
-	_lines: list[str]
+###############################
+# some code injections into pyglet
+###############################
+try:
+	class PassthroughShaderSource:
+		"""GLSL source container for making source parsing simpler. """
+		_type: object
+		_lines: list[str]
 
-	def __init__(self, source: str, source_type: object) -> None:
-		self._type = source_type
-		self._source = source
+		def __init__(self, source: str, source_type: object) -> None:
+			self._type = source_type
+			self._source = source
 
-	def validate(self) -> str:
-		return self._source
-Shader.ShaderSource = PassthroughShaderSource
+		def validate(self) -> str:
+			return self._source
+	Shader.ShaderSource = PassthroughShaderSource
+
+	_old__setitem__ =  Program.__setitem__
+	def Program__setitem__(self, name, value):
+		# patch in support for np arrays
+		if isinstance(value, np.ndarray): value = value.reshape(-1).astype('f')
+		_old__setitem__(self, name, value)
+	Program.__setitem__ = Program__setitem__
+except:
+	pass
+###############################
 
 
 def InitWindow(w:float, h:float, title:str) -> Window:
@@ -56,93 +71,6 @@ def InitWindow(w:float, h:float, title:str) -> Window:
 
 	window.set_location(window.screen.width - w, 0)
 	return window
-
-
-
-def _get_data_from_accessor(gltf: GLTF2, accessor_index: int) -> np.ndarray:
-	acc: Accessor = gltf.accessors[accessor_index]
-	bv: BufferView = gltf.bufferViews[acc.bufferView]
-	buf = gltf.buffers[bv.buffer]
-
-	# load buffer data
-	if buf.uri is None:  # GLB
-		bin_chunk = gltf.binary_blob()  # bytes
-	else:
-		# external .bin (not the case for .glb)
-		raise NotImplementedError("External buffers not handled")
-
-	# slice underlying bytes for this view
-	b = bv.byteOffset or 0
-	e = b + (bv.byteLength or 0)
-	view_bytes = memoryview(bin_chunk)[b:e]
-
-	# stride/offset into accessor
-	comp_type = acc.componentType
-	type_num_comps = {
-		"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4, "MAT3": 9, "MAT4": 16
-	}[acc.type]
-
-	np_dtype = {
-		5120: np.int8,
-		5121: np.uint8,
-		5122: np.int16,
-		5123: np.uint16,
-		5125: np.uint32,
-		5126: np.float32
-	}[comp_type]
-
-	stride = bv.byteStride or (np.dtype(np_dtype).itemsize * type_num_comps)
-	count = acc.count
-	offset = acc.byteOffset or 0
-
-	# read tightly into numpy (use frombuffer then stride)
-	arr = np.frombuffer(view_bytes, dtype=np_dtype, count=count*type_num_comps, offset=offset)
-	if stride != np.dtype(np_dtype).itemsize * type_num_comps:
-		raise NotImplementedError("Interleaved views not handled")
-	#	# handle interleaved views (rare in simple exports)
-	#	# fall back to manual gathering
-	#	rec = np.empty((count, type_num_comps), dtype=np_dtype)
-	#	base = offset
-	#	for i in range(count):
-	#		start = base + i*stride
-	#		rec[i] = np.frombuffer(view_bytes, dtype=np_dtype, count=type_num_comps, offset=start)
-	#	return rec
-	#else:
-	return arr.reshape(count, type_num_comps)
-
-
-def load_gltf_first_mesh(program, batch, glb_path: str)-> IndexedVertexList:
-	gltf = GLTF2().load(glb_path)
-
-	# take first mesh, first primitive
-	mesh = gltf.meshes[0]
-	prim = mesh.primitives[0]
-
-	pos = _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
-	nor = _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32) if prim.attributes.NORMAL is not None else np.zeros_like(pos)
-	uv  = _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float32) if prim.attributes.TEXCOORD_0 is not None else np.zeros((pos.shape[0],2), dtype=np.float32)
-	idx = _get_data_from_accessor(gltf, prim.indices)
-	if idx.dtype != np.uint32:
-		idx = idx.astype(np.uint32)
-	
-
-	pos_flat = pos.reshape(-1).astype('f')
-	nor_flat = nor.reshape(-1).astype('f')
-	uv_flat  = uv.reshape(-1).astype('f')
-	indices = idx.astype(int).reshape(-1)
-
-	vertex_count = pos.shape[0]
-
-	vlist = program.vertex_list_indexed(
-		vertex_count,
-		gl.GL_TRIANGLES,
-		indices,
-		batch=batch,
-		aPos=('f', pos_flat),
-		aNormal=('f', nor_flat),
-		aUV=('f', uv_flat),
-	)
-	return vlist
 
 
 class Camera:
@@ -216,10 +144,10 @@ def EnableDepth():
 
 
 def build_shader_program(path:str):
-    source = BetterShaderSource(path)
-    vert = Shader(source.vertex_glsl, 'vertex')
-    frag = Shader(source.fragment_glsl, 'fragment')
-    return Program(vert, frag)
+	source = BetterShaderSource(path)
+	vert = Shader(source.vertex_glsl, 'vertex')
+	frag = Shader(source.fragment_glsl, 'fragment')
+	return Program(vert, frag)
 
 
 def create_render_buffer(width, height,
@@ -449,13 +377,132 @@ class WatchTimer:
 		rl.DrawText(WatchTimer.report.encode(), x, y, size, color)
 
 
+class FastMaterial(Group):
+	
+	def __init__(self, program:Program, order:int=0, parent:Group|None=None) -> None:
+		super().__init__(order, parent)
+		self.program = program
+		self.uniforms = {}
+
+	def set_state(self) -> None:
+		self.program.use()
+		for name, value in self.uniforms.items():
+			self.program[name] = value
+
+	def __hash__(self) -> int:
+		hashable = str(sorted(self.uniforms.items()))
+		#print(hashable)
+		return hash( (self.program, self.order, self.parent, hashable) )
+
+	def __eq__(self, other) -> bool:
+		return (self.__class__ is other.__class__ and
+				self.program == other.program and
+				self.order == other.order and
+				self.parent == other.parent and
+				self.uniforms == other.uniforms)
+
+
+class Mesh:
+	def __init__(self, program:Program, positions, normals, UVs, indices) -> None:
+		self.program = program
+		self.positions = np.array(positions).reshape(-1)
+		self.normals = np.array(normals).reshape(-1)
+		self.UVs = np.array(UVs).reshape(-1)
+		self.indices = np.array(indices).reshape(-1)
+		self.group = FastMaterial(program)
+		self.vertex_count = self.positions.size // 3
+
+	def __setitem__(self, name :str, value)->None:
+		self.group.uniforms[name] = value
+
+	def draw(self, batch:Batch):
+		vlist = self.program.vertex_list_indexed(
+			self.vertex_count,
+			gl.GL_TRIANGLES,
+			self.indices,
+			batch=batch,
+			group=self.group,
+			aPos=('f', self.positions),
+			aNormal=('f', self.normals),
+			aUV=('f', self.UVs),
+		)
+		return vlist
+
+
+def _get_data_from_accessor(gltf: GLTF2, accessor_index: int) -> np.ndarray:
+	acc: Accessor = gltf.accessors[accessor_index]
+	bv: BufferView = gltf.bufferViews[acc.bufferView]
+	buf = gltf.buffers[bv.buffer]
+
+	# load buffer data
+	if buf.uri is None:  # GLB
+		bin_chunk = gltf.binary_blob()  # bytes
+	else:
+		# external .bin (not the case for .glb)
+		raise NotImplementedError("External buffers not handled")
+
+	# slice underlying bytes for this view
+	b = bv.byteOffset or 0
+	e = b + (bv.byteLength or 0)
+	view_bytes = memoryview(bin_chunk)[b:e]
+
+	# stride/offset into accessor
+	comp_type = acc.componentType
+	type_num_comps = {
+		"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4, "MAT3": 9, "MAT4": 16
+	}[acc.type]
+
+	np_dtype = {
+		5120: np.int8,
+		5121: np.uint8,
+		5122: np.int16,
+		5123: np.uint16,
+		5125: np.uint32,
+		5126: np.float32
+	}[comp_type]
+
+	stride = bv.byteStride or (np.dtype(np_dtype).itemsize * type_num_comps)
+	count = acc.count
+	offset = acc.byteOffset or 0
+
+	# read tightly into numpy (use frombuffer then stride)
+	arr = np.frombuffer(view_bytes, dtype=np_dtype, count=count*type_num_comps, offset=offset)
+	if stride != np.dtype(np_dtype).itemsize * type_num_comps:
+		raise NotImplementedError("Interleaved views not handled")
+	#	# handle interleaved views (rare in simple exports)
+	#	# fall back to manual gathering
+	#	rec = np.empty((count, type_num_comps), dtype=np_dtype)
+	#	base = offset
+	#	for i in range(count):
+	#		start = base + i*stride
+	#		rec[i] = np.frombuffer(view_bytes, dtype=np_dtype, count=type_num_comps, offset=start)
+	#	return rec
+	#else:
+	return arr.reshape(count, type_num_comps)
+
+
+def load_gltf_first_mesh(program : Program, glb_path: str)-> IndexedVertexList:
+	gltf = GLTF2().load(glb_path)
+
+	# take first mesh, first primitive
+	mesh = gltf.meshes[0]
+	prim = mesh.primitives[0]
+
+	pos = _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
+	nor = _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32) if prim.attributes.NORMAL is not None else np.zeros_like(pos)
+	uv  = _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float32) if prim.attributes.TEXCOORD_0 is not None else np.zeros((pos.shape[0],2), dtype=np.float32)
+	idx = _get_data_from_accessor(gltf, prim.indices)
+	if idx.dtype != np.uint32:
+		idx = idx.astype(np.uint32)
+
+	model = Mesh(program, pos, nor, uv, idx)
+	return model
+
+
 
 # NOTE: default shader takes tint as a uniform so this can't set color
-def addCube(program:Program, batch:Batch, position, size #, color
+def Cube(program:Program, position, size #, color
 	) -> IndexedVertexList:
-
-	pos = np.array(position)
-	size = np.array(size)
 
 	_CUBE_POSITIONS_24 = np.array( (
 		# +Z (front)
@@ -505,13 +552,8 @@ def addCube(program:Program, batch:Batch, position, size #, color
 		20, 21, 22,  22, 23, 20,
 	]
 
-	return program.vertex_list_indexed(
-		24,
-		gl.GL_TRIANGLES,
-		_CUBE_INDICES_36,
-		batch=batch,
-		aPos=("f", (pos + _CUBE_POSITIONS_24 * size).reshape(-1)),
-		aNormal=("f", _CUBE_NORMALS_24),
-		aUV=("f", _CUBE_UVS_24) #,
-		#aTint=("Bn", list(color) * 24)
-	)
+	pos = (np.array(position) + _CUBE_POSITIONS_24 * np.array(size)).reshape(-1)
+
+	model = Mesh(program, pos, _CUBE_NORMALS_24, _CUBE_UVS_24, _CUBE_INDICES_36)
+
+	return model

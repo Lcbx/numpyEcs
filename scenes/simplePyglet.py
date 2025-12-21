@@ -40,18 +40,26 @@ gl.glClearColor(0.15, 0.16, 0.19, 1.0)
 program = build_shader_program('scenes/shaders/pyglet.shader')
 batch = Batch()
 
-# Model transform
-scale = 5.0
-model_mat = Mat4.from_scale([scale, scale, scale])
-
 # Light direction (same as original)
 l = np.array([30.0, 30.0, 25.0]) - np.array([0.0, 0.0, -20.0])
 l = l / np.linalg.norm(l)
 light_dir = l.astype(np.float32)
 
-# Create vertex list in a batch (this hides VBO/VAO/EBO stuff)
-mesh_vlist = load_gltf_first_mesh(program, batch, MODEL_PATH)
-addCube(program, batch, (2,0,0), (3,1,2) )
+
+scale = 5.0
+model_mat = Mat4.from_scale( (scale, scale, scale) )
+
+cube1 = Cube(program, (2,0,0), (3,1,2) )
+cube1.draw(batch)
+
+mesh = load_gltf_first_mesh(program, MODEL_PATH)
+#mesh['uModel'] = Mat4.from_translation( (0, 15, 5) ) * model_mat
+#mesh['uModel'] = model_mat * model_mat
+mesh['uTint'] = (0.2, 0.5, 0.2, 1.0)
+mesh.draw(batch)
+
+cube2 = Cube(program, (-1,0,0), (1,1,1) )
+cube2.draw(batch)
 
 # ---------------- Events ----------------
 @window.event
@@ -82,7 +90,6 @@ def on_mouse_scroll(x, y, scroll_x, scroll_y):
 def on_draw():
     global frame_start, fps_frames, camera
 
-    # per-frame timing
     now = time.time()
     elapsed = now - start_t
 
@@ -94,23 +101,20 @@ def on_draw():
             math.sin(cam_ang) * camera_dist
         ))
 
-    # Clears color + depth using pyglet helper
     window.clear()
-
     aspect = window.width / window.height
     view = camera.view()
     proj = camera.proj(aspect)
 
     program.bind()
-    program['uModel'] = model_mat.reshape(-1).astype('f')
-    program['uView']  = view.reshape(-1).astype('f')
-    program['uProj']  = proj.reshape(-1).astype('f')
+    program['uModel'] = model_mat
+    program['uView']  = view
+    program['uProj']  = proj
     program['uLightDir'] = light_dir
     program['uTint'] = (0.82, 0.71, 0.55, 1.0)
 
     batch.draw()
 
-    # simple FPS to console
     fps_frames += 1
     if now - frame_start >= 1.0:
         print(f"fps {fps_frames}")
@@ -119,7 +123,6 @@ def on_draw():
 
 @window.event
 def on_close():
-    mesh_vlist.delete()
     program.delete()
     return Window.on_close(window)
 
