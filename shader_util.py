@@ -1,6 +1,6 @@
 import raylib as rl
 
-from pyray import ( Vector2, Vector3, Vector4,
+from pyray import ( Vector2, Vector3, Vector4, Color,
 	Shader, Material, Texture, RenderTexture, Camera3D,
 	ffi, rl_load_texture
 )
@@ -16,10 +16,9 @@ from OpenGL.GL import (
 
 import os
 import re
+import numpy as np
 from typing import Any, Sequence, Dict, Optional
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
-
-from pyray import Vector2, Vector3, Color, Camera3D, RenderTexture
 
 
 def InitWindow(w:float, h:float, title:str):
@@ -480,3 +479,80 @@ class WatchTimer:
 
 	def display(x, y, size, color):
 		rl.DrawText(WatchTimer.report.encode(), x, y, size, color)
+
+
+from pygltflib import GLTF2, BufferView, Accessor
+
+def _get_data_from_accessor(gltf: GLTF2, accessor_index: int) -> np.ndarray:
+    acc: Accessor = gltf.accessors[accessor_index]
+    bv: BufferView = gltf.bufferViews[acc.bufferView]
+    buf = gltf.buffers[bv.buffer]
+
+    if buf.uri is None:  # GLB
+        bin_chunk = gltf.binary_blob()
+    else:
+        raise NotImplementedError("External buffers not handled in this snippet")
+
+    b = bv.byteOffset or 0
+    e = b + (bv.byteLength or 0)
+    view_bytes = memoryview(bin_chunk)[b:e]
+
+    type_num_comps = {
+        "SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4, "MAT3": 9, "MAT4": 16
+    }[acc.type]
+
+    np_dtype = {
+        5120: np.int8,
+        5121: np.uint8,
+        5122: np.int16,
+        5123: np.uint16,
+        5125: np.uint32,
+        5126: np.float32
+    }[acc.componentType]
+
+    stride = bv.byteStride or (np.dtype(np_dtype).itemsize * type_num_comps)
+    count = acc.count
+    offset = acc.byteOffset or 0
+    tight = np.dtype(np_dtype).itemsize * type_num_comps
+
+    arr = np.frombuffer(view_bytes, dtype=np_dtype, count=count * type_num_comps, offset=offset)
+    if stride != tight:
+        rec = np.empty((count, type_num_comps), dtype=np_dtype)
+        base = offset
+        for i in range(count):
+            start = base + i * stride
+            rec[i] = np.frombuffer(view_bytes, dtype=np_dtype, count=type_num_comps, offset=start)
+        return rec
+    else:
+        return arr.reshape(count, type_num_comps)
+
+
+
+def load_gltf_first_mesh(glb_path: str):
+    gltf = GLTF2().load(glb_path)
+    mesh = gltf.meshes[0]
+    prim = mesh.primitives[0]
+
+    pos = _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
+    nor = (
+        _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32)
+        if prim.attributes.NORMAL is not None
+        else np.zeros_like(pos, dtype=np.float32)
+    )
+    uv = (
+        _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float32)
+        if prim.attributes.TEXCOORD_0 is not None
+        else np.zeros((pos.shape[0], 2), dtype=np.float32)
+    )
+    idx = _get_data_from_accessor(gltf, prim.indices)
+    if idx.dtype != np.uint32:
+        idx = idx.astype(np.uint32)
+
+    return pos, nor, uv, idx
+
+
+def load_gltf_first_mesh_interleaved(glb_path: str):
+    ( pos, nor, uv, idx ) = load_gltf_first_mesh(glb_path)
+    # interleave: pos.xyz, normal.xyz, uv.xy => 8 floats => 32 bytes
+    v = np.concatenate([pos, nor, uv], axis=1).astype(np.float32)  # (N, 8)
+    return v, idx.reshape(-1).astype(np.uint32)
