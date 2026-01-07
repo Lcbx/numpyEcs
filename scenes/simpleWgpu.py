@@ -79,7 +79,7 @@ def main():
     canvas = RenderCanvas(
         title=TITLE,
         size=(WINDOW_W, WINDOW_H),
-        update_mode="continuous",
+        update_mode="fastest",
         max_fps=100000,
         vsync=False,
         #max_fps=60,
@@ -196,30 +196,6 @@ def main():
             "targets": [{"format": presentation_format}],
         },
     )
-
-    # --- Events (use add_event_handler per docs) :contentReference[oaicite:2]{index=2}
-    def handle_event(event):
-        nonlocal orbit, camera_dist, camera_pos
-        #print(event)
-
-        et = event.get("event_type", "")
-
-        if et == "key_down":
-            if event.get("key", "").lower() == "o":
-                orbit = not orbit
-
-        elif et == "wheel":
-            dy = float(event.get("dy", 0.0))
-            scrollspeed = 0.1
-            mw = scrollspeed * dy
-            if mw != 0 and (camera_pos.y > scrollspeed + 0.5 or mw > 0.0):
-                tar = np.array([camera_target.x, camera_target.y, camera_target.z], dtype=np.float32)
-                cam = np.array([camera_pos.x, camera_pos.y, camera_pos.z], dtype=np.float32)
-                camera_dist -= mw * 0.3
-                cam[1] += (tar[1] - cam[1]) / (abs(cam[1]) + 0.1) * mw
-                camera_pos = Vector3(cam)
-
-    canvas.add_event_handler(handle_event, '*') #'before_draw')
 
     # --- Draw
     def draw_frame():
