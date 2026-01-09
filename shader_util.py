@@ -142,12 +142,27 @@ def EnableDepth():
 	gl.glEnable(gl.GL_DEPTH_TEST)
 	#pass
 
+class BetterShader(Program):
+	__slots__ = 'vertex_glsl', 'fragment_glsl'
 
-def build_shader_program(path:str):
-	source = BetterShaderSource(path)
+	def __init__(self, *shaders: Shader) -> None:
+		Program.__init__(self, *shaders)
+		for s in shaders:
+			source = Shader._get_shader_source(s._id)
+			if s.type == 'vertex':
+				self.vertex_glsl = source
+			elif s.type == 'fragment':
+				self.fragment_glsl = source
+			else: raise Exception('unsupported shader type')
+		print(self.vertex_glsl)
+
+
+def build_shader_program(path:str, **params):
+	source = BetterShaderSource(path, **params)
 	vert = Shader(source.vertex_glsl, 'vertex')
 	frag = Shader(source.fragment_glsl, 'fragment')
-	return Program(vert, frag)
+	prog = BetterShader(vert, frag)
+	return prog 
 
 
 def create_render_buffer(width, height,
