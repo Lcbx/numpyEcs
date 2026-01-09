@@ -154,7 +154,6 @@ class BetterShader(Program):
 			elif s.type == 'fragment':
 				self.fragment_glsl = source
 			else: raise Exception('unsupported shader type')
-		print(self.vertex_glsl)
 
 
 def build_shader_program(path:str, **params):
@@ -516,10 +515,11 @@ def load_gltf_first_mesh(program : Program, glb_path: str)-> IndexedVertexList:
 
 
 # NOTE: default shader takes tint as a uniform so this can't set color
-def Cube(program:Program, position, size #, color
-	) -> IndexedVertexList:
+# NOTE2: would perform better with instanciation (but this allows keeping the same shader)
+def Cubes(program, positions, sizes #, color
+	) -> Batch:
 
-	_CUBE_POSITIONS_24 = np.array( (
+	CUBE_POSITIONS_24 = np.array((
 		# +Z (front)
 		(-0.5,-0.5,+0.5), (+0.5,-0.5,+0.5), (+0.5,+0.5,+0.5), (-0.5,+0.5,+0.5),
 		# -Z (back)
@@ -531,44 +531,46 @@ def Cube(program:Program, position, size #, color
 		# +Y (top)
 		(-0.5,+0.5,+0.5), (+0.5,+0.5,+0.5), (+0.5,+0.5,-0.5), (-0.5,+0.5,-0.5),
 		# -Y (bottom)
-		(-0.5,-0.5,-0.5), (+0.5,-0.5,-0.5), (+0.5,-0.5,+0.5), (-0.5,-0.5,+0.5), )
+		(-0.5,-0.5,-0.5), (+0.5,-0.5,-0.5), (+0.5,-0.5,+0.5), (-0.5,-0.5,+0.5),
+	), dtype=np.float32)
+
+	CUBE_NORMALS_24 = np.array(
+		([ 0.0, 0.0, 1.0] * 4) +   # +Z
+		([ 0.0, 0.0,-1.0] * 4) +   # -Z
+		([ 1.0, 0.0, 0.0] * 4) +   # +X
+		([-1.0, 0.0, 0.0] * 4) +   # -X
+		([ 0.0, 1.0, 0.0] * 4) +   # +Y
+		([ 0.0,-1.0, 0.0] * 4),    # -Y
+		dtype=np.float32
 	)
 
-	_CUBE_NORMALS_24 = (
-		# +Z
-		[ 0.0, 0.0, 1.0 ] * 4 +
-		# -Z
-		[0.0, 0.0, -1.0 ] * 4 +
-		# +X
-		[1.0, 0.0, 0.0] * 4 +
-		# -X
-		[-1.0, 0.0, 0.0] * 4 +
-		# +Y
-		[0.0, 1.0, 0.0] * 4 +
-		# -Y
-		[0.0, -1.0, 0.0] * 4
-	)
+	CUBE_UVS_24 = np.array([0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0] * 6, dtype=np.float32)
 
-	_CUBE_UVS_24 = [ 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.] * 6
+	CUBE_INDICES_36 = np.array([
+		0, 1, 2,  2, 3, 0,        # +Z
+		4, 5, 6,  6, 7, 4,        # -Z
+		8, 9, 10,  10, 11, 8,     # +X
+		12, 13, 14,  14, 15, 12,  # -X
+		16, 17, 18,  18, 19, 16,  # +Y
+		20, 21, 22,  22, 23, 20,  # -Y
+	], dtype=np.uint32)
 
-	# 6 faces * 2 triangles * 3 indices = 36 indices
-	_CUBE_INDICES_36 = [
-		# +Z
-		0, 1, 2,  2, 3, 0,
-		# -Z
-		4, 5, 6,  6, 7, 4,
-		# +X
-		8, 9, 10,  10, 11, 8,
-		# -X
-		12, 13, 14,  14, 15, 12,
-		# +Y
-		16, 17, 18,  18, 19, 16,
-		# -Y
-		20, 21, 22,  22, 23, 20,
-	]
+	positions = np.asarray(positions, dtype=np.float32)
+	sizes     = np.asarray(sizes, dtype=np.float32)
 
-	pos = (np.array(position) + _CUBE_POSITIONS_24 * np.array(size)).reshape(-1)
+	n = positions.shape[0]
 
-	model = Mesh(program, pos, _CUBE_NORMALS_24, _CUBE_UVS_24, _CUBE_INDICES_36)
+	# repeat normals/uvs per cube
+	normals = np.tile(CUBE_NORMALS_24, n)   # (N*24*3,)
+	uvs     = np.tile(CUBE_UVS_24, n)       # (N*24*2,)
 
-	return model
+	# (N,3): positions & sizes
+	# (N,24,3): base scaled per-cube + per-cube position
+	pos = (positions[:, None, :] + CUBE_POSITIONS_24[None, :, :] * sizes[:, None, :]).reshape(-1).astype(np.float32)
+
+	# (N,36): base indices + 24*i
+	indices = (CUBE_INDICES_36[None, :] + (np.arange(n, dtype=np.uint32) * 24)[:, None]).reshape(-1).astype(np.uint32)
+
+	batch = Batch()
+	Mesh(program, pos, normals, uvs, indices).draw(batch)
+	return batch

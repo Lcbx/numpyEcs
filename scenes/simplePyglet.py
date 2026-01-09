@@ -38,28 +38,26 @@ gl.glClearColor(0.15, 0.16, 0.19, 1.0)
 
 # Shader program & batch
 program = build_shader_program('scenes/shaders/pyglet.shader')
-batch = Batch()
 
 # Light direction (same as original)
 l = np.array([30.0, 30.0, 25.0]) - np.array([0.0, 0.0, -20.0])
 l = l / np.linalg.norm(l)
 light_dir = l.astype(np.float32)
 
+cubesBatch = Cubes(program,
+    ((2,0,0), (-1,0,0)),
+    ((3,1,2), (1,1,1))
+)
 
 scale = 5.0
 model_mat = Mat4.from_scale( (scale, scale, scale) )
-
-cube1 = Cube(program, (2,0,0), (3,1,2) )
-cube1.draw(batch)
-
 mesh = load_gltf_first_mesh(program, MODEL_PATH)
 #mesh['uModel'] = Mat4.from_translation( (0, 15, 5) ) * model_mat
 #mesh['uModel'] = model_mat * model_mat
 mesh['uTint'] = (0.2, 0.5, 0.2, 1.0)
-mesh.draw(batch)
+meshBatch = Batch()
+mesh.draw(meshBatch)
 
-cube2 = Cube(program, (-1,0,0), (1,1,1) )
-cube2.draw(batch)
 
 # ---------------- Events ----------------
 @window.event
@@ -113,7 +111,8 @@ def on_draw():
     program['uLightDir'] = light_dir
     program['uTint'] = (0.82, 0.71, 0.55, 1.0)
 
-    batch.draw()
+    cubesBatch.draw()
+    meshBatch.draw()
 
     fps_frames += 1
     if now - frame_start >= 1.0:
