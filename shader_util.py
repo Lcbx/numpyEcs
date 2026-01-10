@@ -295,14 +295,14 @@ class BetterShaderSource:
 		self.filepath = filepath
 		self._basedir = os.path.dirname(os.path.abspath(filepath))
 		self._opengl_version = glsl_version
-		self.uniforms = []	   # list[(type, name)]
-		self.varyings = []	   # list[(type, name)]
-		self.ins = []			# list[(loc, type, name)]
-		self.outs = []		   # list[(loc, type, name)]
-		self.consts = []		 # list[(type, name)]
-		self.functions = []	  # list[str]
-		self.vertex_glsl = ''	# rendered vertex GLSL
-		self.fragment_glsl = ''  # rendered fragment GLSL
+		self.uniforms = []      # list[(type, name)]
+		self.varyings = []      # list[(type, name)]
+		self.ins = []           # list[(loc, type, name)]
+		self.outs = []          # list[(loc, type, name)]
+		self.consts = []        # list[(type, name)]
+		self.functions = []     # list[str]
+		self.vertex_glsl = ''   # rendered vertex GLSL
+		self.fragment_glsl = '' # rendered fragment GLSL
 
 
 		#print(f'compiling {filepath}')
@@ -322,12 +322,12 @@ class BetterShaderSource:
 		"""
 		env = Environment(
 			loader=FileSystemLoader(self._basedir),
-			undefined=StrictUndefined,		# fail fast for missing vars
-			autoescape=False,				 # GLSL is not HTML
+			undefined=StrictUndefined,  # fail fast for missing vars
+			autoescape=False,           # GLSL is not HTML
 			keep_trailing_newline=True,
 			trim_blocks=True,
 			lstrip_blocks=True,
-			line_statement_prefix='#'		 # << key: enable #if/#endif/#include
+			line_statement_prefix='#' # << key: enable #if/#endif/#include
 		)
 		template_name = os.path.basename(self.filepath)
 		template = env.get_template(template_name)
