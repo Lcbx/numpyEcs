@@ -1,5 +1,4 @@
 from ecs import *
-import shader_util as su
 from shader_util import *
 from random import randint 
 
@@ -61,7 +60,7 @@ def load_shaders():
 		print(withLineNumbers(newShader.source.fragment_glsl))
 
 WINDOW_w, WINDOW_h = 1800, 900
-InitWindow(WINDOW_w, WINDOW_h, "Hello")
+window = RenderContext.InitWindow(WINDOW_w, WINDOW_h, "Hello")
 
 
 sceneShader : Program = None
@@ -91,79 +90,79 @@ unused_camera = None
 
 # TODO : handle resolution changes (rebuild buffers)
 # None is for color format, means we dont actually draw into it
-prepass_buffer = su.create_frame_buffer(WINDOW_w, WINDOW_h, None, depth_map=True)
+prepass_buffer = create_frame_buffer(WINDOW_w, WINDOW_h, None, depth_map=True)
 
 SM_SIZE = 2048
-shadow_buffer = su.create_frame_buffer(SM_SIZE,SM_SIZE,None, depth_map=True)
+shadow_buffer = create_frame_buffer(SM_SIZE,SM_SIZE,None, depth_map=True)
 
 batch = Batch()
 
 # model
 model_root = 'scenes/resources/'
-#model = su.rl.LoadModel(model_root + b'turret.obj')
-#model_albedo = su.rl.LoadTexture(model_root + b'turret_diffuse.png')
-#su.SetMaterialTexture(model.materials[0], su.rl.MATERIAL_MAP_DIFFUSE, model_albedo)
+#model = rl.LoadModel(model_root + b'turret.obj')
+#model_albedo = rl.LoadTexture(model_root + b'turret_diffuse.png')
+#SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
 #heightmap = load_gltf_first_mesh(sceneShader, batch, model_root + 'heightmap_mesh.glb')
 pole = load_gltf_first_mesh(sceneShader, model_root + 'rooftop_utility_pole.glb')
 pole.draw(batch)
 
-#anims = su.LoadModelAnimations(model_root + b'mixamo_toon_gisu.rl.glb')
+#anims = LoadModelAnimations(model_root + b'mixamo_toon_girl.glb')
 #animFrameCounter = 0
 
 def run():
-	while not su.rl.WindowShouldClose():
+	while not rl.WindowShouldClose():
 
-		frameTime = su.rl.GetFrameTime()
+		frameTime = rl.GetFrameTime()
 		
-		with su.WatchTimer('update'):
+		with WatchTimer('update'):
 			inputs()
 			update(frameTime)
 		
-		with su.WatchTimer('total draw'):
+		with WatchTimer('total draw'):
 			
-			with su.WatchTimer('shadow'):
+			with WatchTimer('shadow'):
 
-				with su.RenderContext(shader=prepassShader, texture=shadow_buffer, camera=light_camera, clipPlanes=light_nearFar) as render:
-					su.ClearBuffers()
-					lightDir = su.rl.Vector3Normalize(su.rl.Vector3Subtract(light_camera.position, light_camera.target))
-					lightView = su.rl.rlGetMatrixModelview()
-					lightProj = su.rl.rlGetMatrixProjection()
-					lightViewProj = su.rl.MatrixMultiply(lightView, lightProj)
-					su.SetPolygonOffset(3, 1)
+				with RenderContext(shader=prepassShader, texture=shadow_buffer, camera=light_camera, clipPlanes=light_nearFar) as render:
+					ClearBuffers()
+					lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
+					lightView = rl.rlGetMatrixModelview()
+					lightProj = rl.rlGetMatrixProjection()
+					lightViewProj = rl.MatrixMultiply(lightView, lightProj)
+					SetPolygonOffset(3, 1)
 					draw_scene(render)
-					su.DisablePolygonOffset()
+					DisablePolygonOffset()
 
 			# main camera
-			with su.WatchTimer('main camera'):
+			with WatchTimer('main camera'):
 				# TODO : don't do frustum culling twice (prepass + main pass)
 				
 				# z prepass
-				with su.WatchTimer('prepass'):
-					with su.RenderContext(shader=prepassShader, texture=prepass_buffer, clipPlanes=camera_nearFar, camera=camera) as render:
-						su.ClearBuffers()
-						view = su.rl.rlGetMatrixModelview()
-						proj = su.rl.rlGetMatrixProjection()
-						su.SetPolygonOffset(0.1,0.1)
+				with WatchTimer('prepass'):
+					with RenderContext(shader=prepassShader, texture=prepass_buffer, clipPlanes=camera_nearFar, camera=camera) as render:
+						ClearBuffers()
+						view = rl.rlGetMatrixModelview()
+						proj = rl.rlGetMatrixProjection()
+						SetPolygonOffset(0.1,0.1)
 						draw_scene(render)
-						su.DisablePolygonOffset()
+						DisablePolygonOffset()
 				
-				#su.GenTextureMipmaps(prepass_buffer.depth)
+				#GenTextureMipmaps(prepass_buffer.depth)
 				
 				# transfer depth to main buffer for early z discard
-				with su.WatchTimer('forward pass'):
-					su.rl.BeginDrawing()
-					su.ClearBuffers()
-					#su.ClearColorBuffer()
+				with WatchTimer('forward pass'):
+					rl.BeginDrawing()
+					ClearBuffers()
+					#ClearColorBuffer()
 					
 					# transfer depth to main buffer for early z discard
-					su.TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
+					TransferDepth(prepass_buffer.id, WINDOW_w, WINDOW_h, 0, WINDOW_w, WINDOW_h)
 					
 					# trying to pass depth with a shader for msaa
-					#with su.RenderContext(shader=depthTransferShader, camera=camera) as render:
-					#	su.DrawTexture(prepass_buffer.depth, WINDOW_w, WINDOW_h)
+					#with RenderContext(shader=depthTransferShader, camera=camera) as render:
+					#	DrawTexture(prepass_buffer.depth, WINDOW_w, WINDOW_h)
 					
-					with su.RenderContext(shader=sceneShader, camera=camera) as render:	
-						sceneShader.invProj = su.rl.MatrixInvert(proj)
+					with RenderContext(shader=sceneShader, camera=camera) as render:	
+						sceneShader.invProj = rl.MatrixInvert(proj)
 						sceneShader.lightDir = lightDir
 						sceneShader.lightVP = lightViewProj
 						sceneShader.viewDepthMap = prepass_buffer.depth
@@ -176,14 +175,14 @@ def run():
 				#draw_AO()
 				#draw_mat_tex(model)
 		
-			su.rl.DrawText(f"fps {su.rl.GetFPS()} cubes {world.count}".encode(), 10, 10, 20, su.rl.LIGHTGRAY)
-			su.WatchTimer.display(10, 40, 20, su.rl.LIGHTGRAY)
+			rl.DrawText(f"fps {rl.GetFPS()} cubes {world.count}".encode(), 10, 10, 20, rl.LIGHTGRAY)
+			WatchTimer.display(10, 40, 20, rl.LIGHTGRAY)
 
 			# sleeps for vsync / target fps
-			su.rl.EndDrawing()
+			rl.EndDrawing()
 
 			# a lot of stuff happening in EndDrawing it seems...
-			su.WatchTimer.capture()
+			WatchTimer.capture()
 
 
 rotation = 0
@@ -191,14 +190,14 @@ DFLT_VIEW_RATIO =  1 / 6.0
 def draw_shadow_buffer():
 	display_size = WINDOW_w * DFLT_VIEW_RATIO
 	display_scale = display_size / float(shadow_buffer.depth.width)
-	su.rl.DrawTextureEx(shadow_buffer.texture, (WINDOW_w - display_size, 0.0), rotation, display_scale, su.rl.RAYWHITE)
-	su.rl.DrawTextureEx(shadow_buffer2.texture, (WINDOW_w - display_size, display_size), rotation, display_scale, su.rl.RAYWHITE)
-	su.rl.DrawTextureEx(shadow_buffer.depth, (WINDOW_w - display_size, 2 * display_size), rotation, display_scale, su.rl.RAYWHITE)
+	rl.DrawTextureEx(shadow_buffer.texture, (WINDOW_w - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
+	rl.DrawTextureEx(shadow_buffer2.texture, (WINDOW_w - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
+	rl.DrawTextureEx(shadow_buffer.depth, (WINDOW_w - display_size, 2 * display_size), rotation, display_scale, rl.RAYWHITE)
 def draw_prepass():
 	display_size = WINDOW_w * DFLT_VIEW_RATIO
 	display_scale = display_size / float(prepass_buffer.texture.width)
-	su.rl.DrawTextureEx(prepass_buffer.texture, (WINDOW_w - display_size, 0.0), rotation, display_scale, su.rl.RAYWHITE)
-	su.rl.DrawTextureEx(prepass_buffer.depth, (WINDOW_w - display_size, display_size), rotation, display_scale, su.rl.RAYWHITE)
+	rl.DrawTextureEx(prepass_buffer.texture, (WINDOW_w - display_size, 0.0), rotation, display_scale, rl.RAYWHITE)
+	rl.DrawTextureEx(prepass_buffer.depth, (WINDOW_w - display_size, display_size), rotation, display_scale, rl.RAYWHITE)
 def draw_mat_tex(model):
 	display_size = WINDOW_w * DFLT_VIEW_RATIO
 	i = 0
@@ -208,7 +207,7 @@ def draw_mat_tex(model):
 			#print(tex.id)
 			if tex.id != 0:
 				display_scale = display_size / float(tex.width)
-				su.rl.DrawTextureEx(tex, (WINDOW_w - display_size, i * tex.height * display_scale), rotation, display_scale, su.rl.RAYWHITE)
+				rl.DrawTextureEx(tex, (WINDOW_w - display_size, i * tex.height * display_scale), rotation, display_scale, rl.RAYWHITE)
 
 
 orbit = True
@@ -220,18 +219,18 @@ def inputs():
 	global orbit
 	global applyAO
 
-	if su.rl.IsKeyPressed(su.rl.KEY_R): load_shaders()
-	if su.rl.IsKeyPressed(su.rl.KEY_O):
+	if rl.IsKeyPressed(rl.KEY_R): load_shaders()
+	if rl.IsKeyPressed(rl.KEY_O):
 		orbit = not orbit
-	if su.rl.IsKeyPressed(su.rl.KEY_I):
+	if rl.IsKeyPressed(rl.KEY_I):
 		applyAO = not applyAO
 
-	if su.rl.IsKeyPressed(su.rl.KEY_P):
-		light_camera.projection = (su.rl.CAMERA_ORTHOGRAPHIC
-			if light_camera.projection == su.rl.CAMERA_PERSPECTIVE
-			else su.rl.CAMERA_PERSPECTIVE
+	if rl.IsKeyPressed(rl.KEY_P):
+		light_camera.projection = (rl.CAMERA_ORTHOGRAPHIC
+			if light_camera.projection == rl.CAMERA_PERSPECTIVE
+			else rl.CAMERA_PERSPECTIVE
 		)
-	if su.rl.IsKeyPressed(su.rl.KEY_L):
+	if rl.IsKeyPressed(rl.KEY_L):
 		if unused_camera:
 			camera = unused_camera
 			unused_camera = None
@@ -240,7 +239,7 @@ def inputs():
 			camera = light_camera
 
 	scrollspeed = 3.0
-	mw = scrollspeed * su.rl.GetMouseWheelMove()
+	mw = scrollspeed * rl.GetMouseWheelMove()
 	if mw != 0 and ( camera.position.y > scrollspeed + 0.5 or mw > 0.0):
 		cam_pos = np.array([camera.position.x, camera.position.y, camera.position.z])
 		tar = np.array([camera.target.x, camera.target.y, camera.target.z])
@@ -251,7 +250,7 @@ def inputs():
 def update(frameTime):
 	global camera
 	
-	time = su.rl.GetTime()
+	time = rl.GetTime()
 	
 	if orbit:
 		cam_ang = time * 0.5
@@ -261,7 +260,7 @@ def update(frameTime):
 			np.sin(cam_ang) * camera_dist)
 
 	#global animFrameCounter
-	#su.rl.UpdateModelAnimation(model, anims[0], animFrameCounter)
+	#rl.UpdateModelAnimation(model, anims[0], animFrameCounter)
 	#animFrameCounter += 1
 	#if animFrameCounter >= anims[0].frameCount: animFrameCounter = 0
 
@@ -282,7 +281,7 @@ def update(frameTime):
 	velocities.set_full_vector(pv, v_vec.transpose())
 
 
-def draw_scene(render:su.RenderContext, randomize_color=False):
+def draw_scene(render:RenderContext, randomize_color=False):
 	global model
 	with render.shader:
 		for i in range(model.materialCount):
@@ -295,11 +294,11 @@ def draw_scene(render:su.RenderContext, randomize_color=False):
 		
 		# model, position, rotation axis, rotation (deg), scale, tint
 		scale = 1
-		su.rl.DrawModelEx(model, (0,0,10), (1,0,0), 0.0, (scale,scale,scale), su.rl.BEIGE)
-		su.rl.DrawModelEx(heightmap, (0,0,0), (1,0,0), 0.0, (scale,scale,scale), su.rl.BEIGE)
+		rl.DrawModelEx(model, (0,0,10), (1,0,0), 0.0, (scale,scale,scale), rl.BEIGE)
+		rl.DrawModelEx(heightmap, (0,0,0), (1,0,0), 0.0, (scale,scale,scale), rl.BEIGE)
 		scale = 5
 		# seems like there is per vertex color in that mesh, with all the same bluish color... ?
-		su.rl.DrawModelEx(pole, (0,0,-10), (1,0,0), 0.0, (scale,scale,scale), su.rl.WHITE) 
+		rl.DrawModelEx(pole, (0,0,-10), (1,0,0), 0.0, (scale,scale,scale), rl.WHITE) 
 
 		ents = world.where(Position, Mesh, BoundingBox)
 		pos_vec, mesh_vec, bb_vec, = (positions.get_full_vector(ents), meshes.get_vector(ents), bboxes.get_full_vector(ents))
@@ -310,7 +309,7 @@ def draw_scene(render:su.RenderContext, randomize_color=False):
 		meshIds = ents / np.max(ents)
 		
 		for meshId, center, size, color in zip(meshIds, centers, sizes, mesh_vec['color']):
-			su.rl.DrawCube(
+			rl.DrawCube(
 				tuple(center),
 				size[0], # x
 				size[1], # y

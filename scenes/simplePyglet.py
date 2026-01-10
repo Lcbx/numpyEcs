@@ -30,7 +30,7 @@ start_t = time.time()
 frame_start = 0.0
 fps_frames = 0
 
-window = InitWindow(WINDOW_W, WINDOW_H, TITLE)
+window = RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE)
 
 # Minimal explicit GL state (everything else via pyglet abstractions)
 gl.glEnable(gl.GL_DEPTH_TEST)
@@ -99,20 +99,14 @@ def on_draw():
             math.sin(cam_ang) * camera_dist
         ))
 
-    window.clear()
-    aspect = window.width / window.height
-    view = camera.view()
-    proj = camera.proj(aspect)
+    with RenderContext(shader=program, camera=camera):
+        window.clear()
+        program['uModel'] = model_mat
+        program['uLightDir'] = light_dir
+        program['uTint'] = (0.82, 0.71, 0.55, 1.0)
 
-    program.bind()
-    program['uModel'] = model_mat
-    program['uView']  = view
-    program['uProj']  = proj
-    program['uLightDir'] = light_dir
-    program['uTint'] = (0.82, 0.71, 0.55, 1.0)
-
-    cubesBatch.draw()
-    meshBatch.draw()
+        cubesBatch.draw()
+        meshBatch.draw()
 
     fps_frames += 1
     if now - frame_start >= 1.0:

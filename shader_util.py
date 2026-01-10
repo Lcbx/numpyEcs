@@ -51,29 +51,6 @@ except:
 ###############################
 
 
-def InitWindow(w:float, h:float, title:str) -> Window:
-
-	# NOTE: using MSAA with prepass generate z-artifacts
-
-	#config = pyglet.gl.Config(
-	#	double_buffer=True,
-	#	major_version=4,
-	#	minor_version=3,
-	#	samples = 1, # msaa
-	#)
-	window = Window(
-		width=w,
-		height=h,
-		caption=title,
-		#config=config,
-		resizable=False,
-		vsync=False
-	)
-
-	window.set_location(window.screen.width - w, 0)
-	return window
-
-
 class Camera:
 	def __init__(self, position, target, up, fovy_deg, near=0.1, far=1000.0, perspective:bool=True):
 		self.position = Vector3(position)
@@ -431,6 +408,66 @@ class BetterShaderSource:
 			self.functions[self._fragment_body].replace(self._fragment_start, self._main_start)
 		]
 		self.fragment_glsl = '\n'.join(f_lines)
+
+
+class _renderContext(type):
+	def __call__(cls, *args, **kwargs):
+		return cls.newContext(*args, **kwargs)
+
+	def __enter__(cls):
+		if cls.shader: cls.shader.bind()
+		if cls.texture: cls.texture.bind()
+		if cls.camera:
+			view = cls.camera.view()
+			proj = cls.camera.proj(cls.window.aspect_ratio)
+			if 'uView' in cls.shader._uniforms: cls.shader['uView'] = view
+			if 'uProj' in cls.shader._uniforms: cls.shader['uProj'] = proj
+			if 'uViewProj' in cls.shader._uniforms: cls.shader['uViewProj'] = view @ proj
+		return cls
+
+	def __exit__(cls, exception_type, exception_value, exception_traceback) -> None:
+		if cls.texture: gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0);
+
+class RenderContext(metaclass=_renderContext):
+	# static members
+	shader:BetterShader = None
+	texture:img.Framebuffer = None
+	camera:Camera = None
+	window:Window = None
+
+	@classmethod
+	def InitWindow(cls, w:float, h:float, title:str) -> Window:
+
+		# NOTE: using MSAA with prepass generate z-artifacts
+		#config = pyglet.gl.Config(
+		#	double_buffer=True,
+		#	major_version=4,
+		#	minor_version=3,
+		#	samples = 1, # msaa
+		#)
+		window = Window(
+			width=w,
+			height=h,
+			caption=title,
+			#config=config,
+			resizable=False,
+			vsync=False
+		)
+		window.set_location(window.screen.width - w, 0)
+
+		cls.window = window
+		return window
+
+	@classmethod
+	def newContext(cls,
+			shader:BetterShader = None,
+			camera:Camera = None,
+			texture:img.Framebuffer = None):
+		cls.shader = shader
+		cls.camera = camera
+		cls.texture = texture
+		return cls
+
 
 
 class WatchTimer:
