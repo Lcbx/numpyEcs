@@ -91,10 +91,10 @@ unused_camera = None
 
 # TODO : handle resolution changes (rebuild buffers)
 # None is for color format, means we dont actually draw into it
-prepass_buffer = su.create_render_buffer(WINDOW_w, WINDOW_h, None, depth_map=True)
+prepass_buffer = su.create_frame_buffer(WINDOW_w, WINDOW_h, None, depth_map=True)
 
 SM_SIZE = 2048
-shadow_buffer = su.create_render_buffer(SM_SIZE,SM_SIZE,None, depth_map=True)
+shadow_buffer = su.create_frame_buffer(SM_SIZE,SM_SIZE,None, depth_map=True)
 
 batch = Batch()
 

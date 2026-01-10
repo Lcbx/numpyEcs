@@ -6,6 +6,7 @@ from typing import Any, Sequence, Dict, Optional
 import numpy as np
 
 import pyglet.gl as gl
+from ctypes import byref
 import pyglet.image as img
 from pyglet.image import Texture
 from pyglet.window import Window
@@ -163,16 +164,98 @@ def build_shader_program(path:str, **params):
 	prog = BetterShader(vert, frag)
 	return prog 
 
-
-def create_render_buffer(width, height,
-	colorFormat:int=gl.GL_RGB8UI,
-	depth_map:bool=False):
-	color_buffer = img.Texture.create(width, height, min_filter=gl.GL_NEAREST, mag_filter=gl.GL_NEAREST)
-	depth_buffer = img.buffer.Renderbuffer(width, height, gl.GL_DEPTH_COMPONENT)
+def create_frame_buffer(width:int, height:int,
+						colorFormat = gl.GL_RGBA8,
+						depth_map:bool = False,
+						samples:int = 4):
 
 	framebuffer = img.Framebuffer()
-	framebuffer.attach_texture(color_buffer, attachment=gl.GL_COLOR_ATTACHMENT0)
-	framebuffer.attach_renderbuffer(depth_buffer, attachment=gl.GL_DEPTH_ATTACHMENT)
+
+	create_tex = create_simple_texture if samples==1 else TextureMsaa.create
+
+	if colorFormat:
+		color_tex = create_tex(width=width, height=height, internalformat=colorFormat, samples=samples)
+		framebuffer.attach_texture(color_tex, attachment=gl.GL_COLOR_ATTACHMENT0)
+
+	if depth_map:
+		depth_tex = create_tex(width=width, height=height, internalformat=gl.GL_DEPTH_COMPONENT24, fmt=gl.GL_DEPTH_COMPONENT, samples=samples)
+		framebuffer.attach_texture(depth_tex, attachment=gl.GL_DEPTH_ATTACHMENT)
+		depth = depth_tex
+	else:
+		depth_rb = img.buffer.Renderbuffer.create(width, height, gl.GL_DEPTH_COMPONENT24)
+		framebuffer.attach_renderbuffer(depth_rb, attachment=gl.GL_DEPTH_ATTACHMENT, samples=samples)
+		depth = depth_rb
+
+	return framebuffer
+
+# img.Texture.create does not accept a 'samples' argument 
+def create_simple_texture(**values):
+	del values['samples']
+	return img.Texture.create(**values)
+
+class TextureMsaa(Texture):
+	"""A pyglet Texture backed by GL_TEXTURE_2D_MULTISAMPLE.
+
+	Notes:
+	  - Sample in GLSL with `sampler2DMS` + `texelFetch`.
+	  - No filtering/wrap params exist for GL_TEXTURE_2D_MULTISAMPLE.
+	  - `blit`, `get_image_data` etc. from base Texture won't work as-is.
+	"""
+
+	def __init__(self, width: int, height: int, target: int, tex_id: int,
+				 samples: int, internalformat: int,
+				 fixed_sample_locations: bool = True) -> None:
+		super().__init__(width, height, target, tex_id, min_filter=None, mag_filter=None)
+
+		self.samples = int(samples)
+		self.internalformat = int(internalformat)
+		self.fixed_sample_locations = bool(fixed_sample_locations)
+
+	@classmethod
+	def create(cls, width: int, height: int,
+			   target: int = gl.GL_TEXTURE_2D_MULTISAMPLE,
+			   internalformat: int = gl.GL_RGBA8,
+			   samples: int = 1,
+			   fmt: int = gl.GL_RGBA,
+			   fixed_sample_locations: bool = True) -> "TextureMsaa":
+		if target != gl.GL_TEXTURE_2D_MULTISAMPLE:
+			raise ValueError("TextureMsaa only supports GL_TEXTURE_2D_MULTISAMPLE")
+
+		# Generate and bind texture
+		tex_id = gl.GLuint()
+		gl.glGenTextures(1, byref(tex_id))
+		gl.glBindTexture(target, tex_id.value)
+
+		# Allocate multisample storage
+		gl.glTexImage2DMultisample(
+			target,
+			int(samples),
+			int(internalformat),
+			int(width),
+			int(height),
+			gl.GL_TRUE if fixed_sample_locations else gl.GL_FALSE
+		)
+
+		# Unbind (optional but nice)
+		gl.glBindTexture(target, 0)
+
+		return cls(width, height, target, tex_id.value,
+				   samples=samples,
+				   internalformat=internalformat,
+				   fixed_sample_locations=fixed_sample_locations)
+
+	# Optional: make it explicit that some operations don't apply
+	def get_image_data(self, z: int = 0):
+		raise NotImplementedError("get_image_data is not supported for GL_TEXTURE_2D_MULTISAMPLE")
+
+	def blit(self, *args, **kwargs):
+		raise NotImplementedError("blit is not supported for GL_TEXTURE_2D_MULTISAMPLE")
+
+	def bind(self, texture_unit: int = 0) -> None:
+		# Same as base, but keep in case you want to specialize later
+		gl.glActiveTexture(gl.GL_TEXTURE0 + texture_unit)
+		gl.glBindTexture(self.target, self.id)
+
 
 
 class PassthroughShaderSource:
