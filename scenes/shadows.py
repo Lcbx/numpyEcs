@@ -42,48 +42,37 @@ for e in world.create_entities(200):
 
 
 def load_shaders():
-	global sceneShader
-	global prepassShader
-	global depthTransferShader
+	global sceneShader, prepassShader
 
-	try:
-		shaders_dir = 'scenes/shaders/'
-		sceneShader = build_shader_program(shaders_dir + 'lightmap.shader')
-		depthTransferShader = build_shader_program(shaders_dir + 'depthTransfer.shader')
-		prepassShader = build_shader_program(shaders_dir + 'prepass.shader')
-
-	except Exception as ex:
-		print('--------------> failed compiling', ex.args[0])
-		withLineNumbers = lambda text: '\n'.join([f'{i+1:>3}:{l}' for i,l in enumerate(text.splitlines())])
-		print(withLineNumbers(newShader.source.vertex_glsl))
-		print('______________________')
-		print(withLineNumbers(newShader.source.fragment_glsl))
+	shaders_dir = 'scenes/shaders/'
+	sceneShader = build_shader_program(shaders_dir + 'lightmap.shader')
+	prepassShader = build_shader_program(shaders_dir + 'prepass.shader')
 
 WINDOW_w, WINDOW_h = 1800, 900
 window = RenderContext.InitWindow(WINDOW_w, WINDOW_h, "Hello")
 
 
 sceneShader : Program = None
-depthTransferShader : Program = None
 prepassShader : Program = None
 load_shaders()
 
+
 camera_dist = 30
-camera_nearFar = (0.1, 1000.0)
 camera = Camera(
-	(-20, 70, 25),
-	(0,10,0),
-	(0,1,0),
-	60.0
+	position=(-20.0, 70.0, 25.0),
+	target=(0.0, 10.0, 0.0),
+	up=(0.0, 1.0, 0.0),
+	fovy_deg=60.0,
+	near=0.1, far=1000.0
 )
 
-light_nearFar = (10,300)
 light_camera = Camera(
-	(30, 30, 25),
-	(0,0,-20),
-	(0,1,0),
-	90.0,
-	False
+	position=(30, 30, 25),
+	target=(0,0,-20),
+	up=(0,1,0),
+	fovy_deg=90.0,
+	near=10,far=300,
+	perspective=False
 )
 
 unused_camera = None
@@ -95,19 +84,67 @@ prepass_buffer = create_frame_buffer(WINDOW_w, WINDOW_h, None, depth_map=True)
 SM_SIZE = 2048
 shadow_buffer = create_frame_buffer(SM_SIZE,SM_SIZE,None, depth_map=True)
 
-batch = Batch()
+
+# FOR DEBUG
+sceneShader = build_shader_program('scenes/shaders/pyglet.shader')
 
 # model
 model_root = 'scenes/resources/'
-#model = rl.LoadModel(model_root + b'turret.obj')
-#model_albedo = rl.LoadTexture(model_root + b'turret_diffuse.png')
-#SetMaterialTexture(model.materials[0], rl.MATERIAL_MAP_DIFFUSE, model_albedo)
-#heightmap = load_gltf_first_mesh(sceneShader, batch, model_root + 'heightmap_mesh.glb')
-pole = load_gltf_first_mesh(sceneShader, model_root + 'rooftop_utility_pole.glb')
-pole.draw(batch)
+scale = 5.0
+mesh = load_gltf_meshes(sceneShader, model_root + 'rooftop_utility_pole.glb')[0]
+model_mat = Mat4.from_translation( (0, 15, 5) ) * Mat4.from_scale( (scale, scale, scale) )
+mesh['uTint'] = (0.2, 0.5, 0.2, 1.0)
+mesh['uModel'] = model_mat
+vMesh = mesh.draw(transform=model_mat) # use default batch instead
 
-#anims = LoadModelAnimations(model_root + b'mixamo_toon_girl.glb')
-#animFrameCounter = 0
+heightmap = load_gltf_meshes(sceneShader, model_root + 'heightmap_mesh.glb')
+for h in heightmap:
+    h['uTint'] = (0.82, 0.71, 0.55, 1.0)
+    h.draw()
+
+EnableDepth()
+EnableCullFace()
+setClearColor(0.15, 0.16, 0.19, 1.0)
+
+@window.event
+def on_draw():
+	lightDir = np.array(light_camera.position, dtype=np.float32) - np.array(light_camera.target, dtype=np.float32)
+	if any( x != 0. for x in lightDir): lightDir /= np.linalg.norm(lightDir)
+
+	lightView = light_camera.view()
+	lightProj = light_camera.projection(1) # width/height = SM_SIZE / SM_SIZE = 1
+
+	with RenderContext(shader=sceneShader, camera=camera):
+		ClearBuffers()
+		sceneShader['uLightDir'] = lightDir
+		#sceneShader['lightVP'] = lightView @ lightProj
+		#sceneShader['invProj'] = RenderContext.projection.inverse
+		#sceneShader['viewDepthMap'] = prepass_buffer.depth
+		#sceneShader['shadowDepthMap'] = shadow_buffer.depth
+
+		vCubes = Cubes(sceneShader,
+			((2,0,0), (-1,0,0)),	# positions
+			((3,1,2), (1,1,1)),	    # sizes
+            (0.12, 0.31, 0.65, 1.0) # color
+		).draw()
+	vCubes.delete() # delete previous cubes or we add more each frame 
+
+
+@window.event
+def on_mouse_scroll(x, y, scroll_x, scroll_y):
+    global camera_dist, camera
+    scrollspeed = 3.0
+    yoff = scroll_y
+    mw = scrollspeed * yoff
+    if mw != 0 and (camera.position.y > scrollspeed + 0.5 or mw > 0.0):
+        tar = np.array([camera.target.x, camera.target.y, camera.target.z], dtype=np.float32)
+        cam = np.array([camera.position.x, camera.position.y, camera.position.z], dtype=np.float32)
+        camera_dist -= mw * 0.3
+        cam[1] += (tar[1] - cam[1]) / (abs(cam[1]) + 0.1) * mw
+        camera.position = Vector3(cam)
+
+
+run(0)
 
 def run():
 	while not rl.WindowShouldClose():
@@ -123,7 +160,6 @@ def run():
 			with WatchTimer('shadow'):
 
 				with RenderContext(shader=prepassShader, texture=shadow_buffer, camera=light_camera, clipPlanes=light_nearFar) as render:
-					ClearBuffers()
 					lightDir = rl.Vector3Normalize(rl.Vector3Subtract(light_camera.position, light_camera.target))
 					lightView = rl.rlGetMatrixModelview()
 					lightProj = rl.rlGetMatrixProjection()
@@ -161,7 +197,7 @@ def run():
 					#with RenderContext(shader=depthTransferShader, camera=camera) as render:
 					#	DrawTexture(prepass_buffer.depth, WINDOW_w, WINDOW_h)
 					
-					with RenderContext(shader=sceneShader, camera=camera) as render:	
+					with RenderContext(shader=sceneShader, camera=camera) as render:
 						sceneShader.invProj = rl.MatrixInvert(proj)
 						sceneShader.lightDir = lightDir
 						sceneShader.lightVP = lightViewProj

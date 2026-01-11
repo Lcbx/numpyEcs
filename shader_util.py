@@ -7,11 +7,12 @@ import numpy as np
 
 import pyglet.gl as gl
 from ctypes import byref
-import pyglet.image as img
-from pyglet.image import Texture
-from pyglet.window import Window
 
-from pyglet.graphics import Batch, Group
+from pyglet.app import run
+from pyglet.window import Window, key, mouse
+
+import pyglet.image as img
+from pyglet.graphics import Batch, Group, get_default_batch
 from pyglet.graphics.vertexdomain import IndexedVertexList, VertexList
 import pyglet.graphics.shader as pygletShaders
 Shader = pygletShaders.Shader
@@ -64,7 +65,7 @@ class Camera:
 	def view(self):
 		return Mat4.look_at(self.position, self.target, self.up)
 
-	def proj(self, aspect):
+	def projection(self, aspect):
 		if self.perspective:
 			return Mat4.perspective_projection( self.fovy_deg, aspect, self.near, self.far )
 
@@ -73,7 +74,7 @@ class Camera:
 		return Mat4.orthogonal_projection(-right, right, top, -top, self.near, self.far)
 
 
-def GenTextureMipmaps(texture : Texture):
+def GenTextureMipmaps(texture : img.Texture):
 	gl.glBindTexture(gl.GL_TEXTURE_2D, texture.id)
 	gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
 	gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
@@ -90,8 +91,14 @@ def TransferDepth(from_fbo:int, f_w:int, f_h:int, to_fbo:int, t_w:int, t_h:int):
 		gl.GL_NEAREST
 	)
 
+def ClearBuffers():
+	gl.glClear(gl.GL_COLOR_BUFFER_BIT|gl.GL_DEPTH_BUFFER_BIT)
 def ClearColorBuffer():
 	gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+
+def setClearColor(*color):
+	gl.glClearColor(*color)
+
 
 def SetPolygonOffset(value:float, flat:float=0.0):
 	gl.glEnable(gl.GL_POLYGON_OFFSET_FILL)
@@ -102,9 +109,9 @@ def DisablePolygonOffset():
 def EnableMultisampling():
 	gl.glEnable(gl.GL_MULTISAMPLE)
 def DisableMultisampling():
-	gl.glEnable(gl.GL_MULTISAMPLE)
+	gl.glDisable(gl.GL_MULTISAMPLE)
 
-def DrawTexture(tex:Texture, width:float, height:float):
+def DrawTexture(tex:img.Texture, width:float, height:float):
 	# screen-wide rectangle, y-flipped due to default OpenGL coordinates
 	#rl.DrawTextureRec(tex, (0, 0, width, -height), (0, 0), rl.WHITE)
 	raise Exception("not implemented")
@@ -119,6 +126,11 @@ def EnableDepth():
 	gl.glDepthMask(gl.GL_TRUE)
 	gl.glEnable(gl.GL_DEPTH_TEST)
 	#pass
+
+def EnableCullFace():
+	gl.glEnable(gl.GL_CULL_FACE)
+def DisableCullFace():
+	gl.glDisable(gl.GL_CULL_FACE)
 
 class BetterShader(Program):
 	__slots__ = 'vertex_glsl', 'fragment_glsl'
@@ -170,7 +182,7 @@ def create_simple_texture(**values):
 	del values['samples']
 	return img.Texture.create(**values)
 
-class TextureMsaa(Texture):
+class TextureMsaa(img.Texture):
 	"""A pyglet Texture backed by GL_TEXTURE_2D_MULTISAMPLE.
 
 	Notes:
@@ -418,14 +430,22 @@ class _renderContext(type):
 		if cls.shader: cls.shader.bind()
 		if cls.texture: cls.texture.bind()
 		if cls.camera:
-			view = cls.camera.view()
-			proj = cls.camera.proj(cls.window.aspect_ratio)
-			if 'uView' in cls.shader._uniforms: cls.shader['uView'] = view
-			if 'uProj' in cls.shader._uniforms: cls.shader['uProj'] = proj
-			if 'uViewProj' in cls.shader._uniforms: cls.shader['uViewProj'] = view @ proj
+			cls.view = cls.camera.view()
+			cls.projection = cls.camera.projection(cls.window.aspect_ratio)
+			if 'uView' in cls.shader._uniforms: cls.shader['uView'] = cls.view
+			if 'uProj' in cls.shader._uniforms: cls.shader['uProj'] = cls.projection
+			if 'uViewProj' in cls.shader._uniforms: cls.shader['uViewProj'] = cls.view @ cls.projection
 		return cls
 
 	def __exit__(cls, exception_type, exception_value, exception_traceback) -> None:
+		# draw default batch
+		batch = get_default_batch()
+		batch.draw()
+		# clear batch
+		#for domain_map in batch.group_map.values():
+		#	for domain in domain_map.values():
+		#		domain.allocator.starts = [0]
+		#		domain.allocator.sizes = [0]
 		if cls.texture: gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0);
 
 class RenderContext(metaclass=_renderContext):
@@ -434,6 +454,8 @@ class RenderContext(metaclass=_renderContext):
 	texture:img.Framebuffer = None
 	camera:Camera = None
 	window:Window = None
+	view:Mat4 = None
+	projection:Mat4 = None
 
 	@classmethod
 	def InitWindow(cls, w:float, h:float, title:str) -> Window:
@@ -453,7 +475,7 @@ class RenderContext(metaclass=_renderContext):
 			resizable=False,
 			vsync=False
 		)
-		window.set_location(window.screen.width - w, 0)
+		window.set_location(window.screen.width - w, 30)
 
 		cls.window = window
 		return window
@@ -537,7 +559,7 @@ class FastMaterial(Group):
 
 
 class Mesh:
-	def __init__(self, program:Program, positions, normals, UVs, indices) -> None:
+	def __init__(self, program:Program, positions, normals, UVs, indices, name= '') -> None:
 		self.program = program
 		self.positions = np.array(positions).reshape(-1)
 		self.normals = np.array(normals).reshape(-1)
@@ -545,11 +567,17 @@ class Mesh:
 		self.indices = np.array(indices).reshape(-1)
 		self.group = FastMaterial(program)
 		self.vertex_count = self.positions.size // 3
+		self.name = name
+		self.instances = [] 
 
 	def __setitem__(self, name :str, value)->None:
 		self.group.uniforms[name] = value
 
-	def draw(self, batch:Batch):
+	def draw(self, batch:Batch=None, transform:Mat4=None):
+		#if batch is None: batch = get_default_batch()
+		if 'uModel' in self.program._uniforms:
+			if transform is None: transform = Mat4.identity()
+			self.program['uModel'] = transform
 		vlist = self.program.vertex_list_indexed(
 			self.vertex_count,
 			gl.GL_TRIANGLES,
@@ -560,6 +588,7 @@ class Mesh:
 			aNormal=('f', self.normals),
 			aUV=('f', self.UVs),
 		)
+		self.instances.append(vlist)
 		return vlist
 
 
@@ -615,29 +644,32 @@ def _get_data_from_accessor(gltf: GLTF2, accessor_index: int) -> np.ndarray:
 	return arr.reshape(count, type_num_comps)
 
 
-def load_gltf_first_mesh(program : Program, glb_path: str)-> IndexedVertexList:
+def load_gltf_meshes(program : Program, glb_path: str)-> IndexedVertexList:
 	gltf = GLTF2().load(glb_path)
 
-	# take first mesh, first primitive
-	mesh = gltf.meshes[0]
-	prim = mesh.primitives[0]
+	meshes = []
+	for mesh in gltf.meshes:
+		for prim in mesh.primitives:
+			pos = _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
+			nor = _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32) if prim.attributes.NORMAL is not None else np.zeros_like(pos)
+			uv  = _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float32) if prim.attributes.TEXCOORD_0 is not None else np.zeros((pos.shape[0],2), dtype=np.float32)
+			idx = _get_data_from_accessor(gltf, prim.indices)
+			if idx.dtype != np.uint32:
+				idx = idx.astype(np.uint32)
 
-	pos = _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
-	nor = _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32) if prim.attributes.NORMAL is not None else np.zeros_like(pos)
-	uv  = _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float32) if prim.attributes.TEXCOORD_0 is not None else np.zeros((pos.shape[0],2), dtype=np.float32)
-	idx = _get_data_from_accessor(gltf, prim.indices)
-	if idx.dtype != np.uint32:
-		idx = idx.astype(np.uint32)
+		model = Mesh(program, pos, nor, uv, idx)
+		meshes.append(model)
 
-	model = Mesh(program, pos, nor, uv, idx)
-	return model
+	return meshes
 
 
 
-# NOTE: default shader takes tint as a uniform so this can't set color
-# NOTE2: would perform better with instanciation (but this allows keeping the same shader)
-def Cubes(program, positions, sizes #, color
-	) -> Batch:
+# NOTES:
+# * default shader takes tint as a uniform so this can't set multiple colors
+# * would perform better with instanciation (but this allows keeping the same shader)
+# * we should also just update the vertex list each frame when moving them instead of recreating a mesh
+def Cubes(program, positions, sizes, color
+	) -> Mesh:
 
 	CUBE_POSITIONS_24 = np.array((
 		# +Z (front)
@@ -652,7 +684,7 @@ def Cubes(program, positions, sizes #, color
 		(-0.5,+0.5,+0.5), (+0.5,+0.5,+0.5), (+0.5,+0.5,-0.5), (-0.5,+0.5,-0.5),
 		# -Y (bottom)
 		(-0.5,-0.5,-0.5), (+0.5,-0.5,-0.5), (+0.5,-0.5,+0.5), (-0.5,-0.5,+0.5),
-	), dtype=np.float32)
+	))
 
 	CUBE_NORMALS_24 = np.array(
 		([ 0.0, 0.0, 1.0] * 4) +   # +Z
@@ -691,6 +723,6 @@ def Cubes(program, positions, sizes #, color
 	# (N,36): base indices + 24*i
 	indices = (CUBE_INDICES_36[None, :] + (np.arange(n, dtype=np.uint32) * 24)[:, None]).reshape(-1).astype(np.uint32)
 
-	batch = Batch()
-	Mesh(program, pos, normals, uvs, indices).draw(batch)
-	return batch
+	mesh = Mesh(program, pos, normals, uvs, indices)
+	mesh['uTint'] = color
+	return mesh

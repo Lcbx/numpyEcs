@@ -1,10 +1,6 @@
 import math
 import time
-import ctypes
 
-from pyglet.app import run
-from pyglet.window import  Window, key, mouse
-import pyglet.gl as gl
 from shader_util import *
 
 
@@ -13,7 +9,7 @@ from shader_util import *
 # ----------------------------
 WINDOW_W, WINDOW_H = 1800, 900
 TITLE = "pyglet + ShaderProgram + glTF"
-MODEL_PATH = 'scenes/resources/rooftop_utility_pole.glb'
+model_root = 'scenes/resources/'
 
 
 camera_dist = 30.0
@@ -32,9 +28,9 @@ fps_frames = 0
 
 window = RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE)
 
-# Minimal explicit GL state (everything else via pyglet abstractions)
-gl.glEnable(gl.GL_DEPTH_TEST)
-gl.glClearColor(0.15, 0.16, 0.19, 1.0)
+EnableDepth()
+EnableCullFace()
+setClearColor(0.15, 0.16, 0.19, 1.0)
 
 # Shader program & batch
 program = build_shader_program('scenes/shaders/pyglet.shader')
@@ -44,26 +40,19 @@ l = np.array([30.0, 30.0, 25.0]) - np.array([0.0, 0.0, -20.0])
 l = l / np.linalg.norm(l)
 light_dir = l.astype(np.float32)
 
-cubesBatch = Cubes(program,
-    ((2,0,0), (-1,0,0)),
-    ((3,1,2), (1,1,1))
-)
 
 scale = 5.0
-model_mat = Mat4.from_scale( (scale, scale, scale) )
-mesh = load_gltf_first_mesh(program, MODEL_PATH)
-#mesh['uModel'] = Mat4.from_translation( (0, 15, 5) ) * model_mat
-#mesh['uModel'] = model_mat * model_mat
+mesh = load_gltf_meshes(program, model_root + 'rooftop_utility_pole.glb')[0]
+model_mat = Mat4.from_translation( (0, 15, 5) ) * Mat4.from_scale( (scale, scale, scale) )
 mesh['uTint'] = (0.2, 0.5, 0.2, 1.0)
-meshBatch = Batch()
-mesh.draw(meshBatch)
+mesh['uModel'] = model_mat
+vMesh = mesh.draw(transform=model_mat) # use default batch instead
 
+heightmap = load_gltf_meshes(program, model_root + 'heightmap_mesh.glb')
+for h in heightmap:
+    h['uTint'] = (0.82, 0.71, 0.55, 1.0)
+    h.draw()
 
-# ---------------- Events ----------------
-@window.event
-def on_resize(width, height):
-    # Keep viewport in sync; this is one of the few explicit GL calls
-    gl.glViewport(0, 0, width, height)
 
 @window.event
 def on_key_press(symbol, modifiers):
@@ -101,23 +90,22 @@ def on_draw():
 
     with RenderContext(shader=program, camera=camera):
         window.clear()
-        program['uModel'] = model_mat
         program['uLightDir'] = light_dir
-        program['uTint'] = (0.82, 0.71, 0.55, 1.0)
 
-        cubesBatch.draw()
-        meshBatch.draw()
+        #meshBatch.draw() # already in default batch
+
+        vCubes = Cubes(program,
+            ((2,0,0), (-1,0,0)),    # positions
+            ((3,1,2), (1,1,1)),     # sizes
+            (0.12, 0.31, 0.65, 1.0) # color
+        ).draw()
+    vCubes.delete() # delete previous cubes or we add more each frame 
 
     fps_frames += 1
     if now - frame_start >= 1.0:
         print(f"fps {fps_frames}")
         frame_start = time.time()
         fps_frames = 0
-
-@window.event
-def on_close():
-    program.delete()
-    return Window.on_close(window)
 
 # refresh rate, 1/60 = 60hz, 0 -> afap
 run(0)
