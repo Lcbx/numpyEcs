@@ -171,8 +171,8 @@ def create_frame_buffer(width:int, height:int,
 		framebuffer.attach_texture(depth_tex, attachment=gl.GL_DEPTH_ATTACHMENT)
 		depth = depth_tex
 	else:
-		depth_rb = img.buffer.Renderbuffer.create(width, height, gl.GL_DEPTH_COMPONENT24)
-		framebuffer.attach_renderbuffer(depth_rb, attachment=gl.GL_DEPTH_ATTACHMENT, samples=samples)
+		depth_rb = img.buffer.Renderbuffer.create(width, height, gl.GL_DEPTH_COMPONENT24, samples=samples)
+		framebuffer.attach_renderbuffer(depth_rb, attachment=gl.GL_DEPTH_ATTACHMENT)
 		depth = depth_rb
 
 	return framebuffer
