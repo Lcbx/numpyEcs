@@ -1,62 +1,22 @@
 
 
-import os
-import re
 import numpy as np
-from typing import Any, Sequence, Dict, Optional
+from pyrr import Matrix44 as Mat4, Vector3
 
-import glfw
+import glfw, ctypes
+
 import wgpu
 from wgpu.utils.glfw_present_info import get_glfw_present_info
 
+import os
+import re
+from typing import Any, Sequence, Dict, Optional
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
-
-
-def InitWindow(w:float, h:float, title:str):
-	global context
-
-	glfw.init()
-	
-	# in case monitor setup becomes relevant
-	monitors = glfw.get_monitors()
-	for monitor in monitors:
-		mode = glfw.get_video_mode(monitor)
-		print(f'{monitor=}')
-		print(f'{mode=}')
-
-	# NOTE: we can set to fullscreen with glfw.set_window_monitor(monitor)
-
-	glfw.window_hint(glfw.CLIENT_API, glfw.NO_API)
-	#glfw.window_hint(glfw.RESIZABLE, True)
-	glfw.window_hint(glfw.DECORATED, False)
-
-	monitor = glfw.get_primary_monitor()
-	monitor_x, monitor_y, monitor_w, monitor_h = glfw.get_monitor_workarea(monitor)
-	glfw.window_hint(glfw.POSITION_X, monitor_w-w)
-	glfw.window_hint(glfw.POSITION_Y, 0)
-
-	# width, height, title, monitor (for full screen), window (for opengl context sharing)
-	window = glfw.create_window(w, h, title, None, None)
-	#glfw.set_window_pos(window, monitor_w-w, 0)
-
-	# wgpu context
-	present_info = get_glfw_present_info(window)
-	context = wgpu.gpu.get_canvas_context(present_info)
-
-	# TODO: update this on resize events.
-	context.set_physical_size(*glfw.get_framebuffer_size(window))
-
-	def windowShouldClose() -> bool:
-		context.present()
-		glfw.poll_events()
-		return not glfw.window_should_close(window)
-
-	return context, windowShouldClose
 
 
 
 class Camera:
-	def __init__(self, position, target, up, fovy_deg, near=0.1, far=1000.0, perspective:bool=True):
+	def __init__(self, position: tuple, target: tuple, up: tuple, fovy_deg:float, near:float=0.1, far:float=1000.0, perspective:bool=True):
 		self.position = Vector3(position)
 		self.target = Vector3(target)
 		self.up = Vector3(up)
@@ -65,10 +25,10 @@ class Camera:
 		self.far = far
 		self.perspective = perspective
 
-	def view(self):
+	def view(self) -> Mat4:
 		return Mat4.look_at(self.position, self.target, self.up)
 
-	def projection(self, aspect):
+	def projection(self, aspect) -> Mat4:
 		if self.perspective:
 			return Mat4.perspective_projection( self.fovy_deg, aspect, self.near, self.far )
 
@@ -76,125 +36,113 @@ class Camera:
 		right = top*aspect;
 		return Mat4.orthogonal_projection(-right, right, top, -top, self.near, self.far)
 
-"""
 
-def GenTextureMipmaps(texture : img.Texture):
-	#gl.glBindTexture(gl.GL_TEXTURE_2D, texture.id)
-	#gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
-	#gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
-	raise Exception("not implemented")
+# metaclass, do not use as-is
+class _renderContext(type):
+	def __call__(cls, *args, **kwargs):
+		return cls.newContext(*args, **kwargs)
 
-# NOTE: putting a smaller texture into a bigger one is not allowed
-def TransferDepth(from_fbo:int, f_w:int, f_h:int, to_fbo:int, t_w:int, t_h:int):
-	#gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, from_fbo)
-	#gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, to_fbo)
-	#gl.glBlitFramebuffer(
-	#	0, 0, f_w, f_h,
-	#	0, 0, t_w, t_h,
-	#	#gl.GL_COLOR_BUFFER_BIT,
-	#	gl.GL_DEPTH_BUFFER_BIT,
-	#	gl.GL_NEAREST
-	#)
-	raise Exception("not implemented")
+	def __enter__(cls):
+		cls.__enter__()
+		return cls
 
-def ClearBuffers():
-	#gl.glClear(gl.GL_COLOR_BUFFER_BIT|gl.GL_DEPTH_BUFFER_BIT)
-	raise Exception("not implemented")
-def ClearColorBuffer():
-	#gl.glClear(gl.GL_COLOR_BUFFER_BIT)
-	raise Exception("not implemented")
+	def __exit__(cls, exception_type, exception_value, exception_traceback) -> None:
+		pass
 
-def setClearColor(*color):
-	#gl.glClearColor(*color)
-	raise Exception("not implemented")
+type _GLFWwindowPointerT = ctypes._Pointer[glfw._GLFWwindow]
+class RenderContext(metaclass=_renderContext):
+	# static members
+	#shader:BetterShader = None
+	#texture:img.Framebuffer = None
+	camera:Camera = None
+	view:Mat4 = None
+	projection:Mat4 = None
+	window : _GLFWwindowPointerT= None
+	canvas : wgpu.GPUCanvasContext = None
+	windowDimensions : tuple[float,float] = (0.0,0.0)
+	aspect: float = 1.0
 
+	@classmethod
+	def InitWindow(cls, w:float, h:float, title:str) -> None:
 
-def SetPolygonOffset(value:float, flat:float=0.0):
-	#gl.glEnable(gl.GL_POLYGON_OFFSET_FILL)
-	#gl.glPolygonOffset(value, flat)
-	raise Exception("not implemented")
-def DisablePolygonOffset():
-	#gl.glDisable(gl.GL_POLYGON_OFFSET_FILL)
-	raise Exception("not implemented")
+		glfw.init()
+		
+		# in case monitor setup becomes relevant
+		monitors = glfw.get_monitors()
+		for monitor in monitors:
+			mode = glfw.get_video_mode(monitor)
+			print(f'{monitor=}')
+			print(f'{mode=}')
 
-def DrawTexture(tex:img.Texture, width:float, height:float):
-	# screen-wide rectangle, y-flipped due to default OpenGL coordinates
-	#rl.DrawTextureRec(tex, (0, 0, width, -height), (0, 0), rl.WHITE)
-	raise Exception("not implemented")
+		# NOTE: we can set to fullscreen with glfw.set_window_monitor(monitor)
 
+		glfw.window_hint(glfw.CLIENT_API, glfw.NO_API)
+		#glfw.window_hint(glfw.RESIZABLE, True)
+		#glfw.window_hint(glfw.DECORATED, False)
 
-# TODO : toggle automatically based on whether it is a postprocess or 3d pass 
-def DisableDepth():
-	#gl.glDepthMask(gl.GL_FALSE)
-	#gl.glDisable(gl.GL_DEPTH_TEST)
-	raise Exception("not implemented")
-def EnableDepth():
-	#gl.glDepthMask(gl.GL_TRUE)
-	#gl.glEnable(gl.GL_DEPTH_TEST)
-	raise Exception("not implemented")
+		monitor = glfw.get_primary_monitor()
+		monitor_x, monitor_y, monitor_w, monitor_h = glfw.get_monitor_workarea(monitor)
+		glfw.window_hint(glfw.POSITION_X, monitor_w-w)
+		glfw.window_hint(glfw.POSITION_Y, 30)
 
-def EnableCullFace():
-	#gl.glEnable(gl.GL_CULL_FACE)
-	raise Exception("not implemented")
-def DisableCullFace():
-	#gl.glDisable(gl.GL_CULL_FACE)
-	raise Exception("not implemented")
+		# width, height, title, monitor (for full screen), window (for opengl context sharing)
+		cls.window = glfw.create_window(w, h, title, None, None)
+		#glfw.set_window_pos(cls.window, monitor_w-w, 0)
+		print(cls.window)
 
-class BetterShader(Program):
-	__slots__ = 'vertex_glsl', 'fragment_glsl'
-
-	def __init__(self, *shaders: Shader) -> None:
-		Program.__init__(self, *shaders)
-		for s in shaders:
-			source = Shader._get_shader_source(s._id)
-			if s.type == 'vertex':
-				self.vertex_glsl = source
-			elif s.type == 'fragment':
-				self.fragment_glsl = source
-			else: raise Exception('unsupported shader type')
+		# wgpu context
+		present_info = get_glfw_present_info(cls.window)
+		cls.canvas = wgpu.gpu.get_canvas_context(present_info)
 
 
-def build_shader_program(path:str, **params):
-	source = BetterShaderSource(path, **params)
-	vert = Shader(source.vertex_glsl, 'vertex')
-	frag = Shader(source.fragment_glsl, 'fragment')
-	prog = BetterShader(vert, frag)
-	return prog 
-
-def create_frame_buffer(width:int, height:int,
-						colorFormat = gl.GL_RGBA8,
-						depth_map:bool = False,
-						samples:int = 4):
-
-	#framebuffer = img.Framebuffer()
-
-	#create_tex = create_simple_texture if samples==1 else TextureMsaa.create
-
-	#if colorFormat:
-	#	color_tex = create_tex(width=width, height=height, internalformat=colorFormat, samples=samples)
-	#	framebuffer.attach_texture(color_tex, attachment=gl.GL_COLOR_ATTACHMENT0)
-
-	#if depth_map:
-	#	depth_tex = create_tex(width=width, height=height, internalformat=gl.GL_DEPTH_COMPONENT24, fmt=gl.GL_DEPTH_COMPONENT, samples=samples)
-	#	framebuffer.attach_texture(depth_tex, attachment=gl.GL_DEPTH_ATTACHMENT)
-	#	depth = depth_tex
-	#else:
-	#	depth_rb = img.buffer.Renderbuffer.create(width, height, gl.GL_DEPTH_COMPONENT24, samples=samples)
-	#	framebuffer.attach_renderbuffer(depth_rb, attachment=gl.GL_DEPTH_ATTACHMENT)
-	#	depth = depth_rb
-	#return framebuffer
-	raise Exception("not implemented")
+	@classmethod
+	def updateWindowSize(cls):
+		# NOTE: some versions of glfw send resize events
+		wh = glfw.get_framebuffer_size(cls.window)
+		if wh != cls.windowDimensions:
+			cls.windowDimensions = wh
+			w,h = wh
+			cls.canvas.set_physical_size(w, h)
+			cls.aspect = w/h
 
 
-class DefaultFalseDict(Dict):
-	# Dict that returns False for any missing key; used in feature resolution
-	def __missing__(self, key):
-		return False
+	@classmethod
+	def windowShouldClose(cls) -> bool:
+		cls.canvas.present()
+		
+		cls.updateWindowSize()
+		
+		glfw.poll_events()
+
+		return glfw.window_should_close(cls.window)
+
+	@classmethod
+	def newContext(cls,
+			#shader:BetterShader = None,
+			camera:Camera = None,
+			#texture:img.Framebuffer = None
+		):
+		#cls.shader = shader
+		cls.camera = camera
+		#cls.texture = texture
+		return cls
+
+	@classmethod
+	def __enter__(cls):
+		#if cls.shader: cls.shader.bind()
+		#if cls.texture: cls.texture.bind()
+		if cls.camera:
+			cls.view = cls.camera.view()
+			cls.projection = cls.camera.projection(cls.aspect)
+		#	if 'uView' in cls.shader._uniforms: cls.shader['uView'] = cls.view
+		#	if 'uProj' in cls.shader._uniforms: cls.shader['uProj'] = cls.projection
+		#	if 'uViewProj' in cls.shader._uniforms: cls.shader['uViewProj'] = cls.view @ cls.projection
+		return cls
 
 
+# Parses a shader definition file containing two functions: vertex() and fragment().
+# Extracts uniforms, varying, in, and out variables, then generates GLSL code for both stages.
 class BetterShaderSource:
-	# Parses a shader definition file containing two functions: vertex() and fragment().
-	# Extracts uniforms, varying, in, and out variables, then generates GLSL code for both stages.
 
 	# Regex to capture qualifier, type, and name from declarations
 	_decl_pattern = re.compile(r"^(?>layout\(location = (\d+)\) )?(uniform|in|out|(?:flat )?varying|const)\s+(\S+)\s+([^;]+).*?;", re.MULTILINE)
@@ -342,55 +290,120 @@ class BetterShaderSource:
 		]
 		self.fragment_glsl = '\n'.join(f_lines)
 
+"""
 
-class _renderContext(type):
-	def __call__(cls, *args, **kwargs):
-		return cls.newContext(*args, **kwargs)
+def GenTextureMipmaps(texture : img.Texture):
+	#gl.glBindTexture(gl.GL_TEXTURE_2D, texture.id)
+	#gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
+	#gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+	raise Exception("not implemented")
 
-	def __enter__(cls):
-		if cls.shader: cls.shader.bind()
-		if cls.texture: cls.texture.bind()
-		if cls.camera:
-			cls.view = cls.camera.view()
-			cls.projection = cls.camera.projection(cls.window.aspect_ratio)
-			if 'uView' in cls.shader._uniforms: cls.shader['uView'] = cls.view
-			if 'uProj' in cls.shader._uniforms: cls.shader['uProj'] = cls.projection
-			if 'uViewProj' in cls.shader._uniforms: cls.shader['uViewProj'] = cls.view @ cls.projection
-		return cls
+# NOTE: putting a smaller texture into a bigger one is not allowed
+def TransferDepth(from_fbo:int, f_w:int, f_h:int, to_fbo:int, t_w:int, t_h:int):
+	#gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, from_fbo)
+	#gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, to_fbo)
+	#gl.glBlitFramebuffer(
+	#	0, 0, f_w, f_h,
+	#	0, 0, t_w, t_h,
+	#	#gl.GL_COLOR_BUFFER_BIT,
+	#	gl.GL_DEPTH_BUFFER_BIT,
+	#	gl.GL_NEAREST
+	#)
+	raise Exception("not implemented")
 
-	def __exit__(cls, exception_type, exception_value, exception_traceback) -> None:
-		# draw default batch
-		batch = get_default_batch()
-		batch.draw()
-		if cls.texture: gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0);
+def ClearBuffers():
+	#gl.glClear(gl.GL_COLOR_BUFFER_BIT|gl.GL_DEPTH_BUFFER_BIT)
+	raise Exception("not implemented")
+def ClearColorBuffer():
+	#gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+	raise Exception("not implemented")
 
-class RenderContext(metaclass=_renderContext):
-	# static members
-	shader:BetterShader = None
-	texture:img.Framebuffer = None
-	camera:Camera = None
-	window:Window = None
-	view:Mat4 = None
-	projection:Mat4 = None
+def setClearColor(*color):
+	#gl.glClearColor(*color)
+	raise Exception("not implemented")
 
-	@classmethod
-	def InitWindow(cls, w:float, h:float, title:str) -> Window:
 
-		
+def SetPolygonOffset(value:float, flat:float=0.0):
+	#gl.glEnable(gl.GL_POLYGON_OFFSET_FILL)
+	#gl.glPolygonOffset(value, flat)
+	raise Exception("not implemented")
+def DisablePolygonOffset():
+	#gl.glDisable(gl.GL_POLYGON_OFFSET_FILL)
+	raise Exception("not implemented")
 
-		cls.window = window
-		return window
+def DrawTexture(tex:img.Texture, width:float, height:float):
+	# screen-wide rectangle, y-flipped due to default OpenGL coordinates
+	#rl.DrawTextureRec(tex, (0, 0, width, -height), (0, 0), rl.WHITE)
+	raise Exception("not implemented")
 
-	@classmethod
-	def newContext(cls,
-			shader:BetterShader = None,
-			camera:Camera = None,
-			texture:img.Framebuffer = None):
-		cls.shader = shader
-		cls.camera = camera
-		cls.texture = texture
-		return cls
 
+# TODO : toggle automatically based on whether it is a postprocess or 3d pass 
+def DisableDepth():
+	#gl.glDepthMask(gl.GL_FALSE)
+	#gl.glDisable(gl.GL_DEPTH_TEST)
+	raise Exception("not implemented")
+def EnableDepth():
+	#gl.glDepthMask(gl.GL_TRUE)
+	#gl.glEnable(gl.GL_DEPTH_TEST)
+	raise Exception("not implemented")
+
+def EnableCullFace():
+	#gl.glEnable(gl.GL_CULL_FACE)
+	raise Exception("not implemented")
+def DisableCullFace():
+	#gl.glDisable(gl.GL_CULL_FACE)
+	raise Exception("not implemented")
+
+class BetterShader(Program):
+	__slots__ = 'vertex_glsl', 'fragment_glsl'
+
+	def __init__(self, *shaders: Shader) -> None:
+		Program.__init__(self, *shaders)
+		for s in shaders:
+			source = Shader._get_shader_source(s._id)
+			if s.type == 'vertex':
+				self.vertex_glsl = source
+			elif s.type == 'fragment':
+				self.fragment_glsl = source
+			else: raise Exception('unsupported shader type')
+
+
+def build_shader_program(path:str, **params):
+	source = BetterShaderSource(path, **params)
+	vert = Shader(source.vertex_glsl, 'vertex')
+	frag = Shader(source.fragment_glsl, 'fragment')
+	prog = BetterShader(vert, frag)
+	return prog 
+
+def create_frame_buffer(width:int, height:int,
+						colorFormat = gl.GL_RGBA8,
+						depth_map:bool = False,
+						samples:int = 4):
+
+	#framebuffer = img.Framebuffer()
+
+	#create_tex = create_simple_texture if samples==1 else TextureMsaa.create
+
+	#if colorFormat:
+	#	color_tex = create_tex(width=width, height=height, internalformat=colorFormat, samples=samples)
+	#	framebuffer.attach_texture(color_tex, attachment=gl.GL_COLOR_ATTACHMENT0)
+
+	#if depth_map:
+	#	depth_tex = create_tex(width=width, height=height, internalformat=gl.GL_DEPTH_COMPONENT24, fmt=gl.GL_DEPTH_COMPONENT, samples=samples)
+	#	framebuffer.attach_texture(depth_tex, attachment=gl.GL_DEPTH_ATTACHMENT)
+	#	depth = depth_tex
+	#else:
+	#	depth_rb = img.buffer.Renderbuffer.create(width, height, gl.GL_DEPTH_COMPONENT24, samples=samples)
+	#	framebuffer.attach_renderbuffer(depth_rb, attachment=gl.GL_DEPTH_ATTACHMENT)
+	#	depth = depth_rb
+	#return framebuffer
+	raise Exception("not implemented")
+
+
+class DefaultFalseDict(Dict):
+	# Dict that returns False for any missing key; used in feature resolution
+	def __missing__(self, key):
+		return False
 
 
 class WatchTimer:
