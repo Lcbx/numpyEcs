@@ -2,54 +2,57 @@
 
 import os
 import re
-from typing import Any, Sequence, Dict, Optional
 import numpy as np
+from typing import Any, Sequence, Dict, Optional
 
-import pyglet.gl as gl
-from ctypes import byref
+import glfw
+import wgpu
+from wgpu.utils.glfw_present_info import get_glfw_present_info
 
-from pyglet.app import run
-from pyglet.window import Window, key, mouse
-
-import pyglet.image as img
-from pyglet.graphics import Batch, Group, get_default_batch
-from pyglet.graphics.vertexdomain import IndexedVertexList, VertexList
-import pyglet.graphics.shader as pygletShaders
-Shader = pygletShaders.Shader
-Program = pygletShaders.ShaderProgram
-
-from pygltflib import GLTF2, BufferView, Accessor
-from pyrr import Matrix44 as Mat4, Vector3
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
-from json import dumps as json_dumps
 
 
-###############################
-# some code injections into pyglet
-###############################
-try:
-	class PassthroughShaderSource:
-		"""GLSL source container for making source parsing simpler. """
-		_type: object
-		_lines: list[str]
+def InitWindow(w:float, h:float, title:str):
+	global context
 
-		def __init__(self, source: str, source_type: object) -> None:
-			self._type = source_type
-			self._source = source
+	glfw.init()
+	
+	# in case monitor setup becomes relevant
+	monitors = glfw.get_monitors()
+	for monitor in monitors:
+		mode = glfw.get_video_mode(monitor)
+		print(f'{monitor=}')
+		print(f'{mode=}')
 
-		def validate(self) -> str:
-			return self._source
-	Shader.ShaderSource = PassthroughShaderSource
+	# NOTE: we can set to fullscreen with glfw.set_window_monitor(monitor)
 
-	_old__setitem__ =  Program.__setitem__
-	def Program__setitem__(self, name, value):
-		# patch in support for np arrays
-		if isinstance(value, np.ndarray): value = value.reshape(-1).astype('f')
-		_old__setitem__(self, name, value)
-	Program.__setitem__ = Program__setitem__
-except:
-	pass
-###############################
+	glfw.window_hint(glfw.CLIENT_API, glfw.NO_API)
+	#glfw.window_hint(glfw.RESIZABLE, True)
+	glfw.window_hint(glfw.DECORATED, False)
+
+	monitor = glfw.get_primary_monitor()
+	monitor_x, monitor_y, monitor_w, monitor_h = glfw.get_monitor_workarea(monitor)
+	glfw.window_hint(glfw.POSITION_X, monitor_w-w)
+	glfw.window_hint(glfw.POSITION_Y, 0)
+
+	# width, height, title, monitor (for full screen), window (for opengl context sharing)
+	window = glfw.create_window(w, h, title, None, None)
+	#glfw.set_window_pos(window, monitor_w-w, 0)
+
+	# wgpu context
+	present_info = get_glfw_present_info(window)
+	context = wgpu.gpu.get_canvas_context(present_info)
+
+	# TODO: update this on resize events.
+	context.set_physical_size(*glfw.get_framebuffer_size(window))
+
+	def windowShouldClose() -> bool:
+		context.present()
+		glfw.poll_events()
+		return not glfw.window_should_close(window)
+
+	return context, windowShouldClose
+
 
 
 class Camera:
@@ -73,43 +76,46 @@ class Camera:
 		right = top*aspect;
 		return Mat4.orthogonal_projection(-right, right, top, -top, self.near, self.far)
 
+"""
 
 def GenTextureMipmaps(texture : img.Texture):
-	gl.glBindTexture(gl.GL_TEXTURE_2D, texture.id)
-	gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
-	gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+	#gl.glBindTexture(gl.GL_TEXTURE_2D, texture.id)
+	#gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
+	#gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+	raise Exception("not implemented")
 
 # NOTE: putting a smaller texture into a bigger one is not allowed
 def TransferDepth(from_fbo:int, f_w:int, f_h:int, to_fbo:int, t_w:int, t_h:int):
-	gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, from_fbo)
-	gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, to_fbo)
-	gl.glBlitFramebuffer(
-		0, 0, f_w, f_h,
-		0, 0, t_w, t_h,
-		#gl.GL_COLOR_BUFFER_BIT,
-		gl.GL_DEPTH_BUFFER_BIT,
-		gl.GL_NEAREST
-	)
+	#gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, from_fbo)
+	#gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, to_fbo)
+	#gl.glBlitFramebuffer(
+	#	0, 0, f_w, f_h,
+	#	0, 0, t_w, t_h,
+	#	#gl.GL_COLOR_BUFFER_BIT,
+	#	gl.GL_DEPTH_BUFFER_BIT,
+	#	gl.GL_NEAREST
+	#)
+	raise Exception("not implemented")
 
 def ClearBuffers():
-	gl.glClear(gl.GL_COLOR_BUFFER_BIT|gl.GL_DEPTH_BUFFER_BIT)
+	#gl.glClear(gl.GL_COLOR_BUFFER_BIT|gl.GL_DEPTH_BUFFER_BIT)
+	raise Exception("not implemented")
 def ClearColorBuffer():
-	gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+	#gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+	raise Exception("not implemented")
 
 def setClearColor(*color):
-	gl.glClearColor(*color)
+	#gl.glClearColor(*color)
+	raise Exception("not implemented")
 
 
 def SetPolygonOffset(value:float, flat:float=0.0):
-	gl.glEnable(gl.GL_POLYGON_OFFSET_FILL)
-	gl.glPolygonOffset(value, flat)
+	#gl.glEnable(gl.GL_POLYGON_OFFSET_FILL)
+	#gl.glPolygonOffset(value, flat)
+	raise Exception("not implemented")
 def DisablePolygonOffset():
-	gl.glDisable(gl.GL_POLYGON_OFFSET_FILL)
-
-def EnableMultisampling():
-	gl.glEnable(gl.GL_MULTISAMPLE)
-def DisableMultisampling():
-	gl.glDisable(gl.GL_MULTISAMPLE)
+	#gl.glDisable(gl.GL_POLYGON_OFFSET_FILL)
+	raise Exception("not implemented")
 
 def DrawTexture(tex:img.Texture, width:float, height:float):
 	# screen-wide rectangle, y-flipped due to default OpenGL coordinates
@@ -119,18 +125,20 @@ def DrawTexture(tex:img.Texture, width:float, height:float):
 
 # TODO : toggle automatically based on whether it is a postprocess or 3d pass 
 def DisableDepth():
-	gl.glDepthMask(gl.GL_FALSE)
-	gl.glDisable(gl.GL_DEPTH_TEST)
-	#pass
+	#gl.glDepthMask(gl.GL_FALSE)
+	#gl.glDisable(gl.GL_DEPTH_TEST)
+	raise Exception("not implemented")
 def EnableDepth():
-	gl.glDepthMask(gl.GL_TRUE)
-	gl.glEnable(gl.GL_DEPTH_TEST)
-	#pass
+	#gl.glDepthMask(gl.GL_TRUE)
+	#gl.glEnable(gl.GL_DEPTH_TEST)
+	raise Exception("not implemented")
 
 def EnableCullFace():
-	gl.glEnable(gl.GL_CULL_FACE)
+	#gl.glEnable(gl.GL_CULL_FACE)
+	raise Exception("not implemented")
 def DisableCullFace():
-	gl.glDisable(gl.GL_CULL_FACE)
+	#gl.glDisable(gl.GL_CULL_FACE)
+	raise Exception("not implemented")
 
 class BetterShader(Program):
 	__slots__ = 'vertex_glsl', 'fragment_glsl'
@@ -158,120 +166,35 @@ def create_frame_buffer(width:int, height:int,
 						depth_map:bool = False,
 						samples:int = 4):
 
-	framebuffer = img.Framebuffer()
+	#framebuffer = img.Framebuffer()
 
-	create_tex = create_simple_texture if samples==1 else TextureMsaa.create
+	#create_tex = create_simple_texture if samples==1 else TextureMsaa.create
 
-	if colorFormat:
-		color_tex = create_tex(width=width, height=height, internalformat=colorFormat, samples=samples)
-		framebuffer.attach_texture(color_tex, attachment=gl.GL_COLOR_ATTACHMENT0)
+	#if colorFormat:
+	#	color_tex = create_tex(width=width, height=height, internalformat=colorFormat, samples=samples)
+	#	framebuffer.attach_texture(color_tex, attachment=gl.GL_COLOR_ATTACHMENT0)
 
-	if depth_map:
-		depth_tex = create_tex(width=width, height=height, internalformat=gl.GL_DEPTH_COMPONENT24, fmt=gl.GL_DEPTH_COMPONENT, samples=samples)
-		framebuffer.attach_texture(depth_tex, attachment=gl.GL_DEPTH_ATTACHMENT)
-		depth = depth_tex
-	else:
-		depth_rb = img.buffer.Renderbuffer.create(width, height, gl.GL_DEPTH_COMPONENT24, samples=samples)
-		framebuffer.attach_renderbuffer(depth_rb, attachment=gl.GL_DEPTH_ATTACHMENT)
-		depth = depth_rb
-
-	return framebuffer
-
-# img.Texture.create does not accept a 'samples' argument 
-def create_simple_texture(**values):
-	del values['samples']
-	return img.Texture.create(**values)
-
-class TextureMsaa(img.Texture):
-	"""A pyglet Texture backed by GL_TEXTURE_2D_MULTISAMPLE.
-
-	Notes:
-	  - Sample in GLSL with `sampler2DMS` + `texelFetch`.
-	  - No filtering/wrap params exist for GL_TEXTURE_2D_MULTISAMPLE.
-	  - `blit`, `get_image_data` etc. from base Texture won't work as-is.
-	"""
-
-	def __init__(self, width: int, height: int, target: int, tex_id: int,
-				 samples: int, internalformat: int,
-				 fixed_sample_locations: bool = True) -> None:
-		super().__init__(width, height, target, tex_id, min_filter=None, mag_filter=None)
-
-		self.samples = int(samples)
-		self.internalformat = int(internalformat)
-		self.fixed_sample_locations = bool(fixed_sample_locations)
-
-	@classmethod
-	def create(cls, width: int, height: int,
-			   target: int = gl.GL_TEXTURE_2D_MULTISAMPLE,
-			   internalformat: int = gl.GL_RGBA8,
-			   samples: int = 1,
-			   fmt: int = gl.GL_RGBA,
-			   fixed_sample_locations: bool = True) -> "TextureMsaa":
-		if target != gl.GL_TEXTURE_2D_MULTISAMPLE:
-			raise ValueError("TextureMsaa only supports GL_TEXTURE_2D_MULTISAMPLE")
-
-		# Generate and bind texture
-		tex_id = gl.GLuint()
-		gl.glGenTextures(1, byref(tex_id))
-		gl.glBindTexture(target, tex_id.value)
-
-		# Allocate multisample storage
-		gl.glTexImage2DMultisample(
-			target,
-			int(samples),
-			int(internalformat),
-			int(width),
-			int(height),
-			gl.GL_TRUE if fixed_sample_locations else gl.GL_FALSE
-		)
-
-		# Unbind (optional but nice)
-		gl.glBindTexture(target, 0)
-
-		return cls(width, height, target, tex_id.value,
-				   samples=samples,
-				   internalformat=internalformat,
-				   fixed_sample_locations=fixed_sample_locations)
-
-	# Optional: make it explicit that some operations don't apply
-	def get_image_data(self, z: int = 0):
-		raise NotImplementedError("get_image_data is not supported for GL_TEXTURE_2D_MULTISAMPLE")
-
-	def blit(self, *args, **kwargs):
-		raise NotImplementedError("blit is not supported for GL_TEXTURE_2D_MULTISAMPLE")
-
-	def bind(self, texture_unit: int = 0) -> None:
-		# Same as base, but keep in case you want to specialize later
-		gl.glActiveTexture(gl.GL_TEXTURE0 + texture_unit)
-		gl.glBindTexture(self.target, self.id)
-
-
-
-class PassthroughShaderSource:
-	"""GLSL source container for making source parsing simpler. """
-	_type: object
-	_lines: list[str]
-
-	def __init__(self, source: str, source_type: object) -> None:
-		self._type = source_type
-		self._source = source
-
-	def validate(self) -> str:
-		return self._source
-pygletShaders.ShaderSource = PassthroughShaderSource
+	#if depth_map:
+	#	depth_tex = create_tex(width=width, height=height, internalformat=gl.GL_DEPTH_COMPONENT24, fmt=gl.GL_DEPTH_COMPONENT, samples=samples)
+	#	framebuffer.attach_texture(depth_tex, attachment=gl.GL_DEPTH_ATTACHMENT)
+	#	depth = depth_tex
+	#else:
+	#	depth_rb = img.buffer.Renderbuffer.create(width, height, gl.GL_DEPTH_COMPONENT24, samples=samples)
+	#	framebuffer.attach_renderbuffer(depth_rb, attachment=gl.GL_DEPTH_ATTACHMENT)
+	#	depth = depth_rb
+	#return framebuffer
+	raise Exception("not implemented")
 
 
 class DefaultFalseDict(Dict):
-	"""Dict that returns False for any missing key; used in feature resolution"""
+	# Dict that returns False for any missing key; used in feature resolution
 	def __missing__(self, key):
 		return False
 
 
 class BetterShaderSource:
-	"""
-	Parses a shader definition file containing two functions: vertex() and fragment().
-	Extracts uniforms, varying, in, and out variables, then generates GLSL code for both stages.
-	"""
+	# Parses a shader definition file containing two functions: vertex() and fragment().
+	# Extracts uniforms, varying, in, and out variables, then generates GLSL code for both stages.
 
 	# Regex to capture qualifier, type, and name from declarations
 	_decl_pattern = re.compile(r"^(?>layout\(location = (\d+)\) )?(uniform|in|out|(?:flat )?varying|const)\s+(\S+)\s+([^;]+).*?;", re.MULTILINE)
@@ -298,12 +221,11 @@ class BetterShaderSource:
 		params: Optional[Dict[str, Any]] = None,
 		glsl_version: str = '#version 430'
 	):
-		"""
-		:param filepath: Path to the master shader definition file (template).
-		:param features: Dict of feature flags for conditionals, e.g. {'FEATURE_FOG': True}.
-		:param params: Any extra variables you want available in templates.
-		:param glsl_version: Override #version (defaults to #version 430).
-		"""
+		# :param filepath: Path to the master shader definition file (template).
+		# :param features: Dict of feature flags for conditionals, e.g. {'FEATURE_FOG': True}.
+		# :param params: Any extra variables you want available in templates.
+		# :param glsl_version: Override #version (defaults to #version 430).
+
 		self.filepath = filepath
 		self._basedir = os.path.dirname(os.path.abspath(filepath))
 		self._opengl_version = glsl_version
@@ -329,9 +251,8 @@ class BetterShaderSource:
 		self._generate_glsl()
 
 	def _render_template(self, features: Sequence[str], params: Dict[str, Any]) -> str:
-		"""
-		evaluate the preprocessor sections using jinja2
-		"""
+		# evaluate the preprocessor sections using jinja2
+
 		env = Environment(
 			loader=FileSystemLoader(self._basedir),
 			undefined=StrictUndefined,  # fail fast for missing vars
@@ -441,11 +362,6 @@ class _renderContext(type):
 		# draw default batch
 		batch = get_default_batch()
 		batch.draw()
-		# clear batch
-		#for domain_map in batch.group_map.values():
-		#	for domain in domain_map.values():
-		#		domain.allocator.starts = [0]
-		#		domain.allocator.sizes = [0]
 		if cls.texture: gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0);
 
 class RenderContext(metaclass=_renderContext):
@@ -460,22 +376,7 @@ class RenderContext(metaclass=_renderContext):
 	@classmethod
 	def InitWindow(cls, w:float, h:float, title:str) -> Window:
 
-		# NOTE: using MSAA with prepass generate z-artifacts
-		#config = pyglet.gl.Config(
-		#	double_buffer=True,
-		#	major_version=4,
-		#	minor_version=3,
-		#	samples = 1, # msaa
-		#)
-		window = Window(
-			width=w,
-			height=h,
-			caption=title,
-			#config=config,
-			resizable=False,
-			vsync=False
-		)
-		window.set_location(window.screen.width - w, 30)
+		
 
 		cls.window = window
 		return window
@@ -726,3 +627,5 @@ def Cubes(program, positions, sizes, color
 	mesh = Mesh(program, pos, normals, uvs, indices)
 	mesh['uTint'] = color
 	return mesh
+
+"""
