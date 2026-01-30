@@ -3,7 +3,7 @@
 import numpy as np
 from pyrr import Matrix44 as Mat4, Vector3
 
-import glfw, ctypes
+import glfw, ctypes, atexit, time
 
 import wgpu
 from wgpu.utils.glfw_present_info import get_glfw_present_info
@@ -66,6 +66,7 @@ class RenderContext(metaclass=_renderContext):
 	def InitWindow(cls, w:float, h:float, title:str) -> None:
 
 		glfw.init()
+		atexit.register(glfw.terminate)
 		
 		# in case monitor setup becomes relevant
 		monitors = glfw.get_monitors()
@@ -83,7 +84,7 @@ class RenderContext(metaclass=_renderContext):
 		monitor = glfw.get_primary_monitor()
 		monitor_x, monitor_y, monitor_w, monitor_h = glfw.get_monitor_workarea(monitor)
 		glfw.window_hint(glfw.POSITION_X, monitor_w-w)
-		glfw.window_hint(glfw.POSITION_Y, 30)
+		glfw.window_hint(glfw.POSITION_Y, 30) 
 
 		# width, height, title, monitor (for full screen), window (for opengl context sharing)
 		cls.window = glfw.create_window(w, h, title, None, None)
@@ -91,7 +92,7 @@ class RenderContext(metaclass=_renderContext):
 		print(cls.window)
 
 		# wgpu context
-		present_info = get_glfw_present_info(cls.window)
+		present_info = get_glfw_present_info(cls.window, vsync=True)
 		cls.canvas = wgpu.gpu.get_canvas_context(present_info)
 
 
@@ -107,6 +108,22 @@ class RenderContext(metaclass=_renderContext):
 
 
 	@classmethod
+	def cleanup(cls):
+
+		#device = cls.canvas.get_configuration()['device']
+		#device._poll(True) # wait for last frame
+
+		cls.canvas.unconfigure()
+
+		glfw.destroy_window(cls.window)
+
+		# work around https://github.com/glfw/glfw/issues/1766
+		end_time = time.perf_counter() + 0.1
+		while time.perf_counter() < end_time:
+			glfw.wait_events_timeout(end_time - time.perf_counter())
+
+
+	@classmethod
 	def windowShouldClose(cls) -> bool:
 		cls.canvas.present()
 		
@@ -114,7 +131,11 @@ class RenderContext(metaclass=_renderContext):
 		
 		glfw.poll_events()
 
-		return glfw.window_should_close(cls.window)
+		if glfw.window_should_close(cls.window):
+			cls.cleanup()
+			return True
+
+		return False
 
 	@classmethod
 	def newContext(cls,
@@ -289,6 +310,85 @@ class BetterShaderSource:
 			self.functions[self._fragment_body].replace(self._fragment_start, self._main_start)
 		]
 		self.fragment_glsl = '\n'.join(f_lines)
+
+
+
+from pygltflib import GLTF2, BufferView, Accessor
+
+def _get_data_from_accessor(gltf: GLTF2, accessor_index: int) -> np.ndarray:
+    acc: Accessor = gltf.accessors[accessor_index]
+    bv: BufferView = gltf.bufferViews[acc.bufferView]
+    buf = gltf.buffers[bv.buffer]
+
+    if buf.uri is None:  # GLB
+        bin_chunk = gltf.binary_blob()
+    else:
+        raise NotImplementedError("External buffers not handled in this snippet")
+
+    b = bv.byteOffset or 0
+    e = b + (bv.byteLength or 0)
+    view_bytes = memoryview(bin_chunk)[b:e]
+
+    type_num_comps = {
+        "SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4, "MAT3": 9, "MAT4": 16
+    }[acc.type]
+
+    np_dtype = {
+        5120: np.int8,
+        5121: np.uint8,
+        5122: np.int16,
+        5123: np.uint16,
+        5125: np.uint32,
+        5126: np.float32
+    }[acc.componentType]
+
+    stride = bv.byteStride or (np.dtype(np_dtype).itemsize * type_num_comps)
+    count = acc.count
+    offset = acc.byteOffset or 0
+    tight = np.dtype(np_dtype).itemsize * type_num_comps
+
+    arr = np.frombuffer(view_bytes, dtype=np_dtype, count=count * type_num_comps, offset=offset)
+    if stride != tight:
+        rec = np.empty((count, type_num_comps), dtype=np_dtype)
+        base = offset
+        for i in range(count):
+            start = base + i * stride
+            rec[i] = np.frombuffer(view_bytes, dtype=np_dtype, count=type_num_comps, offset=start)
+        return rec
+    else:
+        return arr.reshape(count, type_num_comps)
+
+
+
+def load_gltf_first_mesh(glb_path: str):
+    gltf = GLTF2().load(glb_path)
+    mesh = gltf.meshes[0]
+    prim = mesh.primitives[0]
+
+    pos = _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
+    nor = (
+        _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32)
+        if prim.attributes.NORMAL is not None
+        else np.zeros_like(pos, dtype=np.float32)
+    )
+    uv = (
+        _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float32)
+        if prim.attributes.TEXCOORD_0 is not None
+        else np.zeros((pos.shape[0], 2), dtype=np.float32)
+    )
+    idx = _get_data_from_accessor(gltf, prim.indices)
+    if idx.dtype != np.uint32:
+        idx = idx.astype(np.uint32)
+
+    return pos, nor, uv, idx
+
+
+def load_gltf_first_mesh_interleaved(glb_path: str):
+    ( pos, nor, uv, idx ) = load_gltf_first_mesh(glb_path)
+    # interleave: pos.xyz, normal.xyz, uv.xy => 8 floats => 32 bytes
+    v = np.concatenate([pos, nor, uv], axis=1).astype(np.float32)  # (N, 8)
+    return v, idx.reshape(-1).astype(np.uint32)
+
 
 """
 
