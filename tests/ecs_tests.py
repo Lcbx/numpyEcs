@@ -223,7 +223,7 @@ def make_pos2d_store(vals):
     return store
 
 def make_multitag_store(blocks_per_entity):
-    store = ComponentStorage(Tag, mult_comp=True, capacity=64)
+    store = MultiComponentStorage(Tag, capacity=64)
     for eid, values in blocks_per_entity.items():
         for v in values:
             store._add(eid, Tag(v))
@@ -420,7 +420,7 @@ class MultiComp:
 
 def test_storage_multicomp_add_get_remove():
     # Create a storage that allows multiple MultiComp per entity
-    store = ComponentStorage(MultiComp, mult_comp=True, capacity=4)
+    store = MultiComponentStorage(MultiComp, capacity=4)
     entity_id = 42
 
     store._add(entity_id, MultiComp(1.))

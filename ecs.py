@@ -13,7 +13,6 @@ component = dataclass
 # forward declaration
 ComponentProxy = lambda s,e: None
 
-# TODO : split into multi and single component storage
 class ComponentStorage:
 	"""
 	Stores one component type using:
@@ -24,18 +23,18 @@ class ComponentStorage:
 
 	def __init__(self,
 				 component_cls: Type,
-				 mult_comp : bool = False,
 				 capacity: int = 128):
 		self.component_cls = component_cls
-		self.mult_comp = mult_comp
+		self.mult_comp = False
 
-		
-		self._capacity    : int = capacity
-		self._size        : int = 0
+		self._capacity	: int = capacity
+		self._size		: int = 0
 		self._dense = {}
+
+		# NOTE: if we wanted to support a really big number of entities, we could a paged array for the sparse
+		# it would add an additional indirection but avoid allocating a lot of empty memory
 		self._sparse : np.array = np.full(self._capacity, ComponentStorage.NONE, dtype=int)
-		self._dense['entity']   = np.full(self._capacity, ComponentStorage.NONE, dtype=int)
-		if self.mult_comp: self._count : Dict[int, np.uint16] = {}
+		self._dense['entity']	= np.full(self._capacity, ComponentStorage.NONE, dtype=int)
 
 		# Inspect dataclass annotations to build structured dtype
 		ann = getattr(component_cls, "__annotations__", {})
@@ -82,83 +81,20 @@ class ComponentStorage:
 			self._grow_sparse(entity)
 		self._sparse[entity] = idx
 
-
-	def _add(self, entity: Entity, component: Any) -> None:
+	def _simpleAdd(self, entity:Entity, component:Any) -> None:
 		idx = self._size
+		new_size = idx + 1
+		# ensure dense space
+		if new_size >= self._capacity:
+			self._grow_dense(new_size)
+		self._size = new_size
+		# write record at idx
+		self._set(idx, entity, component)
 
-		def _simpleAdd():
-			new_size = idx + 1
-			# ensure dense space
-			if new_size >= self._capacity:
-				self._grow_dense(new_size)
-			self._size = new_size
-			# write record at idx
-			self._set(idx, entity, component)
-
-		if not self.mult_comp:
-			_simpleAdd()
-			self._set_entity(idx, entity)
-			return
-
-		else:
-			count = self._count.get(entity, np.uint16(0))
-			newCount = count+1
-			
-			if count == 0:
-				_simpleAdd()
-				self._set_entity(idx, entity)
-				self._count[entity] = newCount
-			else:
-				head = self._sparse[entity]
-				last = head+count
-				needed = idx + newCount
-				newLast = idx + count
-
-				if needed >= self._capacity:
-					real_size = np.sum(list(map(int, self._count.values())))
-					
-					if real_size > needed * 0.5:
-						self._grow_dense(needed)
-
-					# defragment
-					else:
-						size = self._size
-						new_cap = max(real_size * 2, needed + real_size - size + 32)
-						dense_idx = np.flatnonzero(self._entities_contained != ComponentStorage.NONE)
-						new_size = len(dense_idx)
-						for field_name, arr in self._dense.items():
-							new_arr = np.zeros(new_cap, dtype=arr.dtype)
-							new_arr[:new_size] = arr[dense_idx]
-							self._dense[field_name] = new_arr
-						self._entities_contained[new_size:] = ComponentStorage.NONE
-						valid = self._entities_contained != ComponentStorage.NONE
-						sparse_idx = np.flatnonzero(np.r_[True, self._entities_contained[1:] != self._entities_contained[:-1]] & valid)
-						self._sparse[self._entities_contained[sparse_idx]] = sparse_idx
-						self._size = new_size
-						self._capacity = new_cap
-						self._add(entity, component)
-						return
-
-				if self._entities_contained[last] == ComponentStorage.NONE:
-					if last == idx:
-						_simpleAdd()
-						self._count[entity] = newCount
-						return
-					else:
-						self._set(last, entity, component)
-						self._count[entity] = newCount
-						return
-
-				self._size = needed
-				new_block = slice(idx, newLast)
-				old_block = slice(head, last)
-				for arr in self._dense.values():
-					arr[new_block] = arr[old_block]
-				self._entities_contained[old_block] = ComponentStorage.NONE
-				self._set(newLast, entity, component)
-				self._set_entity(idx, entity)
-				self._count[entity] = newCount
-				return
+	def _add(self, entity:Entity, component:Any) -> None:
+		idx = self._size
+		self._simpleAdd(entity, component)
+		self._set_entity(idx, entity)
 
 	def _set(self, idx:int, entity:Entity, component:Any) -> None:
 		self._entities_contained[idx] = entity
@@ -166,92 +102,51 @@ class ComponentStorage:
 			self._dense[field][idx] = getattr(component, field)
 
 	# NOTE: bool return tells ecs to update entity_masks for this entity
-	def _remove(self, proxy :ComponentProxy) -> bool:
+	def _remove(self, proxy:ComponentProxy) -> bool:
 		entity = proxy._entity
 		deleted = proxy._idx
-		if self.mult_comp:
-			head = self._sparse[entity]
-			if head == ComponentStorage.NONE: return True
-			# update count, swap deleted with last
-			# NOTE: this is simple and fine BUT I don't like that the components relative position are not kept
-			count = self._count[entity]-1
-			last = head + count
-			if deleted != last:
-				for arr in self._dense.values():
-					arr[deleted] = arr[last]
-			self._entities_contained[last] = ComponentStorage.NONE
-			if count > 0:
-				self._count[entity] = count
-				return False
-			del self._count[entity]
-		else:
-			head = deleted if deleted else self._sparse[entity]
-			# swap-pop last into head
-			last = self._size - 1
-			self._size = last # decrement size
-			if head != last:
-				for arr in self._dense.values(): 
-					arr[head] = arr[last]
-				moved = self._entities_contained[last]
-				self._sparse[moved] = head
-			self._entities_contained[last] = ComponentStorage.NONE
-		
+		return self._remove_impl(entity, deleted)
+
+	def _remove_impl(self, entity:Entity, deleted:int) -> bool:
+		head = deleted
+		# swap-pop last into head
+		last = self._size - 1
+		self._size = last # decrement size
+		if head != last:
+			for arr in self._dense.values(): 
+				arr[head] = arr[last]
+			moved = self._entities_contained[last]
+			self._sparse[moved] = head
+		self._entities_contained[last] = ComponentStorage.NONE
 		self._sparse[entity] = ComponentStorage.NONE
 		return True
 
 	def _remove_entity(self, entity:Entity) -> None:
-		if self.mult_comp:
-			rows = self._get_rows([entity])
-			self._sparse[entity] = ComponentStorage.NONE
-			self._entities_contained[rows] = ComponentStorage.NONE
-			del self._count[entity]
-			return
-
 		head = self._sparse[entity]
 		if head != ComponentStorage.NONE:
-			self._remove(ComponentProxy(self, entity, None))
+			self._remove_impl(entity, head)
 
 	def get(self, entity: Entity) -> ComponentProxy:
-		
 		head = self._sparse[entity]
-
 		if head == ComponentStorage.NONE: return None
-		
-		if self.mult_comp:
-			return tuple( ComponentProxy(self, entity, idx) for idx in range(head, head + self._count[entity]) )
-		
 		return ComponentProxy(self, entity, head)
 
 	def _get_rows(self, entities:np.ndarray|None=None) -> np.ndarray:
 		if entities is None:
 			ent = self._entities_contained[:self._size]
-			idx = np.arange(ent.size)[ent != ComponentStorage.NONE]
+			idx = np.arange(ent.size)
+			# NOTE: this not seem a difference enough to make a MultiComponent version
+			if self.mult_comp:
+				idx = idx[ent != ComponentStorage.NONE]
+			return idx
 		else:
 			ent = np.atleast_1d(entities).astype(int)
-			if ent.size == 0:
-				return []
+			if ent.size == 0: return []
+			return self._get_rows_impl(ent)
 
-			if self.mult_comp:
-				ent = np.unique(ent) 
-				
-				startIdx = self._sparse[ent]
-				counts = np.vectorize(self._count.get, otypes=(np.uint16,))(ent,0)
-
-				if ent.size == 1:
-					return range(startIdx[0], startIdx[0] + counts[0])
-				
-				base_idx = np.repeat(startIdx, counts)
-				total = counts.sum()
-				single_offsets = np.arange(total) # [0, 1, 2, 3, ...] size total
-				cum_counts = np.r_[0, np.cumsum(counts)[:-1]] # [0, c0, c0+c1, ...] size counts
-				large_offsets = np.repeat(cum_counts, counts) # [[0] * c0, [c0] * c1, [c0+c1] * c2, ...] size total
-				offsets = single_offsets - large_offsets
-				
-				idx = base_idx + offsets
-				idx = idx.astype(int)
-			else:
-				idx = self._sparse[ent]
-				idx = idx[idx!=ComponentStorage.NONE]
+	def _get_rows_impl(self, ent:np.ndarray):
+		idx = self._sparse[ent]
+		idx = idx[idx!=ComponentStorage.NONE]
 		return idx
 	
 	def get_vector(self, entities:np.ndarray|None=None) -> np.ndarray:
@@ -314,6 +209,134 @@ class ComponentStorage:
 			return np.empty(0, dtype=int)
 
 		return matched.astype(int)
+
+
+class MultiComponentStorage(ComponentStorage):
+	"""
+	component storage that supports multiple components of the same type per entity
+	slightly less performant when you add and remove components randomly
+	"""
+
+	def __init__(self,
+			 component_cls: Type,
+			 capacity: int = 128):
+
+		super().__init__(component_cls, capacity)
+		self.mult_comp = True
+		self._count : Dict[int, np.uint16] = {}
+
+	# conequence of the policy used to support multiple components per entity
+	def _defragment(self, real_size:int, needed:int):
+		new_cap = max(real_size * 2, needed + real_size - self._size + 32)
+		dense_idx = np.flatnonzero(self._entities_contained != ComponentStorage.NONE)
+		new_size = len(dense_idx)
+		for field_name, arr in self._dense.items():
+			new_arr = np.zeros(new_cap, dtype=arr.dtype)
+			new_arr[:new_size] = arr[dense_idx]
+			self._dense[field_name] = new_arr
+		self._entities_contained[new_size:] = ComponentStorage.NONE
+		valid = self._entities_contained != ComponentStorage.NONE
+		sparse_idx = np.flatnonzero(np.r_[True, self._entities_contained[1:] != self._entities_contained[:-1]] & valid)
+		self._sparse[self._entities_contained[sparse_idx]] = sparse_idx
+		self._size = new_size
+		self._capacity = new_cap
+
+	def _add(self, entity:Entity, component:Any) -> None:
+		idx = self._size
+		count = self._count.get(entity, np.uint16(0))
+
+		if count == 0:
+			self._simpleAdd(entity, component)
+			self._set_entity(idx, entity)
+			self._count[entity] = np.uint16(1)
+			return
+
+		head = self._sparse[entity]
+		last = head+count
+		newCount = count+1
+		needed = idx + newCount
+		newLast = idx + count
+
+		if needed >= self._capacity:
+			real_size = np.sum(list(map(int, self._count.values())))
+
+			if real_size > needed * 0.5:
+				self._grow_dense(needed)
+
+			else:
+				self._defragment(real_size, needed)
+				self._add(entity, component)
+				return
+
+		self._count[entity] = newCount
+
+		if self._entities_contained[last] == ComponentStorage.NONE:
+			if last == idx:
+				self._simpleAdd(entity, component)
+			else:
+				self._set(last, entity, component)
+			return
+
+		# move to end
+		self._size = needed
+		new_block = slice(idx, newLast)
+		old_block = slice(head, last)
+		for arr in self._dense.values():
+	 			arr[new_block] = arr[old_block]
+		self._entities_contained[old_block] = ComponentStorage.NONE
+		self._set(newLast, entity, component)
+		self._set_entity(idx, entity)
+
+	def _remove_entity(self, entity:Entity) -> None:
+		rows = self._get_rows([entity])
+		if rows:
+			self._sparse[entity] = ComponentStorage.NONE
+			self._entities_contained[rows] = ComponentStorage.NONE
+			del self._count[entity]
+
+	def get(self, entity: Entity) -> tuple[ComponentProxy]:
+		head = self._sparse[entity]
+		if head == ComponentStorage.NONE: return None
+		return tuple( ComponentProxy(self, entity, idx) for idx in range(head, head + self._count[entity]) )
+
+	def _get_rows_impl(self, ent:np.ndarray):
+		ent = np.unique(ent) 
+		
+		startIdx = self._sparse[ent]
+		counts = np.vectorize(self._count.get, otypes=(np.uint16,))(ent,0)
+
+		if ent.size == 1:
+			return range(startIdx[0], startIdx[0] + counts[0])
+		
+		total = counts.sum()
+		base_idx = np.repeat(startIdx, counts) # [start0, start0, start1, start1, ...] size total
+		single_offsets = np.arange(total) # [0, 1, 2, 3, ...] size total
+		cum_counts = np.r_[0, np.cumsum(counts)[:-1]] # [0, c0, c0+c1, ...] size counts
+		large_offsets = np.repeat(cum_counts, counts) # [[0] * c0, [c0] * c1, [c0+c1] * c2, ...] size total
+		offsets = single_offsets - large_offsets
+		
+		idx = base_idx + offsets
+		idx = idx.astype(int)
+		return idx
+
+	def _remove_impl(self, entity:Entity, deleted:int) -> bool:
+		head = self._sparse[entity]
+		if head == ComponentStorage.NONE: return True
+		# update count, swap deleted with last
+		# NOTE: this is simple and fine BUT I don't like that the components relative position are not kept
+		# alternative is displace all the components on the right of the deleted one
+		count = self._count[entity]-1
+		last = head + count
+		if deleted != last:
+			for arr in self._dense.values():
+				arr[deleted] = arr[last]
+		self._entities_contained[last] = ComponentStorage.NONE
+		if count > 0:
+			self._count[entity] = count
+			return False
+		self._sparse[entity] = ComponentStorage.NONE
+		del self._count[entity]
+		return True
 
 
 
@@ -400,7 +423,8 @@ class ECS:
 				self._comp_bits[cls] = 1 << self._next_bit
 				self._next_bit += 1
 			if cls not in self._stores:
-				self._stores[cls] = ComponentStorage(cls, mult_comp = allow_same_type_components_per_entity, capacity=capacity)
+				storage = MultiComponentStorage if allow_same_type_components_per_entity else ComponentStorage
+				self._stores[cls] = storage(cls, capacity=capacity)
 	
 	def add_component(self, entity: Entity, *components) -> None:
 		bits = self.entity_masks[entity]
@@ -417,10 +441,10 @@ class ECS:
 		store = component._store
 		if entity >= self.entity_masks_size: return
 		# _remove returns True if there are no components of that type left in entity
-		if store and store._remove(component) and (bit := self._comp_bits.get(comp_cls, 0))!=0:
+		if store and store._remove(component) and (bit := self._comp_bits.get(store.component_cls, 0))!=0:
 			self.entity_masks[entity] &= ~bit
 
-	def get_store(self, comp_cls: Type) -> ComponentStorage:
+	def get_store(self, comp_cls: Type):
 		return self._stores.get(comp_cls)
 
 	def get_vectors(self, *args):
