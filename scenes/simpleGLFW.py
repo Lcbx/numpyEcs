@@ -19,5 +19,5 @@ camera = Camera(
 
 while not RenderContext.windowShouldClose():
 	draw_frame()
-	with RenderContext(camera = camera):
+	with RenderContext.RenderPass(camera = camera):
 		pass

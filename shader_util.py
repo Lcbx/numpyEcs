@@ -37,30 +37,20 @@ class Camera:
 		return Mat4.orthogonal_projection(-right, right, top, -top, self.near, self.far)
 
 
-# metaclass, do not use as-is
-class _renderContext(type):
-	def __call__(cls, *args, **kwargs):
-		return cls.newContext(*args, **kwargs)
+type GLFWwindow_ptr = ctypes._Pointer[glfw._GLFWwindow]
+class RenderContext:
 
-	def __enter__(cls):
-		cls.__enter__()
-		return cls
-
-	def __exit__(cls, exception_type, exception_value, exception_traceback) -> None:
-		pass
-
-type _GLFWwindowPointerT = ctypes._Pointer[glfw._GLFWwindow]
-class RenderContext(metaclass=_renderContext):
-	# static members
-	#shader:BetterShader = None
-	#texture:img.Framebuffer = None
-	camera:Camera = None
-	view:Mat4 = None
-	projection:Mat4 = None
-	window : _GLFWwindowPointerT= None
 	canvas : wgpu.GPUCanvasContext = None
+	adapter : wgpu.GPUAdapter = None
+	device : wgpu.GPUDevice = None
+
+	window : GLFWwindow_ptr = None
 	windowDimensions : tuple[float,float] = (0.0,0.0)
+
 	aspect: float = 1.0
+
+	def __init__(self):
+		raise Exception('this class is not meant to be instanciated')
 
 	@classmethod
 	def InitWindow(cls, w:float, h:float, title:str) -> None:
@@ -89,11 +79,23 @@ class RenderContext(metaclass=_renderContext):
 		# width, height, title, monitor (for full screen), window (for opengl context sharing)
 		cls.window = glfw.create_window(w, h, title, None, None)
 		#glfw.set_window_pos(cls.window, monitor_w-w, 0)
-		print(cls.window)
 
 		# wgpu context
 		present_info = get_glfw_present_info(cls.window, vsync=True)
 		cls.canvas = wgpu.gpu.get_canvas_context(present_info)
+
+		RenderContext.setup(highpower=True)
+
+		presentation_format = cls.canvas.get_preferred_format(cls.adapter)
+		cls.canvas.configure(device=cls.device, format=presentation_format, usage=wgpu.TextureUsage.RENDER_ATTACHMENT)
+
+
+	@classmethod
+	def setup(cls, *, highpower:bool) -> None:
+		request_params = {'power_preference': 'high-performance' if highpower else 'low-power' }
+		if cls.canvas: request_params['canvas'] = cls.canvas
+		cls.adapter = wgpu.gpu.request_adapter_sync(**request_params)
+		cls.device = cls.adapter.request_device_sync()
 
 
 	@classmethod
@@ -138,27 +140,38 @@ class RenderContext(metaclass=_renderContext):
 		return False
 
 	@classmethod
-	def newContext(cls,
+	def RenderPass(cls, *args, **kwargs) -> '_RenderPass':
+		return _RenderPass(*args, **kwargs)
+
+
+class _RenderPass:
+	def __init__(self,
 			#shader:BetterShader = None,
 			camera:Camera = None,
 			#texture:img.Framebuffer = None
 		):
-		#cls.shader = shader
-		cls.camera = camera
-		#cls.texture = texture
-		return cls
+		#self.shader = shader
+		self.camera = camera
+		#self.texture = texture
 
-	@classmethod
-	def __enter__(cls):
-		#if cls.shader: cls.shader.bind()
-		#if cls.texture: cls.texture.bind()
-		if cls.camera:
-			cls.view = cls.camera.view()
-			cls.projection = cls.camera.projection(cls.aspect)
-		#	if 'uView' in cls.shader._uniforms: cls.shader['uView'] = cls.view
-		#	if 'uProj' in cls.shader._uniforms: cls.shader['uProj'] = cls.projection
-		#	if 'uViewProj' in cls.shader._uniforms: cls.shader['uViewProj'] = cls.view @ cls.projection
-		return cls
+	def __enter__(self):
+		#if self.shader: self.shader.bind()
+		#if self.texture: self.texture.bind()
+		if self.camera:
+			self.view = self.camera.view()
+			# TODO: determine aspect from texture dimensions
+			aspect = RenderContext.aspect
+			self.projection = self.camera.projection(aspect)
+		#	if 'uView' in self.shader._uniforms: self.shader['uView'] = self.view
+		#	if 'uProj' in self.shader._uniforms: self.shader['uProj'] = self.projection
+		#	if 'uViewProj' in self.shader._uniforms: self.shader['uViewProj'] = self.view @ self.projection
+		return self
+
+	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
+		pass
+
+
+
 
 
 # Parses a shader definition file containing two functions: vertex() and fragment().
