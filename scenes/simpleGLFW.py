@@ -17,7 +17,13 @@ camera = Camera(
     near=0.1, far=1000.0
 )
 
+# expects layout(location=...) everywhere
+# + ShaderSource does not support uniform structs
+#RenderContext.ShaderPipeline(ShaderSource('tests/test.shader'))
+
+rpass = RenderContext.RenderPass(camera = camera)
+
 while not RenderContext.windowShouldClose():
 	draw_frame()
-	with RenderContext.RenderPass(camera = camera):
+	with rpass:
 		pass

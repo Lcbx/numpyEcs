@@ -10,7 +10,7 @@ from wgpu.utils.glfw_present_info import get_glfw_present_info
 
 import os
 import re
-from typing import Any, Sequence, Dict, Optional
+from typing import Any, Sequence, Iterable, Dict, Optional, Tuple, NamedTuple
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 
@@ -43,11 +43,14 @@ class RenderContext:
 	canvas : wgpu.GPUCanvasContext = None
 	adapter : wgpu.GPUAdapter = None
 	device : wgpu.GPUDevice = None
+	presentation_format : str = None
 
 	window : GLFWwindow_ptr = None
 	windowDimensions : tuple[float,float] = (0.0,0.0)
+	aspect : float = 1.0
 
-	aspect: float = 1.0
+	depth_format : str = wgpu.TextureFormat.depth24plus
+	depth :  wgpu.GPUTextureView = None
 
 	def __init__(self):
 		raise Exception('this class is not meant to be instanciated')
@@ -84,10 +87,10 @@ class RenderContext:
 		present_info = get_glfw_present_info(cls.window, vsync=True)
 		cls.canvas = wgpu.gpu.get_canvas_context(present_info)
 
-		RenderContext.setup(highpower=True)
+		cls.setup(highpower=True)
 
-		presentation_format = cls.canvas.get_preferred_format(cls.adapter)
-		cls.canvas.configure(device=cls.device, format=presentation_format, usage=wgpu.TextureUsage.RENDER_ATTACHMENT)
+		cls.presentation_format = cls.canvas.get_preferred_format(cls.adapter)
+		cls.canvas.configure(device=cls.device, format=cls.presentation_format, usage=wgpu.TextureUsage.RENDER_ATTACHMENT)
 
 
 	@classmethod
@@ -99,14 +102,22 @@ class RenderContext:
 
 
 	@classmethod
-	def updateWindowSize(cls):
+	def updateWindowSize(cls, w:float, h:float):
 		# NOTE: some versions of glfw send resize events
-		wh = glfw.get_framebuffer_size(cls.window)
-		if wh != cls.windowDimensions:
-			cls.windowDimensions = wh
-			w,h = wh
-			cls.canvas.set_physical_size(w, h)
-			cls.aspect = w/h
+		wh = (w,h)
+		cls.windowDimensions = wh
+		cls.canvas.set_physical_size(w, h)
+		cls.aspect = w/h
+		cls.updateDepthBufferSize(*wh)
+
+	@classmethod
+	def updateDepthBufferSize(cls, w:float, h:float):
+		depth_tex = cls.device.create_texture(
+			size=(w, h, 1),
+			format= cls.depth_format,
+			usage=wgpu.TextureUsage.RENDER_ATTACHMENT,
+		)
+		cls.depth = depth_tex.create_view()
 
 
 	@classmethod
@@ -129,7 +140,9 @@ class RenderContext:
 	def windowShouldClose(cls) -> bool:
 		cls.canvas.present()
 		
-		cls.updateWindowSize()
+		wh = glfw.get_framebuffer_size(cls.window)
+		if wh != cls.windowDimensions and wh[0]>0 and wh[1]>0:
+			cls.updateWindowSize(*wh)
 		
 		glfw.poll_events()
 
@@ -142,6 +155,10 @@ class RenderContext:
 	@classmethod
 	def RenderPass(cls, *args, **kwargs) -> '_RenderPass':
 		return _RenderPass(*args, **kwargs)
+
+	@classmethod
+	def ShaderPipeline(cls, *args, **kwargs) -> '_ShaderPipeline':
+		return _ShaderPipeline(*args, **kwargs)
 
 
 class _RenderPass:
@@ -171,25 +188,289 @@ class _RenderPass:
 		pass
 
 
+class GL_TypeInfo(NamedTuple):
+	base: np.dtype
+	occupied: int	   # bytes consumed in std140 (vec3 → 16)
+	shape: Tuple[int, ...]
+
+GL_to_dtype: Dict[str, GL_TypeInfo] = {
+	"float":	GL_TypeInfo(np.float32, 4,  ()),
+	"vec2": 	GL_TypeInfo(np.float32, 8,  (2,)),
+	"vec3": 	GL_TypeInfo(np.float32, 16, (3,)),
+	"vec4": 	GL_TypeInfo(np.float32, 16, (4,)),
+	"mat4": 	GL_TypeInfo(np.float32, 64, (4, 4)),
+	"uint": 	GL_TypeInfo(np.uint32, 4,  ()),
+	"uvec2":	GL_TypeInfo(np.int32, 8,  (2,)),
+	"uvec3":	GL_TypeInfo(np.int32, 16, (3,)),
+	"uvec4":	GL_TypeInfo(np.int32, 16, (4,)),
+	"int":  	GL_TypeInfo(np.int32, 4,  ()),
+	"ivec2":	GL_TypeInfo(np.int32, 8,  (2,)),
+	"ivec3":	GL_TypeInfo(np.int32, 16, (3,)),
+	"ivec4":	GL_TypeInfo(np.int32, 16, (4,)),
+	"sampler2D":GL_TypeInfo(np.uint32, 4,  ()),
+}
 
 
+def _align16(x: int) -> int:
+	return (x + 15) & ~15
+
+
+def make_std140_dtype(
+	fields: Iterable[Tuple[str, str]],
+	*,
+	pad_prefix: str = "_pad",
+) -> Tuple[np.dtype, Dict[str, int]]:
+	"""
+	std140-compatible numpy dtype builder.
+
+	Assumptions:
+	  - struct alignment is always 16 bytes
+	  - supports base types and arrays of base types only
+	  - sampler2D is represented as a u32 handle/index
+
+	Returns (dtype, offsets).
+	"""
+
+	_ARRAY_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*\[\s*(\d+)\s*\]\s*$")
+
+
+	dfields: List[Tuple[str, object]] = []
+	offsets: Dict[str, int] = {}
+	offset = 0
+	pad_idx = 0
+
+	for spec, name in fields:
+		m = _ARRAY_RE.match(spec)
+		if m:
+			tname, count = m.group(1), int(m.group(2))
+			info = GL_to_dtype.get(tname)
+			if info is None:
+				raise ValueError(f"Unsupported type {tname!r}")
+
+			# arrays always start on 16-byte boundary
+			off2 = _align16(offset)
+			if off2 != offset:
+				dfields.append((f"{pad_prefix}{pad_idx}", np.dtype(("u1", (off2 - offset,)))))
+				pad_idx += 1
+				offset = off2
+
+			elem_dt = np.dtype((info.base, info.shape)) if info.shape else info.base
+			stride = _align16(info.occupied)
+
+			if stride == info.occupied:
+				slot_dt = elem_dt
+			else:
+				slot_dt = np.dtype(
+					[("v", elem_dt), ("_pad", np.dtype(("u1", (stride - info.occupied,))))],
+					align=False,
+				)
+
+			dfields.append((name, np.dtype((slot_dt, (count,)))))
+			offsets[name] = offset
+			offset += stride * count
+			continue
+
+		info = GL_to_dtype.get(spec)
+		if info is None:
+			raise ValueError(f"Unsupported type {spec!r}")
+
+		elem_dt = np.dtype((info.base, info.shape)) if info.shape else info.base
+		dfields.append((name, elem_dt))
+		offsets[name] = offset
+		offset += info.occupied
+
+	# pad struct size to multiple of 16
+	final = _align16(offset)
+	if final != offset:
+		dfields.append((f"{pad_prefix}{pad_idx}", np.dtype(("u1", (final - offset,)))))
+
+	return np.dtype(dfields, align=False), offsets
+
+
+def dtype_to_vertex_format(dtype: np.dtype) -> wgpu.VertexFormat:
+	"""
+	Determine the wgpu.VertexFormat corresponding to a NumPy dtype.
+
+	Assumptions:
+	- dtype is within wgpu spec
+	- dtype may be an array of a valid vertex scalar type
+	- no normalization, no padding, no struct dtypes
+	"""
+	_SCALAR_MAP = {
+		np.int8:	"Sint8",
+		np.uint8:	"Uint8",
+		np.int16:	"Sint16",
+		np.uint16:	"Uint16",
+		np.float32: "Float32",
+		np.uint32:  "Uint32",
+		np.int32:   "Sint32",
+	}
+
+
+	dtype = np.dtype(dtype)
+
+	# Reject structs early (ambiguous for a single attribute)
+	if dtype.fields is not None:
+		raise TypeError("Structured dtypes cannot map to a single VertexFormat")
+
+	# Scalar case
+	if dtype.subdtype is None:
+		try:
+			prefix = _SCALAR_MAP[dtype]
+		except KeyError:
+			raise TypeError(f"Unsupported vertex scalar dtype: {dtype}")
+
+		return getattr(wgpu.VertexFormat, prefix)
+
+	# Array case
+	base_dtype, shape = dtype.subdtype
+
+	if len(shape) != 1:
+		raise TypeError("Only 1D array dtypes are valid vertex attributes")
+
+	count = shape[0]
+
+	if count < 1 or count > 4:
+		raise ValueError("VertexFormat arrays must have 1–4 components")
+
+	try:
+		prefix = _SCALAR_MAP[base_dtype]
+	except KeyError:
+		raise TypeError(f"Unsupported vertex base dtype: {base_dtype}")
+
+	if count == 1:
+		return getattr(wgpu.VertexFormat, prefix)
+
+	return getattr(wgpu.VertexFormat, f"{prefix}x{count}")
+
+
+# TODO: pool meshes with same vertex layouts
+# TODO: don't compile shaders we already compiled before
+class _ShaderPipeline:
+	def __init__(self, source:'ShaderSource'):
+		device = RenderContext.device
+
+		self.vert_module = device.create_shader_module(label="shader.vert",code=source.vertex_glsl)
+		self.frag_module = device.create_shader_module(label="shader.frag",code=source.fragment_glsl)
+
+		u_dtype, _ = make_std140_dtype(source.uniforms)
+
+		self.uniforms = np.zeros((), dtype=u_dtype)
+
+		self.uniform_buffer = device.create_buffer(
+			size=self.uniforms.nbytes,
+			usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST,
+		)
+
+		bind_group_layout = device.create_bind_group_layout(
+			entries=[
+				wgpu.BindGroupLayoutEntry(
+					binding=0,
+					visibility=wgpu.ShaderStage.VERTEX | wgpu.ShaderStage.FRAGMENT,
+					buffer=wgpu.BufferBindingLayout(
+						type=wgpu.BufferBindingType.uniform,
+						has_dynamic_offset=False,
+						min_binding_size=self.uniforms.nbytes,
+					),
+				)
+			]
+		)
+
+		bind_group = device.create_bind_group(
+			layout=bind_group_layout,
+			entries=[
+				wgpu.BindGroupEntry(
+					binding=0,
+					resource=wgpu.BufferBinding(
+						buffer=self.uniform_buffer,
+						offset=0,
+						size=self.uniforms.nbytes,
+					),
+				)
+			],
+		)
+
+		pipeline_layout = device.create_pipeline_layout(
+			bind_group_layouts=[bind_group_layout]
+		)
+
+		# TODO: compute stride and vertex layout/attributes from mesh data
+		# + use dtype_to_vertex_format
+
+		self.pipeline = device.create_render_pipeline(
+			layout=pipeline_layout,
+			vertex=wgpu.VertexState(
+				module=self.vert_module,
+				entry_point="main",
+				buffers=[
+					wgpu.VertexBufferLayout(
+						array_stride=8 * 4,
+						step_mode=wgpu.VertexStepMode.vertex,
+						attributes=[
+							wgpu.VertexAttribute(
+								shader_location=0,
+								offset=0 * 4,
+								format=wgpu.VertexFormat.float32x3,
+							),
+							wgpu.VertexAttribute(
+								shader_location=1,
+								offset=3 * 4,
+								format=wgpu.VertexFormat.float32x3,
+							),
+							wgpu.VertexAttribute(
+								shader_location=2,
+								offset=6 * 4,
+								format=wgpu.VertexFormat.float32x2,
+							),
+						],
+					)
+				],
+			),
+			primitive=wgpu.PrimitiveState(
+				topology=wgpu.PrimitiveTopology.triangle_list,
+				cull_mode=wgpu.CullMode.back,
+				front_face=wgpu.FrontFace.ccw,
+			),
+			depth_stencil=wgpu.DepthStencilState(
+				format=RenderContext.depth_format,
+				depth_write_enabled=True,
+				depth_compare=wgpu.CompareFunction.less,
+			),
+			fragment=wgpu.FragmentState(
+				module=self.frag_module,
+				entry_point="main",
+				targets=[
+					wgpu.ColorTargetState(format=RenderContext.presentation_format)
+				],
+			),
+		)
+
+	def write_uniforms():
+		RenderContext.device.queue.write_buffer(self.uniform_buffer, 0, self.uniforms)
+
+
+
+class DefaultFalseDict(Dict):
+	# Dict that returns False for any missing key; used in feature resolution
+	def __missing__(self, key):
+		return False
 
 # Parses a shader definition file containing two functions: vertex() and fragment().
 # Extracts uniforms, varying, in, and out variables, then generates GLSL code for both stages.
-class BetterShaderSource:
+class ShaderSource:
 
 	# Regex to capture qualifier, type, and name from declarations
 	_decl_pattern = re.compile(r"^(?>layout\(location = (\d+)\) )?(uniform|in|out|(?:flat )?varying|const)\s+(\S+)\s+([^;]+).*?;", re.MULTILINE)
 
 	# Regex to extract function definitions with bodies
 	_func_pattern = re.compile(
-		r'\n'							# start at a newline
-		r'[\w\*\s&<>]+?\s+'			  # return type (e.g. void, bool, vec4, const mat4&)
-		r'([A-Za-z_]\w*)'				# function name
-		r'\s*\(([^)]*)\)\s*'			 # argument list
-		r'(?:\{\n|\n\{\n)'			   # opening brace on same or next line
-		r'([\s\S]*?)'					# function body (non-greedy)
-		r'\n\}'						  # closing brace at column 0
+		r'\n'						# start at a newline
+		r'[\w\*\s&<>]+?\s+'			# return type (e.g. void, bool, vec4, const mat4&)
+		r'([A-Za-z_]\w*)'			# function name
+		r'\s*\(([^)]*)\)\s*'		# argument list
+		r'(?:\{\n|\n\{\n)'			# opening brace on same or next line
+		r'([\s\S]*?)'				# function body (non-greedy)
+		r'\n\}'						# closing brace at column 0
 	)
 
 	_vertex_start = 'void vertex()'
@@ -201,22 +482,22 @@ class BetterShaderSource:
 		filepath: str,
 		features: Optional[Sequence[str]] = None,
 		params: Optional[Dict[str, Any]] = None,
-		glsl_version: str = '#version 430'
+		glsl_version: str = '#version 430 core'
 	):
 		# :param filepath: Path to the master shader definition file (template).
 		# :param features: Dict of feature flags for conditionals, e.g. {'FEATURE_FOG': True}.
 		# :param params: Any extra variables you want available in templates.
-		# :param glsl_version: Override #version (defaults to #version 430).
+		# :param glsl_version: Override #version.
 
 		self.filepath = filepath
 		self._basedir = os.path.dirname(os.path.abspath(filepath))
-		self._opengl_version = glsl_version
-		self.uniforms = []      # list[(type, name)]
-		self.varyings = []      # list[(type, name)]
-		self.ins = []           # list[(loc, type, name)]
-		self.outs = []          # list[(loc, type, name)]
-		self.consts = []        # list[(type, name)]
-		self.functions = []     # list[str]
+		self._glsl_version = glsl_version
+		self.uniforms = []	  # list[(type, name)]
+		self.varyings = []	  # list[(type, name)]
+		self.ins = []		   # list[(loc, type, name)]
+		self.outs = []		  # list[(loc, type, name)]
+		self.consts = []		# list[(type, name)]
+		self.functions = []	 # list[str]
 		self.vertex_glsl = ''   # rendered vertex GLSL
 		self.fragment_glsl = '' # rendered fragment GLSL
 
@@ -238,7 +519,7 @@ class BetterShaderSource:
 		env = Environment(
 			loader=FileSystemLoader(self._basedir),
 			undefined=StrictUndefined,  # fail fast for missing vars
-			autoescape=False,           # GLSL is not HTML
+			autoescape=False,			# GLSL is not HTML
 			keep_trailing_newline=True,
 			trim_blocks=True,
 			lstrip_blocks=True,
@@ -295,7 +576,7 @@ class BetterShaderSource:
 			return inoutFmt(*entry, 'out')
 
 		v_lines = (
-			self._opengl_version, '',
+			self._glsl_version, '',
 			*map(inStr, self.ins), '',
 			*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms), '',
 			*map(lambda kv: ('flat ' if kv[2] else '')+ f'out {kv[0]} {kv[1]};', self.varyings), '',
@@ -314,7 +595,7 @@ class BetterShaderSource:
 
 		# Fragment shader (required)
 		f_lines = [
-			self._opengl_version, '',
+			self._glsl_version, '',
 			*map(lambda kv: ('flat ' if kv[2] else '')+ f'in {kv[0]} {kv[1]};', self.varyings), '',
 			*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms), '',
 			*map(outStr, self.outs), '',
@@ -329,78 +610,78 @@ class BetterShaderSource:
 from pygltflib import GLTF2, BufferView, Accessor
 
 def _get_data_from_accessor(gltf: GLTF2, accessor_index: int) -> np.ndarray:
-    acc: Accessor = gltf.accessors[accessor_index]
-    bv: BufferView = gltf.bufferViews[acc.bufferView]
-    buf = gltf.buffers[bv.buffer]
+	acc: Accessor = gltf.accessors[accessor_index]
+	bv: BufferView = gltf.bufferViews[acc.bufferView]
+	buf = gltf.buffers[bv.buffer]
 
-    if buf.uri is None:  # GLB
-        bin_chunk = gltf.binary_blob()
-    else:
-        raise NotImplementedError("External buffers not handled in this snippet")
+	if buf.uri is None:  # GLB
+		bin_chunk = gltf.binary_blob()
+	else:
+		raise NotImplementedError("External buffers not handled")
 
-    b = bv.byteOffset or 0
-    e = b + (bv.byteLength or 0)
-    view_bytes = memoryview(bin_chunk)[b:e]
+	b = bv.byteOffset or 0
+	e = b + (bv.byteLength or 0)
+	view_bytes = memoryview(bin_chunk)[b:e]
 
-    type_num_comps = {
-        "SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4, "MAT3": 9, "MAT4": 16
-    }[acc.type]
+	type_num_comps = {
+		"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4, "MAT3": 9, "MAT4": 16
+	}[acc.type]
 
-    np_dtype = {
-        5120: np.int8,
-        5121: np.uint8,
-        5122: np.int16,
-        5123: np.uint16,
-        5125: np.uint32,
-        5126: np.float32
-    }[acc.componentType]
+	np_dtype = {
+		5120: np.int8,
+		5121: np.uint8,
+		5122: np.int16,
+		5123: np.uint16,
+		5125: np.uint32,
+		5126: np.float32
+	}[acc.componentType]
 
-    stride = bv.byteStride or (np.dtype(np_dtype).itemsize * type_num_comps)
-    count = acc.count
-    offset = acc.byteOffset or 0
-    tight = np.dtype(np_dtype).itemsize * type_num_comps
+	stride = bv.byteStride or (np.dtype(np_dtype).itemsize * type_num_comps)
+	count = acc.count
+	offset = acc.byteOffset or 0
+	tight = np.dtype(np_dtype).itemsize * type_num_comps
 
-    arr = np.frombuffer(view_bytes, dtype=np_dtype, count=count * type_num_comps, offset=offset)
-    if stride != tight:
-        rec = np.empty((count, type_num_comps), dtype=np_dtype)
-        base = offset
-        for i in range(count):
-            start = base + i * stride
-            rec[i] = np.frombuffer(view_bytes, dtype=np_dtype, count=type_num_comps, offset=start)
-        return rec
-    else:
-        return arr.reshape(count, type_num_comps)
+	arr = np.frombuffer(view_bytes, dtype=np_dtype, count=count * type_num_comps, offset=offset)
+	if stride != tight:
+		rec = np.empty((count, type_num_comps), dtype=np_dtype)
+		base = offset
+		for i in range(count):
+			start = base + i * stride
+			rec[i] = np.frombuffer(view_bytes, dtype=np_dtype, count=type_num_comps, offset=start)
+		return rec
+	else:
+		return arr.reshape(count, type_num_comps)
 
 
 
 def load_gltf_first_mesh(glb_path: str):
-    gltf = GLTF2().load(glb_path)
-    mesh = gltf.meshes[0]
-    prim = mesh.primitives[0]
+	gltf = GLTF2().load(glb_path)
+	mesh = gltf.meshes[0]
+	prim = mesh.primitives[0]
 
-    pos = _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
-    nor = (
-        _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32)
-        if prim.attributes.NORMAL is not None
-        else np.zeros_like(pos, dtype=np.float32)
-    )
-    uv = (
-        _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float32)
-        if prim.attributes.TEXCOORD_0 is not None
-        else np.zeros((pos.shape[0], 2), dtype=np.float32)
-    )
-    idx = _get_data_from_accessor(gltf, prim.indices)
-    if idx.dtype != np.uint32:
-        idx = idx.astype(np.uint32)
+	pos = _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
+	nor = (
+		_get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32)
+		if prim.attributes.NORMAL is not None
+		else np.zeros_like(pos, dtype=np.float32)
+	)
+	uv = (
+		_get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float32)
+		if prim.attributes.TEXCOORD_0 is not None
+		else np.zeros((pos.shape[0], 2), dtype=np.float32)
+	)
+	idx = _get_data_from_accessor(gltf, prim.indices)
+	if idx.dtype != np.uint32:
+		idx = idx.astype(np.uint32)
 
-    return pos, nor, uv, idx
+	return pos, nor, uv, idx
 
 
 def load_gltf_first_mesh_interleaved(glb_path: str):
-    ( pos, nor, uv, idx ) = load_gltf_first_mesh(glb_path)
-    # interleave: pos.xyz, normal.xyz, uv.xy => 8 floats => 32 bytes
-    v = np.concatenate([pos, nor, uv], axis=1).astype(np.float32)  # (N, 8)
-    return v, idx.reshape(-1).astype(np.uint32)
+	( pos, nor, uv, idx ) = load_gltf_first_mesh(glb_path)
+	# interleave: pos.xyz, normal.xyz, uv.xy => 8 floats => 32 bytes
+	v = np.concatenate([pos, nor, uv], axis=1).astype(np.float32)  # (N, 8)
+	return v, idx.reshape(-1).astype(np.uint32)
 
 
 """
@@ -512,11 +793,6 @@ def create_frame_buffer(width:int, height:int,
 	#return framebuffer
 	raise Exception("not implemented")
 
-
-class DefaultFalseDict(Dict):
-	# Dict that returns False for any missing key; used in feature resolution
-	def __missing__(self, key):
-		return False
 
 
 class WatchTimer:
@@ -719,29 +995,29 @@ def Cubes(program, positions, sizes, color
 		([ 1.0, 0.0, 0.0] * 4) +   # +X
 		([-1.0, 0.0, 0.0] * 4) +   # -X
 		([ 0.0, 1.0, 0.0] * 4) +   # +Y
-		([ 0.0,-1.0, 0.0] * 4),    # -Y
+		([ 0.0,-1.0, 0.0] * 4),	# -Y
 		dtype=np.float32
 	)
 
 	CUBE_UVS_24 = np.array([0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0] * 6, dtype=np.float32)
 
 	CUBE_INDICES_36 = np.array([
-		0, 1, 2,  2, 3, 0,        # +Z
-		4, 5, 6,  6, 7, 4,        # -Z
-		8, 9, 10,  10, 11, 8,     # +X
+		0, 1, 2,  2, 3, 0,		# +Z
+		4, 5, 6,  6, 7, 4,		# -Z
+		8, 9, 10,  10, 11, 8,	 # +X
 		12, 13, 14,  14, 15, 12,  # -X
 		16, 17, 18,  18, 19, 16,  # +Y
 		20, 21, 22,  22, 23, 20,  # -Y
 	], dtype=np.uint32)
 
 	positions = np.asarray(positions, dtype=np.float32)
-	sizes     = np.asarray(sizes, dtype=np.float32)
+	sizes	 = np.asarray(sizes, dtype=np.float32)
 
 	n = positions.shape[0]
 
 	# repeat normals/uvs per cube
 	normals = np.tile(CUBE_NORMALS_24, n)   # (N*24*3,)
-	uvs     = np.tile(CUBE_UVS_24, n)       # (N*24*2,)
+	uvs	 = np.tile(CUBE_UVS_24, n)	   # (N*24*2,)
 
 	# (N,3): positions & sizes
 	# (N,24,3): base scaled per-cube + per-cube position
