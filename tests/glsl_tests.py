@@ -2,6 +2,8 @@ import pytest
 
 from shader_util import *
 
+RenderContext.setup(highpower=False)
+
 # will throw if invalid
 shader1 = build_shader_program('tests/test.shader')
 shader2 = build_shader_program('tests/test.shader',features={"BIAS"})

@@ -287,7 +287,7 @@ def make_std140_dtype(
 	return np.dtype(dfields, align=False), offsets
 
 
-def dtype_to_vertex_format(dtype: np.dtype) -> wgpu.VertexFormat:
+def dtype_to_vertex_format(dtype: np.dtype) -> Tuple[wgpu.VertexFormat, int]:
 	"""
 	Determine the wgpu.VertexFormat corresponding to a NumPy dtype.
 
@@ -296,14 +296,19 @@ def dtype_to_vertex_format(dtype: np.dtype) -> wgpu.VertexFormat:
 	- dtype may be an array of a valid vertex scalar type
 	- no normalization, no padding, no struct dtypes
 	"""
+
+	# (scalar name, byte size)
 	_SCALAR_MAP = {
-		np.int8:	"Sint8",
-		np.uint8:	"Uint8",
-		np.int16:	"Sint16",
-		np.uint16:	"Uint16",
-		np.float32: "Float32",
-		np.uint32:  "Uint32",
-		np.int32:   "Sint32",
+		np.int8:	("Sint8", 1),
+		np.uint8:	("Uint8", 1),
+		np.int16:	("Sint16", 2),
+		np.uint16:	("Uint16", 2),
+		np.uint32:	("Uint32", 4),
+		np.int32:	("Sint32", 4),
+		np.uint32:	("Uint32", 4),
+		np.float16:	("Float16", 2),
+		np.float32:	("Float32", 4),
+		np.float64:	("Float64", 8),
 	}
 
 
@@ -316,11 +321,11 @@ def dtype_to_vertex_format(dtype: np.dtype) -> wgpu.VertexFormat:
 	# Scalar case
 	if dtype.subdtype is None:
 		try:
-			prefix = _SCALAR_MAP[dtype]
+			prefix, bsize = _SCALAR_MAP[dtype]
 		except KeyError:
 			raise TypeError(f"Unsupported vertex scalar dtype: {dtype}")
 
-		return getattr(wgpu.VertexFormat, prefix)
+		return getattr(wgpu.VertexFormat, prefix), bsize
 
 	# Array case
 	base_dtype, shape = dtype.subdtype
@@ -334,24 +339,34 @@ def dtype_to_vertex_format(dtype: np.dtype) -> wgpu.VertexFormat:
 		raise ValueError("VertexFormat arrays must have 1–4 components")
 
 	try:
-		prefix = _SCALAR_MAP[base_dtype]
+		prefix, bsize = _SCALAR_MAP[base_dtype]
 	except KeyError:
 		raise TypeError(f"Unsupported vertex base dtype: {base_dtype}")
 
 	if count == 1:
-		return getattr(wgpu.VertexFormat, prefix)
+		return getattr(wgpu.VertexFormat, prefix), bsize
 
-	return getattr(wgpu.VertexFormat, f"{prefix}x{count}")
+	return getattr(wgpu.VertexFormat, f"{prefix}x{count}"), bsize * count
 
 
-# TODO: pool meshes with same vertex layouts
+# TODO: pool meshes with same vertex attributes
 # TODO: don't compile shaders we already compiled before
 class _ShaderPipeline:
-	def __init__(self, source:'ShaderSource'):
+	def __init__(self, source:'ShaderSource', mesh_arrays:Iterable[Tuple[str, np.ndarray]]|None = None, generate_uniform_buffer:bool=False):
 		device = RenderContext.device
+
+		#print(source.vertex_glsl)
+		#print(source.fragment_glsl)
 
 		self.vert_module = device.create_shader_module(label="shader.vert",code=source.vertex_glsl)
 		self.frag_module = device.create_shader_module(label="shader.frag",code=source.fragment_glsl)
+
+		self.uniforms = None # set by generate_uniform_buffer
+		self.uniform_buffer = self.generate_uniform_buffer() if generate_uniform_buffer else None
+		self.pipeline = self.finalize_pipeline(mesh_arrays) if mesh_arrays else None
+
+
+	def generate_uniform_buffer(self) -> wgpu.GPUBuffer:
 
 		u_dtype, _ = make_std140_dtype(source.uniforms)
 
@@ -394,35 +409,32 @@ class _ShaderPipeline:
 			bind_group_layouts=[bind_group_layout]
 		)
 
-		# TODO: compute stride and vertex layout/attributes from mesh data
-		# + use dtype_to_vertex_format
+	# not tested yet
+	def finalize_pipeline(self, mesh_arrays:Iterable[np.ndarray]|None = None) -> wgpu.GPURenderPipeline:
+		# computes stride and vertex layout/attributes from mesh data
 
-		self.pipeline = device.create_render_pipeline(
+		vertexAttributes = []
+		offset = 0
+		for i, vb in enumerate(map(dtype_to_vertex_format, mesh_arrays)):
+			vertexFormat, bsize = vb
+			vertexAttributes.append(wgpu.VertexAttribute(
+				shader_location = i,
+				offset=offset,
+				format=vertexFormat
+			))
+			offset += bsize
+
+
+		return device.create_render_pipeline(
 			layout=pipeline_layout,
 			vertex=wgpu.VertexState(
 				module=self.vert_module,
 				entry_point="main",
 				buffers=[
 					wgpu.VertexBufferLayout(
-						array_stride=8 * 4,
+						array_stride=offset,
 						step_mode=wgpu.VertexStepMode.vertex,
-						attributes=[
-							wgpu.VertexAttribute(
-								shader_location=0,
-								offset=0 * 4,
-								format=wgpu.VertexFormat.float32x3,
-							),
-							wgpu.VertexAttribute(
-								shader_location=1,
-								offset=3 * 4,
-								format=wgpu.VertexFormat.float32x3,
-							),
-							wgpu.VertexAttribute(
-								shader_location=2,
-								offset=6 * 4,
-								format=wgpu.VertexFormat.float32x2,
-							),
-						],
+						attributes=vertexAttributes
 					)
 				],
 			),
@@ -445,8 +457,14 @@ class _ShaderPipeline:
 			),
 		)
 
-	def write_uniforms():
+	# usage: set rp.uniform['name'] = value; rp.write_uniforms()
+	def write_uniforms(self) -> None:
 		RenderContext.device.queue.write_buffer(self.uniform_buffer, 0, self.uniforms)
+
+def build_shader_program(shaderPath : str, **kwargs):
+	src = ShaderSource(shaderPath, **kwargs)
+	RenderContext.ShaderPipeline(src)
+	return src
 
 
 
@@ -473,16 +491,23 @@ class ShaderSource:
 		r'\n\}'						# closing brace at column 0
 	)
 
+	def create_variable_regex(self, name:str) -> re.Pattern:
+		escaped = re.escape(name)
+		_GLSL_IDENT_CHAR = "[A-Za-z0-9_]"
+		pattern = rf"(?<!{_GLSL_IDENT_CHAR}){escaped}(?!{_GLSL_IDENT_CHAR})"
+		return re.compile(pattern)
+
 	_vertex_start = 'void vertex()'
 	_fragment_start = 'void fragment()'
 	_main_start = 'void main()'
 
 	def __init__(
 		self,
-		filepath: str,
+		filepath: str, # TODO : support simple source argument
+		*,
 		features: Optional[Sequence[str]] = None,
 		params: Optional[Dict[str, Any]] = None,
-		glsl_version: str = '#version 430 core'
+		glsl_version: str = '#version 450 core'
 	):
 		# :param filepath: Path to the master shader definition file (template).
 		# :param features: Dict of feature flags for conditionals, e.g. {'FEATURE_FOG': True}.
@@ -568,17 +593,30 @@ class ShaderSource:
 
 
 	def _generate_glsl(self):
-		def inoutFmt(loc, typ, name, inoutStr):
-			return (f'layout(location = {loc}) ' if loc else '') + f'{inoutStr} {typ} {name};'
+		def inoutFmt(loc, tup, inoutStr):
+			l, typ, name = tup
+			loc = l if l else loc
+			return f'layout(location = {loc}) {inoutStr} {typ} {name};'
 		def inStr(entry):
 			return inoutFmt(*entry, 'in')
 		def outStr(entry):
 			return inoutFmt(*entry, 'out')
 
+		# workaround for simple uniforms : make one big uniform struct and use aliases
+		uniforms_definition = f'layout(set=0, binding=0, std140) uniform Uniforms {{\n {(
+				"".join(f"\t{typ} {name};\n" for typ, name in self.uniforms)
+			)} }} _U;'
+
+		# replace uniform references by alias
+		for i, f in enumerate(self.functions):
+			for _, name  in self.uniforms:
+				rx = self.create_variable_regex(name)
+				self.functions[i] = rx.sub(f'_U.{name}', f)
+
 		v_lines = (
 			self._glsl_version, '',
-			*map(inStr, self.ins), '',
-			*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms), '',
+			*map(inStr, enumerate(self.ins)), '',
+			uniforms_definition, '',
 			*map(lambda kv: ('flat ' if kv[2] else '')+ f'out {kv[0]} {kv[1]};', self.varyings), '',
 			*map(lambda kv: f'const {kv[0]} {kv[1]};', self.consts), '',
 			*self.functions[:self._vertex_body], '',
@@ -597,8 +635,8 @@ class ShaderSource:
 		f_lines = [
 			self._glsl_version, '',
 			*map(lambda kv: ('flat ' if kv[2] else '')+ f'in {kv[0]} {kv[1]};', self.varyings), '',
-			*map(lambda kv: f'uniform {kv[0]} {kv[1]};', self.uniforms), '',
-			*map(outStr, self.outs), '',
+			#uniforms_definition, '',
+			*map(outStr, enumerate(self.outs)), '',
 			*map(lambda kv: f'const {kv[0]} {kv[1]};', self.consts), '',
 			*functions_after_vertex_but_not_fragment, '',
 			self.functions[self._fragment_body].replace(self._fragment_start, self._main_start)
