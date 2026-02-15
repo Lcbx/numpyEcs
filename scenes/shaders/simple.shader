@@ -6,27 +6,25 @@ in vec2 aUV;
 uniform mat4 uModel;
 uniform mat4 uView;
 uniform mat4 uProj;
-uniform vec3 uLightDir;
+uniform vec4 uLightDir;
 uniform vec4 uTint;
 
 varying vec3 vNormalWS;
-varying vec3 vLightDirWS;
 varying vec2 vUV;
 
-out vec4 FragColor;
 
 void vertex() {
     vec4 worldPos = uModel * vec4(aPos, 1.0);
     vNormalWS = mat3(uModel) * aNormal;
-    vLightDirWS = normalize(uLightDir);
     vUV = aUV;
     gl_Position = uProj * uView * worldPos;
 }
 
+out vec4 FragColor;
+
 void fragment() {
     vec3 N = normalize(vNormalWS);
-    float NdotL = max(dot(N, vLightDirWS), 0.0);
-    vec3 base = uTint.rgb;
-    vec3 color = base * (0.2 + 0.8 * NdotL);
+    float NdotL = max(dot(N, uLightDir.xyz), 0.0);
+    vec3 color = uTint.rgb * (0.2 + 0.8 * NdotL);
     FragColor = vec4(color, uTint.a);
 }

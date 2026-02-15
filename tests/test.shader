@@ -1,8 +1,7 @@
 
 in vec3 vertexPosition;
-in vec2 vertexTexCoord;
 in vec3 vertexNormal;
-in vec4 vertexColor;
+in vec2 vertexTexCoord;
 
 uniform mat4 matModel;
 uniform mat4 mvp;
@@ -11,14 +10,14 @@ uniform mat4 mvp;
 
 const float bias = {{ PARAMS.bias |default(0.0001) }};
 
-#include "test_include.shader"
+#include "test_include.shader" // plus_one
 
 #endif
 
 varying vec4 fragColor;
 
 void vertex(){
-	fragColor = vertexColor;
+	fragColor = vec4(0.5, 0.1, 1.0, 1.0);
 	vec4 vertex = vec4(vertexPosition, 1.0);
 	vertex = mvp*vertex;
 #if FEATURES.BIAS
