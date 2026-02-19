@@ -10,7 +10,8 @@ uniform mat4 mvp;
 
 const float bias = {{ PARAMS.bias |default(0.0001) }};
 
-#include "test_include.shader" // plus_one
+// contains plus_one definition
+#include "test_include.shader"
 
 #endif
 

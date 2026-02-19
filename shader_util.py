@@ -10,6 +10,7 @@ from wgpu.utils.glfw_present_info import get_glfw_present_info
 
 import os
 import re
+from glob import glob
 from typing import Any, Sequence, Iterable, Dict, Optional, Tuple, NamedTuple
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
@@ -447,10 +448,9 @@ class _ShaderPipeline:
 		RenderContext.device.queue.write_buffer(self.uniform_buffer, 0, self.uniforms)
 
 def build_shader_program(shaderPath : str, **kwargs):
-	src = ShaderSource(shaderPath, **kwargs)
+	src = ShaderSource(filepath=shaderPath, **kwargs)
 	RenderContext.ShaderPipeline(src)
 	return src
-
 
 
 class DefaultFalseDict(Dict):
@@ -488,19 +488,23 @@ class ShaderSource:
 
 	def __init__(
 		self,
-		filepath: str, # TODO : support simple source argument
 		*,
+		source: str = None,
+		filepath: str = None,
+		basedir: str = None,
 		features: Optional[Sequence[str]] = None,
 		params: Optional[Dict[str, Any]] = None,
 		glsl_version: str = '#version 450 core'
 	):
+		# :param source: master shader definition code (template).
 		# :param filepath: Path to the master shader definition file (template).
 		# :param features: Dict of feature flags for conditionals, e.g. {'FEATURE_FOG': True}.
 		# :param params: Any extra variables you want available in templates.
 		# :param glsl_version: Override #version.
 
-		self.filepath = filepath
-		self._basedir = os.path.dirname(os.path.abspath(filepath))
+		self.source = source if source else open(filepath, 'r').read()
+		self._basedir = basedir if basedir else os.path.dirname(os.path.abspath(filepath)) if filepath else glob('**/shaders/', recursive=True)
+		print(f'{self._basedir=}')
 		self._glsl_version = glsl_version
 		self.uniforms = []	  # list[(type, name)]
 		self.varyings = []	  # list[(type, name)]
@@ -535,10 +539,7 @@ class ShaderSource:
 			lstrip_blocks=True,
 			line_statement_prefix='#' # << key: enable #if/#endif/#include
 		)
-		template_name = os.path.basename(self.filepath)
-		template = env.get_template(template_name)
-
-		ctx = {}
+		template = env.from_string(self.source)
 
 		featuresDict = DefaultFalseDict()
 		if features is not None: featuresDict.update({k: True for k in features})

@@ -21,7 +21,7 @@ rpass = RenderContext.RenderPass(camera = camera)
 vertices, indices = load_gltf_first_mesh_interleaved('scenes/resources/rooftop_utility_pole.glb')
 index_count = int(indices.size)
 
-shader = RenderContext.ShaderPipeline(ShaderSource('scenes/shaders/simple.shader'), vertices, True)
+shader = RenderContext.ShaderPipeline(ShaderSource(filepath='scenes/shaders/simple.shader'), vertices, True)
 
 print('init done')
 
