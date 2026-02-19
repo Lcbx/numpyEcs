@@ -187,31 +187,22 @@ class _RenderPass:
 		pass
 
 
-class GL_TypeInfo(NamedTuple):
-	base: np.dtype
-	occupied: int	   # bytes consumed in std140 (vec3 → 16)
-	shape: Tuple[int, ...]
-
-GL_to_dtype: Dict[str, GL_TypeInfo] = {
-	"float":	GL_TypeInfo(np.float32, 4,  ()),
-	"vec2": 	GL_TypeInfo(np.float32, 8,  (2,)),
-	"vec3": 	GL_TypeInfo(np.float32, 16, (3,)),
-	"vec4": 	GL_TypeInfo(np.float32, 16, (4,)),
-	"mat4": 	GL_TypeInfo(np.float32, 64, (4, 4)),
-	"uint": 	GL_TypeInfo(np.uint32, 4,  ()),
-	"uvec2":	GL_TypeInfo(np.int32, 8,  (2,)),
-	"uvec3":	GL_TypeInfo(np.int32, 16, (3,)),
-	"uvec4":	GL_TypeInfo(np.int32, 16, (4,)),
-	"int":  	GL_TypeInfo(np.int32, 4,  ()),
-	"ivec2":	GL_TypeInfo(np.int32, 8,  (2,)),
-	"ivec3":	GL_TypeInfo(np.int32, 16, (3,)),
-	"ivec4":	GL_TypeInfo(np.int32, 16, (4,)),
-	"sampler2D":GL_TypeInfo(np.uint32, 4,  ()),
+GL_to_dtype: Dict[str, np.dtype] = {
+	"float":	 np.dtype((np.float32, ())),
+	"vec2": 	 np.dtype((np.float32, (2,))),
+	"vec3": 	 np.dtype((np.float32, (3,))),
+	"vec4": 	 np.dtype((np.float32, (4,))),
+	"mat4": 	 np.dtype((np.float32, (4,4))),
+	"uint": 	 np.dtype((np.uint32, ())),
+	"uvec2":	 np.dtype((np.int32, (2,))),
+	"uvec3":	 np.dtype((np.int32, (3,))),
+	"uvec4":	 np.dtype((np.int32, (4,))),
+	"int":  	 np.dtype((np.int32, ())),
+	"ivec2":	 np.dtype((np.int32, (2,))),
+	"ivec3":	 np.dtype((np.int32, (3,))),
+	"ivec4":	 np.dtype((np.int32, (4,))),
+	"sampler2D": np.dtype((np.uint32, ())),
 }
-
-
-def _align16(x: int) -> int:
-	return (x + 15) & ~15
 
 
 def make_std140_dtype(
@@ -223,6 +214,7 @@ def make_std140_dtype(
 	std140-compatible numpy dtype builder.
 
 	Assumptions:
+	  - fields param is List[type, name] where type is a glsl base type or an array of it
 	  - struct alignment is always 16 bytes
 	  - supports base types and arrays of base types only
 	  - sampler2D is represented as a u32 handle/index
@@ -230,55 +222,33 @@ def make_std140_dtype(
 	Returns dtype
 	"""
 
-	_ARRAY_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*\[\s*(\d+)\s*\]\s*$")
-
-
-	dfields: List[Tuple[str, object]] = []
+	dfields: List[Tuple[str, np.dtype]] = []
 	offset = 0
 	pad_idx = 0
 
+	def add_padding():
+		nonlocal offset, pad_idx, dfields
+		off2 = offset % 16
+		#print(f'{offset=}, {off2=}')
+		if off2 != 0:
+			dfields.append((f"{pad_prefix}{pad_idx}", np.dtype(("u1", off2))))
+			offset += off2
+			pad_idx += 1
+
 	for spec, name in fields:
-		m = _ARRAY_RE.match(spec)
-		if m:
-			tname, count = m.group(1), int(m.group(2))
-			info = GL_to_dtype.get(tname)
-			if info is None:
-				raise ValueError(f"Unsupported type {tname!r}")
-
-			# arrays always start on 16-byte boundary
-			off2 = _align16(offset)
-			if off2 != offset:
-				dfields.append((f"{pad_prefix}{pad_idx}", np.dtype(("u1", (off2 - offset,)))))
-				pad_idx += 1
-				offset = off2
-
-			elem_dt = np.dtype((info.base, info.shape)) if info.shape else info.base
-			stride = _align16(info.occupied)
-
-			if stride == info.occupied:
-				slot_dt = elem_dt
-			else:
-				slot_dt = np.dtype(
-					[("v", elem_dt), ("_pad", np.dtype(("u1", (stride - info.occupied,))))],
-					align=False,
-				)
-
-			dfields.append((name, np.dtype((slot_dt, (count,)))))
-			offset += stride * count
-			continue
+		#print(name)
 
 		info = GL_to_dtype.get(spec)
 		if info is None:
 			raise ValueError(f"Unsupported type {spec!r}")
 
-		elem_dt = np.dtype((info.base, info.shape)) if info.shape else info.base
-		dfields.append((name, elem_dt))
-		offset += info.occupied
+		dfields.append((name, info))
+		#print(f'{name=} {spec=} {info.itemsize=}')
+		offset += info.itemsize
 
-	# pad struct size to multiple of 16
-	final = _align16(offset)
-	if final != offset:
-		dfields.append((f"{pad_prefix}{pad_idx}", np.dtype(("u1", (final - offset,)))))
+		add_padding()
+
+	#print(dfields)
 
 	return np.dtype(dfields, align=False)
 
@@ -357,7 +327,7 @@ class _ShaderPipeline:
 	def __init__(self, source:'ShaderSource', mesh_arrays:np.ndarray|None = None, generate_uniform_buffer:bool=False):
 		device = RenderContext.device
 
-		print(source.vertex_glsl)
+		#print(source.vertex_glsl)
 		#print(source.fragment_glsl)
 
 		try:

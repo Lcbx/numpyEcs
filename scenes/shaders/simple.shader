@@ -6,7 +6,7 @@ in vec2 aUV;
 uniform mat4 uModel;
 uniform mat4 uView;
 uniform mat4 uProj;
-uniform vec4 uLightDir;
+uniform vec3 uLightDir;
 uniform vec4 uTint;
 
 varying vec3 vNormalWS;
