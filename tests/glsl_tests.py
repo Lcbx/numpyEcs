@@ -5,9 +5,11 @@ from shader_util import *
 RenderContext.setup(highpower=False)
 
 # will throw if invalid
-shader1 = build_shader_program('tests/test.shader')
-shader2 = build_shader_program('tests/test.shader',features={"BIAS"})
-shader3 = build_shader_program('tests/test.shader',features={"BIAS"}, params={"bias":0.01})
+shader1, pipeline = build_shader_program('tests/test.shader')
+shader2, _ = build_shader_program('tests/test.shader',features={"BIAS"})
+shader3, _ = build_shader_program('tests/test.shader',features={"BIAS"}, params={"bias":0.01})
+
+pipeline.generate_uniform_buffer()
 
 bias_decl = "const float bias = "
 func_decl = "float plus_one(float bias)"

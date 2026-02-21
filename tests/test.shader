@@ -6,6 +6,10 @@ in vec2 vertexTexCoord;
 uniform mat4 matModel;
 uniform mat4 mvp;
 
+// uniform array parsing test
+uniform vec3[5] test;
+uniform vec3[5][ 3] test2;
+
 #if FEATURES.BIAS
 
 const float bias = {{ PARAMS.bias |default(0.0001) }};

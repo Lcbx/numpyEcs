@@ -206,14 +206,10 @@ GL_to_dtype: Dict[str, np.dtype] = {
 }
 
 
-def make_std140_dtype(
-	fields: Iterable[Tuple[str, str]],
-	*,
-	pad_prefix: str = "_pad",
+def make_std430_dtype(
+	fields: Iterable[Tuple[str, str]]
 ) -> Tuple[np.dtype, Dict[str, int]]:
 	"""
-	std140-compatible numpy dtype builder.
-
 	Assumptions:
 	  - fields param is List[type, name] where type is a glsl base type or an array of it
 	  - struct alignment is always 16 bytes
@@ -232,16 +228,28 @@ def make_std140_dtype(
 		off2 = offset % 16
 		#print(f'{offset=}, {off2=}')
 		if off2 != 0:
-			dfields.append((f"{pad_prefix}{pad_idx}", np.dtype(("u1", off2))))
+			dfields.append((f"_pad{pad_idx}", np.dtype(("u1", off2))))
 			offset += off2
 			pad_idx += 1
 
 	for spec, name in fields:
 		#print(name)
 
+		# array case
+		if '[' in spec:
+			definition = spec.replace(']', '').split('[')
+			spec = definition[0]
+			counts = tuple(map(int,definition[1:]))
+		else: counts = None
+
 		info = GL_to_dtype.get(spec)
 		if info is None:
 			raise ValueError(f"Unsupported type {spec!r}")
+
+		if counts:
+			# rebuild item dimensions
+			info = np.dtype( (info.base, info.shape + counts) )
+			#print(info)
 
 		dfields.append((name, info))
 		#print(f'{name=} {spec=} {info.itemsize=}')
@@ -327,6 +335,7 @@ def dtype_to_vertex_format(dtype: np.dtype) -> Tuple:
 class _ShaderPipeline:
 	def __init__(self, source:'ShaderSource', mesh_arrays:np.ndarray|None = None, generate_uniform_buffer:bool=False):
 		device = RenderContext.device
+		self.source = source
 
 		#print(source.vertex_glsl)
 		#print(source.fragment_glsl)
@@ -343,14 +352,14 @@ class _ShaderPipeline:
 			raise e
 
 		self.uniforms = None # set by generate_uniform_buffer
-		if generate_uniform_buffer: self.generate_uniform_buffer(source)
+		if generate_uniform_buffer: self.generate_uniform_buffer()
 		if isinstance(mesh_arrays, np.ndarray): self.pipeline = self.finalize_pipeline(mesh_arrays)
 
 
-	def generate_uniform_buffer(self, source:'ShaderSource') -> wgpu.GPUBuffer:
+	def generate_uniform_buffer(self) -> wgpu.GPUBuffer:
 		device = RenderContext.device
 
-		u_dtype = make_std140_dtype(source.uniforms)
+		u_dtype = make_std430_dtype(self.source.uniforms)
 
 		self.uniforms = np.zeros((), dtype=u_dtype)
 
@@ -449,8 +458,7 @@ class _ShaderPipeline:
 
 def build_shader_program(shaderPath : str, **kwargs):
 	src = ShaderSource(filepath=shaderPath, **kwargs)
-	RenderContext.ShaderPipeline(src)
-	return src
+	return src, RenderContext.ShaderPipeline(src)
 
 
 class DefaultFalseDict(Dict):
@@ -463,7 +471,13 @@ class DefaultFalseDict(Dict):
 class ShaderSource:
 
 	# Regex to capture qualifier, type, and name from declarations
-	_decl_pattern = re.compile(r"^(?>layout\(location = (\d+)\) )?(uniform|in|out|(?:flat )?varying|const)\s+(\S+)\s+([^;]+).*?;", re.MULTILINE)
+	_decl_pattern = re.compile(
+		r"^(?:layout\(location\s*=\s*(\d+)\)\s+)?"
+		r"(uniform|in|out|(?:flat\s+)?varying|const)\s+"
+		r"(\w+(?:\s*\[\s*\d*\s*\])*)\s+"
+		r"([^;]+).*?;",
+		re.MULTILINE
+	)
 
 	# Regex to extract function definitions with bodies
 	_func_pattern = re.compile(
@@ -504,8 +518,8 @@ class ShaderSource:
 
 		self.source = source if source else open(filepath, 'r').read()
 		self._basedir = basedir if basedir else os.path.dirname(os.path.abspath(filepath)) if filepath else glob('**/shaders/', recursive=True)
-		print(f'{self._basedir=}')
 		self._glsl_version = glsl_version
+		
 		self.uniforms = []	  # list[(type, name)]
 		self.varyings = []	  # list[(type, name)]
 		self.ins = []		   # list[(loc, type, name)]
@@ -515,7 +529,7 @@ class ShaderSource:
 		self.vertex_glsl = ''   # rendered vertex GLSL
 		self.fragment_glsl = '' # rendered fragment GLSL
 
-
+		#print(f'{self._basedir=}')
 		#print(f'compiling {filepath}')
 
 		# Render the shader source through Jinja2 (handles #if / #include)
@@ -593,7 +607,7 @@ class ShaderSource:
 			return inoutFmt(*entry, inoutStr='out')
 
 		# workaround for simple uniforms : make one big uniform struct and use aliases
-		uniforms_definition = f'layout(set=0, binding=0, std140) uniform Uniforms {{\n {(
+		uniforms_definition = f'layout(set=0, binding=0, std430) uniform Uniforms {{\n {(
 				"".join(f"\t{typ} {name};\n" for typ, name in self.uniforms)
 			)} }} _U;'
 
@@ -686,6 +700,8 @@ def load_gltf_first_mesh(glb_path: str):
 	gltf = GLTF2().load(glb_path)
 	mesh = gltf.meshes[0]
 	prim = mesh.primitives[0]
+	
+	#print(f'{mesh=}')
 
 	pos = _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
 	nor = (
@@ -803,14 +819,6 @@ class BetterShader(Program):
 			elif s.type == 'fragment':
 				self.fragment_glsl = source
 			else: raise Exception('unsupported shader type')
-
-
-def build_shader_program(path:str, **params):
-	source = BetterShaderSource(path, **params)
-	vert = Shader(source.vertex_glsl, 'vertex')
-	frag = Shader(source.fragment_glsl, 'fragment')
-	prog = BetterShader(vert, frag)
-	return prog 
 
 def create_frame_buffer(width:int, height:int,
 						colorFormat = gl.GL_RGBA8,
