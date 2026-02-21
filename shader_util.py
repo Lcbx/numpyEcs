@@ -157,8 +157,8 @@ class RenderContext:
 		return _RenderPass(*args, **kwargs)
 
 	@classmethod
-	def ShaderPipeline(cls, *args, **kwargs) -> '_ShaderPipeline':
-		return _ShaderPipeline(*args, **kwargs)
+	def Shader(cls, *args, **kwargs) -> '_Shader':
+		return _Shader(*args, **kwargs)
 
 
 class _RenderPass:
@@ -330,10 +330,9 @@ def dtype_to_vertex_format(dtype: np.dtype) -> Tuple:
 	return getattr(wgpu.VertexFormat, f"{prefix}x{count}")
 
 
-# TODO: pool meshes with same vertex attributes
 # TODO: don't compile shaders we already compiled before
-class _ShaderPipeline:
-	def __init__(self, source:'ShaderSource', mesh_arrays:np.ndarray|None = None, generate_uniform_buffer:bool=False):
+class _Shader:
+	def __init__(self, source:'ShaderSource'):
 		device = RenderContext.device
 		self.source = source
 
@@ -351,24 +350,9 @@ class _ShaderPipeline:
 			print(source.fragment_glsl)
 			raise e
 
-		self.uniforms = None # set by generate_uniform_buffer
-		if generate_uniform_buffer: self.generate_uniform_buffer()
-		if isinstance(mesh_arrays, np.ndarray): self.pipeline = self.finalize_pipeline(mesh_arrays)
+		self.uniforms_dtype = make_std430_dtype(self.source.uniforms)
 
-
-	def generate_uniform_buffer(self) -> wgpu.GPUBuffer:
-		device = RenderContext.device
-
-		u_dtype = make_std430_dtype(self.source.uniforms)
-
-		self.uniforms = np.zeros((), dtype=u_dtype)
-
-		self.uniform_buffer = device.create_buffer(
-			size=u_dtype.itemsize,
-			usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST,
-		)
-
-		bind_group_layout = device.create_bind_group_layout(
+		self.bind_group_layout = device.create_bind_group_layout(
 			entries=[
 				wgpu.BindGroupLayoutEntry(
 					binding=0,
@@ -376,62 +360,117 @@ class _ShaderPipeline:
 					buffer=wgpu.BufferBindingLayout(
 						type=wgpu.BufferBindingType.uniform,
 						has_dynamic_offset=False,
-						min_binding_size=u_dtype.itemsize,
+						min_binding_size=self.uniforms_dtype.itemsize,
 					),
 				)
 			]
+		)		
+
+		self.pipeline_layout = device.create_pipeline_layout(
+			bind_group_layouts=[self.bind_group_layout]
 		)
 
-		bind_group = device.create_bind_group(
-			layout=bind_group_layout,
+
+	# NOTE: we pass the shader since the mesh needs it for setup
+	def Mesh(self, *args, **kwargs) -> '_Mesh':
+		return _Mesh(self, *args, **kwargs)
+
+	# NOTE: we pass the shader since the mesh needs it for setup
+	def UniformBuffer(self, *args, **kwargs) -> '_UniformBuffer':
+		return _UniformBuffer(self, *args, **kwargs)
+
+
+class _UniformBuffer:
+
+	def __init__(self, shader : _Shader):
+		device = RenderContext.device
+		self.shader = shader
+
+		self.uniforms = np.zeros((), dtype=shader.uniforms_dtype)
+
+		self.uniform_buffer = device.create_buffer(
+			size=shader.uniforms_dtype.itemsize,
+			usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST,
+		)
+
+		self.bind_group = device.create_bind_group(
+			layout=shader.bind_group_layout,
 			entries=[
 				wgpu.BindGroupEntry(
 					binding=0,
 					resource=wgpu.BufferBinding(
 						buffer=self.uniform_buffer,
 						offset=0,
-						size=u_dtype.itemsize,
+						size=shader.uniforms_dtype.itemsize,
 					),
 				)
 			],
 		)
 
-		self.pipeline_layout = device.create_pipeline_layout(
-			bind_group_layouts=[bind_group_layout]
-		)
+	# usage: us.uniform['name'] = value; us.write_uniforms()
+	def write_uniforms(self) -> None:
+		RenderContext.device.queue.write_buffer(self.uniform_buffer, 0, self.uniforms)
 
-	def finalize_pipeline(self, mesh_arrays:np.ndarray|None = None) -> wgpu.GPURenderPipeline:
+
+# TODO: pool meshes with same vertex attributes
+class _Mesh:
+
+	# NOTE: is there a point to supporting meshes with no indices these days
+	def __init__(self, shader:_Shader, vertex_data:np.ndarray, indices:np.ndarray, instance_data:np.ndarray|None = None):
 		device = RenderContext.device
 
-		#print(mesh_arrays)
+		self.shader = shader
+		self.index_count = indices.size
+		self.instanced = isinstance(instance_data, np.ndarray)
+		vertex_dtype = vertex_data.dtype
 
-		# compute stride and vertex layout/attributes from mesh data
-		dtype = mesh_arrays.dtype
-		vertexAttributes = []
-		for i, vo in enumerate(dtype_to_vertex_format(dtype)):
-			vertexFormat, offset = vo
-			#print(vertexFormat, offset)
-			vertexAttributes.append(wgpu.VertexAttribute(
+		vertexAttributes = [ wgpu.VertexAttribute(
 				shader_location = i,
 				offset=offset,
 				format=vertexFormat
-			))
+			) for i, (vertexFormat, offset)
+			in enumerate(dtype_to_vertex_format(vertex_data.dtype))
+		]
+		
 
-		#vertex_buffer = device.create_buffer_with_data(data=mesh_arrays.view(np.uint8), usage=wgpu.BufferUsage.VERTEX)
-		#index_buffer = device.create_buffer_with_data(data=indices.tobytes(), usage=wgpu.BufferUsage.INDEX)
+		# TODO: test if view(np.uint8) truly tobytes() but wihout a copy ?
+		self.vertex_buffer = device.create_buffer_with_data(data=vertex_data.view(np.uint8), usage=wgpu.BufferUsage.VERTEX)
+		self.index_buffer = device.create_buffer_with_data(data=indices.view(np.uint8), usage=wgpu.BufferUsage.INDEX)
 
-		self.render_pipeline = device.create_render_pipeline(
-			layout=self.pipeline_layout,
+		buffers_spec = [
+			wgpu.VertexBufferLayout(
+				array_stride=vertex_dtype.itemsize,
+				step_mode=wgpu.VertexStepMode.vertex,
+				attributes=vertexAttributes
+			)
+		]
+
+		if self.instanced:
+			self.instance_count = instance_data.size
+
+			instanceAttributes = [ wgpu.VertexAttribute(
+					shader_location = i,
+					offset=offset,
+					format=vertexFormat
+				) for i, (vertexFormat, offset)
+				in enumerate(dtype_to_vertex_format(instance_data.dtype))
+			]
+
+			self.instance_buffer = device.create_buffer_with_data(data=instance_data.view(np.uint8), usage=wgpu.BufferUsage.VERTEX|wgpu.BufferUsage.COPY_DST)
+
+			buffers_spec.append(
+				wgpu.VertexBufferLayout(
+					array_stride=vertex_dtype.itemsize,
+					step_mode=wgpu.VertexStepMode.Instance,
+					attributes=instanceAttributes
+				))
+
+		self.render_pipeline =  device.create_render_pipeline(
+			layout=self.shader.pipeline_layout,
 			vertex=wgpu.VertexState(
-				module=self.vert_module,
+				module=self.shader.vert_module,
 				entry_point="main",
-				buffers=[
-					wgpu.VertexBufferLayout(
-						array_stride=dtype.itemsize,
-						step_mode=wgpu.VertexStepMode.vertex,
-						attributes=vertexAttributes
-					)
-				],
+				buffers=buffers_spec,
 			),
 			primitive=wgpu.PrimitiveState(
 				topology=wgpu.PrimitiveTopology.triangle_list,
@@ -444,7 +483,7 @@ class _ShaderPipeline:
 				depth_compare=wgpu.CompareFunction.less,
 			),
 			fragment=wgpu.FragmentState(
-				module=self.frag_module,
+				module=self.shader.frag_module,
 				entry_point="main",
 				targets=[
 					wgpu.ColorTargetState(format=RenderContext.presentation_format)
@@ -452,13 +491,19 @@ class _ShaderPipeline:
 			),
 		)
 
-	# usage: set rp.uniform['name'] = value; rp.write_uniforms()
-	def write_uniforms(self) -> None:
-		RenderContext.device.queue.write_buffer(self.uniform_buffer, 0, self.uniforms)
+	def draw(self, renderpass : wgpu.GPURenderCommandsMixin):
+		renderpass.set_pipeline(self.render_pipeline)
+		renderpass.set_bind_group(0, self.shader.bind_group, [])
+		renderpass.set_vertex_buffer(0, self.vertex_buffer)
+		if self.instanced:
+			renderpass.set_vertex_buffer(1, self.instance_buffer)
+		renderpass.set_index_buffer(self.index_buffer, wgpu.IndexFormat.uint32)
+		renderpass.draw_indexed(self.index_count, self.instance_count, 0, 0, 0)
+		renderpass.end()
 
 def build_shader_program(shaderPath : str, **kwargs):
 	src = ShaderSource(filepath=shaderPath, **kwargs)
-	return src, RenderContext.ShaderPipeline(src)
+	return src, RenderContext.Shader(src)
 
 
 class DefaultFalseDict(Dict):
