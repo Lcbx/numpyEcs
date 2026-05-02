@@ -151,7 +151,7 @@ class ComponentStorage:
 	
 	def get_vector(self, entities:np.ndarray|None=None) -> np.ndarray:
 		""" returns component fields for given entities """
-		return LazyDict( dict( tuple( (f, self._dense[f]) for f in self.fields) ), self._get_rows(entities))
+		return LazyDict( self._dense, self._get_rows(entities) )
 	
 	def get_full_vector(self, entities:np.ndarray|None=None) -> np.ndarray:
 		rows = self._get_rows(entities)

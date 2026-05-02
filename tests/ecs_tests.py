@@ -318,12 +318,8 @@ def test_query_mult_comp_no_match_returns_empty():
 
 def test_query_mult_comp_get_vector_returns_all_comp():
     mt = make_multitag_store({0: [0, 0], 1: [2], 3: [4, 5], 4: [6, 6]})
-    # TODO: support multicomponent retrieval
-    try:
-        out = mt.get_vector( [0,3] )
-        assert out['value'].tolist() == [ 0,0, 4,5]
-    except:
-        pass
+    out = mt.get_vector( [0,3] )
+    assert out['value'].tolist() == [ 0,0, 4,5]
 
 def test_query_intflag_predicate():
     tags = ComponentStorage(Tag, capacity=8)
