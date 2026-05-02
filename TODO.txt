@@ -1,12 +1,9 @@
-* bug : adding even comments in AO shader breaks it.. did opengl drivers get corrupted ?
--> try modifying AO on another machine
-* idea : apply AO in main pass ?
-* idea? : migrate to pyglet for its more hackable/pythonish api
-  -> try injecting BetterShader class into pyglet's ShaderSource
-  -> implement gpu animation using custom vertex attributes and animation texture atlas
-* add frustum culling
+* implement a gpu / shader api similar to pyglet / raylib
+* plug imGUI (see https://github.com/pygfx/wgpu-py/blob/main/wgpu/utils/imgui/imgui_renderer.py)
+* implement gpu animation using custom vertex attributes and animation texture atlas
+* add frustum culling in some form
 * batch same shader calls (raylib does so for static meshes under the hood iirc)
 * use openAL for binaural audio
 * use bullet for physics (at first ; maybe migrate to ctypes & jolt later)
 * add a particle system
-* implement msaa (not sure it's worth it -> on the backburner)
+* support msaa

@@ -168,8 +168,12 @@ class _RenderPass:
 			#texture:img.Framebuffer = None
 		):
 		#self.shader = shader
-		self.camera = camera
+		self.camera:Camera = camera
 		#self.texture = texture
+		self.render_pass:wgpu.GPURenderCommandsMixin = None
+
+		# TODO? : move command_encoder into RenderContext begin_draw / end_draw
+		self.command_encoder = None
 
 	def __enter__(self):
 		#if self.shader: self.shader.bind()
@@ -182,10 +186,31 @@ class _RenderPass:
 		#	if 'uView' in self.shader._uniforms: self.shader['uView'] = self.view
 		#	if 'uProj' in self.shader._uniforms: self.shader['uProj'] = self.projection
 		#	if 'uViewProj' in self.shader._uniforms: self.shader['uViewProj'] = self.view @ self.projection
+		self.command_encoder = RenderContext.device.create_command_encoder()
+		self.render_pass = self.command_encoder.begin_render_pass(
+			color_attachments=[
+				wgpu.RenderPassColorAttachment(
+					view=RenderContext.canvas.get_current_texture().create_view(),
+					clear_value=(0, 0, 0, 1),
+					load_op="clear",
+					store_op="store",
+				)
+			],
+			depth_stencil_attachment=
+				wgpu.RenderPassDepthStencilAttachment(
+			        view = RenderContext.depth,
+			        depth_clear_value = 1.0,
+			        depth_load_op= "clear",
+			        depth_store_op= "store",
+				)
+		)
 		return self
 
 	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
-		pass
+		self.render_pass.end()
+		RenderContext.device.queue.submit([
+			self.command_encoder.finish()
+		])
 
 
 GL_to_dtype: Dict[str, np.dtype] = {
@@ -386,7 +411,7 @@ class _UniformBuffer:
 		device = RenderContext.device
 		self.shader = shader
 
-		self.uniforms = np.zeros((), dtype=shader.uniforms_dtype)
+		self.uniforms = np.zeros((1), dtype=shader.uniforms_dtype)
 
 		self.uniform_buffer = device.create_buffer(
 			size=shader.uniforms_dtype.itemsize,
@@ -444,10 +469,10 @@ class _Mesh:
 				attributes=vertexAttributes
 			)
 		]
+		self.instance_count = instance_data.size if self.instanced else 1
 
+		# TODO: managing multiple instances separately
 		if self.instanced:
-			self.instance_count = instance_data.size
-
 			instanceAttributes = [ wgpu.VertexAttribute(
 					shader_location = i,
 					offset=offset,
@@ -491,15 +516,22 @@ class _Mesh:
 			),
 		)
 
-	def draw(self, renderpass : wgpu.GPURenderCommandsMixin):
-		renderpass.set_pipeline(self.render_pipeline)
-		renderpass.set_bind_group(0, self.shader.bind_group, [])
-		renderpass.set_vertex_buffer(0, self.vertex_buffer)
+	# TODO : a better api would be renderpass.draw(Mesh)
+	def draw(self, renderpass:_RenderPass, bind_group:wgpu.GPUBindGroup) -> None:
+		render_pass : wgpu.GPURenderCommandsMixin = renderpass.render_pass
+		render_pass.set_pipeline(self.render_pipeline)
+		render_pass.set_bind_group(0, bind_group)
+		render_pass.set_vertex_buffer(0, self.vertex_buffer)
 		if self.instanced:
-			renderpass.set_vertex_buffer(1, self.instance_buffer)
-		renderpass.set_index_buffer(self.index_buffer, wgpu.IndexFormat.uint32)
-		renderpass.draw_indexed(self.index_count, self.instance_count, 0, 0, 0)
-		renderpass.end()
+			render_pass.set_vertex_buffer(1, self.instance_buffer)
+		render_pass.set_index_buffer(self.index_buffer, wgpu.IndexFormat.uint32)
+
+		#index_count (int) – The number of indices to draw.
+		#instance_count (int) – The number of instances to draw. Default 1.
+		#first_index (int) – The index offset. Default 0.
+		#base_vertex (int) – A number added to each index in the index buffer. Default 0.
+		#first_instance (int) – The instance offset. Default 0.
+		render_pass.draw_indexed(self.index_count, self.instance_count, 0, 0, 0)
 
 def build_shader_program(shaderPath : str, **kwargs):
 	src = ShaderSource(filepath=shaderPath, **kwargs)

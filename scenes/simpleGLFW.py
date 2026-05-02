@@ -16,15 +16,18 @@ camera = Camera(
     near=0.1, far=1000.0
 )
 
-rpass = RenderContext.RenderPass(camera = camera)
+renderpass = RenderContext.RenderPass(camera = camera)
 
 vertices, indices = load_gltf_first_mesh_interleaved('scenes/resources/rooftop_utility_pole.glb')
-index_count = int(indices.size)
-
-shader = RenderContext.ShaderPipeline(ShaderSource(filepath='scenes/shaders/simple.shader'), vertices, True)
+shader = RenderContext.Shader(ShaderSource(filepath='scenes/shaders/simple.shader'))
+mesh = shader.Mesh(vertices, indices)
+uniformBuffer = shader.UniformBuffer()
 
 print('init done')
 
 while not RenderContext.windowShouldClose():
-	with rpass:
-		pass
+    # TODO : update uniformBuffer (camera data is in renderpass)
+    # uniformBuffer.uniforms['name'] = value
+	with renderpass as rp:
+        # TODO : a better api would be renderpass.draw(Mesh)
+		mesh.draw(rp, uniformBuffer.bind_group)
