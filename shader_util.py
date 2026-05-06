@@ -52,12 +52,13 @@ class RenderContext:
 
 	depth_format : str = wgpu.TextureFormat.depth24plus
 	depth :  wgpu.GPUTextureView = None
+	color_tex = None
 
 	def __init__(self):
 		raise Exception('this class is not meant to be instanciated')
 
 	@classmethod
-	def InitWindow(cls, w:float, h:float, title:str, vsync:bool=True) -> None:
+	def InitWindow(cls, w:float, h:float, title:str, vsync:bool=True, highpower:bool=True) -> None:
 
 		glfw.init()
 		atexit.register(glfw.terminate)
@@ -87,7 +88,7 @@ class RenderContext:
 		present_info = get_glfw_present_info(cls.window, vsync=vsync)
 		cls.canvas = wgpu.gpu.get_canvas_context(present_info)
 
-		cls.setup(highpower=True)
+		cls.setup(highpower=highpower)
 		cls.presentation_format = cls.canvas.get_preferred_format(cls.adapter)
 		cls.canvas.configure(device=cls.device, format=cls.presentation_format, usage=wgpu.TextureUsage.RENDER_ATTACHMENT)
 
@@ -102,22 +103,17 @@ class RenderContext:
 
 
 	@classmethod
-	def updateWindowSize(cls, w:float, h:float):
+	def updateWindowSize(cls, wh : Tuple[int, int]):
 		# NOTE: some versions of glfw send resize events
-		wh = (w,h)
+		w, h = wh
 		cls.windowDimensions = wh
 		cls.canvas.set_physical_size(w, h)
 		cls.aspect = w/h
-		cls.updateDepthBufferSize(*wh)
-
-	@classmethod
-	def updateDepthBufferSize(cls, w:float, h:float):
-		depth_tex = cls.device.create_texture(
+		cls.depth = cls.device.create_texture(
 			size=(w, h, 1),
 			format= cls.depth_format,
 			usage=wgpu.TextureUsage.RENDER_ATTACHMENT,
-		)
-		cls.depth = depth_tex.create_view()
+		).create_view()
 
 
 	@classmethod
@@ -137,20 +133,22 @@ class RenderContext:
 
 
 	@classmethod
-	def WindowShouldClose(cls) -> bool:
-		cls.canvas.present()
-		
+	def WindowLoop(cls) -> bool:
+
 		wh = glfw.get_framebuffer_size(cls.window)
 		if wh != cls.windowDimensions and wh[0]>0 and wh[1]>0:
-			cls.updateWindowSize(*wh)
-		
+			cls.updateWindowSize(wh)
+
+		cls.canvas.present()
+
 		glfw.poll_events()
+		# TODO: support input handling
 
 		if glfw.window_should_close(cls.window):
 			cls.cleanup()
-			return True
+			return False
 
-		return False
+		return True
 
 	@classmethod
 	def RenderPass(cls, *args, **kwargs) -> '_RenderPass':
@@ -162,6 +160,7 @@ class RenderContext:
 
 
 class _RenderPass:
+
 	def __init__(self,
 			#shader:BetterShader = None,
 			camera:Camera = None,
@@ -173,11 +172,10 @@ class _RenderPass:
 		self.clear_color = clear_color
 		#self.texture = texture
 		self.render_pass:wgpu.GPURenderCommandsMixin = None
-
-		# TODO? : move command_encoder into RenderContext begin_draw / end_draw
 		self.command_encoder = None
 
 	def __enter__(self):
+		# TODO: support drawing into a custom framebuffer (self.texture)
 		#if self.shader: self.shader.bind()
 		#if self.texture: self.texture.bind()
 		if self.camera:
@@ -213,6 +211,22 @@ class _RenderPass:
 		RenderContext.device.queue.submit([
 			self.command_encoder.finish()
 		])
+
+	def draw(self, mesh:'Mesh', uniforms:'UniformBuffer') -> None:
+		render_pass = self.render_pass
+		render_pass.set_pipeline(mesh.render_pipeline)
+		render_pass.set_bind_group(0, uniforms.bind_group)
+		render_pass.set_vertex_buffer(0, mesh.vertex_buffer)
+		if mesh.instanced:
+			render_pass.set_vertex_buffer(1, mesh.instance_buffer)
+		render_pass.set_index_buffer(mesh.index_buffer, wgpu.IndexFormat.uint32)
+
+		#index_count (int) – The number of indices to draw.
+		#instance_count (int) – The number of instances to draw. Default 1.
+		#first_index (int) – The index offset. Default 0.
+		#base_vertex (int) – A number added to each index in the index buffer. Default 0.
+		#first_instance (int) – The instance offset. Default 0.
+		render_pass.draw_indexed(mesh.index_count, mesh.instance_count, 0, 0, 0)
 
 
 GL_to_dtype: Dict[str, np.dtype] = {
@@ -514,22 +528,6 @@ class _Mesh:
 			),
 		)
 
-	# TODO : a better api would be renderpass.draw(Mesh)
-	def draw(self, renderpass:_RenderPass, bind_group:wgpu.GPUBindGroup) -> None:
-		render_pass : wgpu.GPURenderCommandsMixin = renderpass.render_pass
-		render_pass.set_pipeline(self.render_pipeline)
-		render_pass.set_bind_group(0, bind_group)
-		render_pass.set_vertex_buffer(0, self.vertex_buffer)
-		if self.instanced:
-			render_pass.set_vertex_buffer(1, self.instance_buffer)
-		render_pass.set_index_buffer(self.index_buffer, wgpu.IndexFormat.uint32)
-
-		#index_count (int) – The number of indices to draw.
-		#instance_count (int) – The number of instances to draw. Default 1.
-		#first_index (int) – The index offset. Default 0.
-		#base_vertex (int) – A number added to each index in the index buffer. Default 0.
-		#first_instance (int) – The instance offset. Default 0.
-		render_pass.draw_indexed(self.index_count, self.instance_count, 0, 0, 0)
 
 def build_shader_program(shaderPath : str, **kwargs):
 	src = ShaderSource(filepath=shaderPath, **kwargs)

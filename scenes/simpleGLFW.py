@@ -19,7 +19,7 @@ l = l / np.linalg.norm(l)
 light_dir = l.astype(np.float32)
 
 
-RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE)
+RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE)#, vsync=False)
 #RenderContext.setup(highpower=False)
 
 # seems to use a weird color space
@@ -36,7 +36,7 @@ scale = 10.0
 start_t = time.time()
 frame_start = start_t
 fps_frames = 0
-while not RenderContext.WindowShouldClose():
+while RenderContext.WindowLoop():
 
     # time since start of the simulation 
     now = time.time()
@@ -64,5 +64,4 @@ while not RenderContext.WindowShouldClose():
         uniformBuffer.uniforms['uLightDir'] = light_dir
         uniformBuffer.uniforms['uTint'] = (0.7, 0.5, 0.3, 1.0)
         uniformBuffer.write_uniforms()
-        # TODO : a better api would be renderpass.draw(Mesh)
-        mesh.draw(rp, uniformBuffer.bind_group)
+        rp.draw(mesh, uniformBuffer)
