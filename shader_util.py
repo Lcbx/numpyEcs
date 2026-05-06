@@ -137,7 +137,7 @@ class RenderContext:
 
 
 	@classmethod
-	def windowShouldClose(cls) -> bool:
+	def WindowShouldClose(cls) -> bool:
 		cls.canvas.present()
 		
 		wh = glfw.get_framebuffer_size(cls.window)
@@ -166,9 +166,11 @@ class _RenderPass:
 			#shader:BetterShader = None,
 			camera:Camera = None,
 			#texture:img.Framebuffer = None
+			clear_color:tuple=(0.0, 0.0, 0.0, 1.0)
 		):
 		#self.shader = shader
 		self.camera:Camera = camera
+		self.clear_color = clear_color
 		#self.texture = texture
 		self.render_pass:wgpu.GPURenderCommandsMixin = None
 
@@ -191,7 +193,7 @@ class _RenderPass:
 			color_attachments=[
 				wgpu.RenderPassColorAttachment(
 					view=RenderContext.canvas.get_current_texture().create_view(),
-					clear_value=(0, 0, 0, 1),
+					clear_value=self.clear_color,
 					load_op="clear",
 					store_op="store",
 				)
