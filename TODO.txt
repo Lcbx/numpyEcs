@@ -6,4 +6,6 @@
 * use openAL for binaural audio
 * use bullet for physics (at first ; maybe migrate to ctypes & jolt later)
 * add a particle system
+* implement parallax texture mapping
+* implement triplanar mapping
 * support msaa

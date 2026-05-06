@@ -1,11 +1,9 @@
 from shader_util import *
-from time import time
 from math import cos, sin
 
 WINDOW_W, WINDOW_H = 1800, 900
 TITLE = "glfw + wgpu"
 
-RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE)
 
 camera_dist = 30.0
 camera = Camera(
@@ -21,24 +19,27 @@ l = l / np.linalg.norm(l)
 light_dir = l.astype(np.float32)
 
 
+RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE)
+#RenderContext.setup(highpower=False)
+
 # seems to use a weird color space
 renderpass = RenderContext.RenderPass(camera = camera, clear_color = (0.02, 0.02, 0.03, 1.0))
-
-vertices, indices = load_gltf_first_mesh_interleaved('scenes/resources/rooftop_utility_pole.glb')
 shader = RenderContext.Shader(ShaderSource(filepath='scenes/shaders/simple.shader'))
+vertices, indices = load_gltf_first_mesh_interleaved('scenes/resources/rooftop_utility_pole.glb')
 mesh = shader.Mesh(vertices, indices)
 uniformBuffer = shader.UniformBuffer()
+
 
 print('init done')
 
 scale = 10.0
-start_t = time()
+start_t = time.time()
 frame_start = start_t
 fps_frames = 0
 while not RenderContext.WindowShouldClose():
 
     # time since start of the simulation 
-    now = time()
+    now = time.time()
     elapsed = now - start_t
     
     # simple FPS to console
@@ -60,8 +61,7 @@ while not RenderContext.WindowShouldClose():
         uniformBuffer.uniforms['uView'] = renderpass.view
         uniformBuffer.uniforms['uProj'] = renderpass.projection
         uniformBuffer.uniforms['uModel'] = Mat4.from_scale([scale, scale, scale], dtype=np.float32)
-        # the padding / std430 packing does not seem to not work as expected
-        uniformBuffer.uniforms['uLightDir'] = (*light_dir, 0.0)
+        uniformBuffer.uniforms['uLightDir'] = light_dir
         uniformBuffer.uniforms['uTint'] = (0.7, 0.5, 0.3, 1.0)
         uniformBuffer.write_uniforms()
         # TODO : a better api would be renderpass.draw(Mesh)

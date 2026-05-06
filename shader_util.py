@@ -57,7 +57,7 @@ class RenderContext:
 		raise Exception('this class is not meant to be instanciated')
 
 	@classmethod
-	def InitWindow(cls, w:float, h:float, title:str) -> None:
+	def InitWindow(cls, w:float, h:float, title:str, vsync:bool=True) -> None:
 
 		glfw.init()
 		atexit.register(glfw.terminate)
@@ -84,17 +84,17 @@ class RenderContext:
 		#glfw.set_window_pos(cls.window, monitor_w-w, 0)
 
 		# wgpu context
-		present_info = get_glfw_present_info(cls.window, vsync=True)
+		present_info = get_glfw_present_info(cls.window, vsync=vsync)
 		cls.canvas = wgpu.gpu.get_canvas_context(present_info)
 
 		cls.setup(highpower=True)
-
 		cls.presentation_format = cls.canvas.get_preferred_format(cls.adapter)
 		cls.canvas.configure(device=cls.device, format=cls.presentation_format, usage=wgpu.TextureUsage.RENDER_ATTACHMENT)
 
 
 	@classmethod
 	def setup(cls, *, highpower:bool) -> None:
+		""" setup gpu compute, not necessarily with canvas output. used notably for tests """
 		request_params = {'power_preference': 'high-performance' if highpower else 'low-power' }
 		if cls.canvas: request_params['canvas'] = cls.canvas
 		cls.adapter = wgpu.gpu.request_adapter_sync(**request_params)
@@ -235,7 +235,7 @@ GL_to_dtype: Dict[str, np.dtype] = {
 
 def make_std430_dtype(
 	fields: Iterable[Tuple[str, str]]
-) -> Tuple[np.dtype, Dict[str, int]]:
+) -> np.dtype:
 	"""
 	Assumptions:
 	  - fields param is List[type, name] where type is a glsl base type or an array of it
@@ -250,17 +250,8 @@ def make_std430_dtype(
 	offset = 0
 	pad_idx = 0
 
-	def add_padding():
-		nonlocal offset, pad_idx, dfields
-		off2 = offset % 16
-		#print(f'{offset=}, {off2=}')
-		if off2 != 0:
-			dfields.append((f"_pad{pad_idx}", np.dtype(("u1", off2))))
-			offset += off2
-			pad_idx += 1
-
 	for spec, name in fields:
-		#print(name)
+		#print(name, spec, offset)
 
 		# array case
 		if '[' in spec:
@@ -282,7 +273,12 @@ def make_std430_dtype(
 		#print(f'{name=} {spec=} {info.itemsize=}')
 		offset += info.itemsize
 
-		add_padding()
+		missing_offset = (16 - offset) % 16
+		if missing_offset != 0:
+			#print(f'adding new pad {missing_offset}')
+			dfields.append((f"_pad{pad_idx}", np.dtype(("u1", missing_offset))))
+			offset += missing_offset
+			pad_idx += 1
 
 	#print(dfields)
 
