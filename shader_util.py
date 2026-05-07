@@ -40,6 +40,8 @@ class Camera:
 
 type GLFWwindow_ptr = ctypes._Pointer[glfw._GLFWwindow]
 class RenderContext:
+	# simple window loop on top of glfw
+	# inspired by https://github.com/pygfx/rendercanvas/blob/main/rendercanvas/glfw.py
 
 	canvas : wgpu.GPUCanvasContext = None
 	adapter : wgpu.GPUAdapter = None
@@ -54,12 +56,16 @@ class RenderContext:
 	depth :  wgpu.GPUTextureView = None
 	color_tex = None
 
+	# event_name:[handlers]
+	event_handlers = {}
+
 	def __init__(self):
 		raise Exception('this class is not meant to be instanciated')
 
 	@classmethod
 	def InitWindow(cls, w:float, h:float, title:str, vsync:bool=True, highpower:bool=True) -> None:
 
+		print(f'{glfw.__version__=}')
 		glfw.init()
 		atexit.register(glfw.terminate)
 		
@@ -82,7 +88,8 @@ class RenderContext:
 
 		# width, height, title, monitor (for full screen), window (for opengl context sharing)
 		cls.window = glfw.create_window(w, h, title, None, None)
-		#glfw.set_window_pos(cls.window, monitor_w-w, 0)
+		cls.setup_callbacks()
+		#glfw.set_window_pos(cls.window, monitor_w-w, 30)
 
 		# wgpu context
 		present_info = get_glfw_present_info(cls.window, vsync=vsync)
@@ -91,6 +98,19 @@ class RenderContext:
 		cls.setup(highpower=highpower)
 		cls.presentation_format = cls.canvas.get_preferred_format(cls.adapter)
 		cls.canvas.configure(device=cls.device, format=cls.presentation_format, usage=wgpu.TextureUsage.RENDER_ATTACHMENT)
+
+	@classmethod
+	def setup_callbacks(cls)->None:
+		glfw.set_mouse_button_callback(cls.window, cls.setup_event('mouse_click'))
+		glfw.set_cursor_pos_callback(cls.window, cls.setup_event('mouse_move'))
+		glfw.set_cursor_enter_callback(cls.window, cls.setup_event('mouse_enter'))
+		glfw.set_scroll_callback(cls.window, cls.setup_event('mouse_scroll'))
+
+		# key is key down, key up
+		# char is resulting utf8 character
+		# ex: pressing shift + 0 up and down generates ')' char
+		glfw.set_key_callback(cls.window, cls.setup_event('key'))
+		glfw.set_char_callback(cls.window, cls.setup_event('char'))
 
 
 	@classmethod
@@ -117,10 +137,44 @@ class RenderContext:
 
 
 	@classmethod
+	def capture_mouse(cls, capture:bool=True) -> None:
+		""" hide and keep the mouse inside the window
+		NOTE: there's also glfw.CURSOR_HIDDEN which lets the cursor get out of the window
+		you can create cursors ex: cursor = glfw.create_cursor(image, 0, 0) # generating image is some work though
+		use standard cursors ex: cursor = glfw.create_standard_cursor(cursor_flag)
+		then glfw.set_cursor(self._window, cursor)
+		"""
+		glfw.set_input_mode(cls.window, glfw.CURSOR, glfw.CURSOR_DISABLED if capture else glfw.CURSOR_NORMAL)
+
+
+	@classmethod
+	def subscribe_event(cls, channel_name:str, handler:callable) -> None:
+		cls.event_handlers[channel_name].append(handler)
+
+	@classmethod
+	def setup_event(cls, channel_name:str, mapper:callable=None, info_log:bool=True) -> callable:
+		
+		def print_handler(*args):
+			print(channel_name, *args)
+		
+		handlers = []
+		if info_log:
+			handlers.append(print_handler)
+
+		cls.event_handlers[channel_name] = handlers
+
+		def handlers_call(*args):
+			if mapper: args = mapper(*args)
+			for handler in cls.event_handlers[channel_name]:
+				handler(args)
+
+		return handlers_call
+
+
+	@classmethod
 	def cleanup(cls):
 
-		#device = cls.canvas.get_configuration()['device']
-		#device._poll(True) # wait for last frame
+		#cls.device._poll(True) # wait for last frame
 
 		cls.canvas.unconfigure()
 
@@ -142,7 +196,6 @@ class RenderContext:
 		cls.canvas.present()
 
 		glfw.poll_events()
-		# TODO: support input handling
 
 		if glfw.window_should_close(cls.window):
 			cls.cleanup()
