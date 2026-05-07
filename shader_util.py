@@ -11,7 +11,7 @@ from wgpu.utils.glfw_present_info import get_glfw_present_info
 import os
 import re
 from glob import glob
-from typing import Any, Sequence, Iterable, Dict, Optional, Tuple, NamedTuple
+from typing import Any, Sequence, Iterable, List, Dict, Tuple, NamedTuple, Callable
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 
@@ -43,21 +43,20 @@ class RenderContext:
 	# simple window loop on top of glfw
 	# inspired by https://github.com/pygfx/rendercanvas/blob/main/rendercanvas/glfw.py
 
-	canvas : wgpu.GPUCanvasContext = None
-	adapter : wgpu.GPUAdapter = None
-	device : wgpu.GPUDevice = None
-	presentation_format : str = None
+	canvas : wgpu.GPUCanvasContext
+	adapter : wgpu.GPUAdapter
+	device : wgpu.GPUDevice
+	presentation_format : str
 
-	window : GLFWwindow_ptr = None
+	window : GLFWwindow_ptr
 	windowDimensions : tuple[float,float] = (0.0,0.0)
 	aspect : float = 1.0
 
 	depth_format : str = wgpu.TextureFormat.depth24plus
-	depth :  wgpu.GPUTextureView = None
-	color_tex = None
+	depth :  wgpu.GPUTextureView
 
 	# event_name:[handlers]
-	event_handlers = {}
+	event_handlers : Dict[str, List[Callable]] = {}
 
 	def __init__(self):
 		raise Exception('this class is not meant to be instanciated')
@@ -101,16 +100,18 @@ class RenderContext:
 
 	@classmethod
 	def setup_callbacks(cls)->None:
-		glfw.set_mouse_button_callback(cls.window, cls.setup_event('mouse_click'))
-		glfw.set_cursor_pos_callback(cls.window, cls.setup_event('mouse_move'))
-		glfw.set_cursor_enter_callback(cls.window, cls.setup_event('mouse_enter'))
-		glfw.set_scroll_callback(cls.window, cls.setup_event('mouse_scroll'))
 
 		# key is key down, key up
 		# char is resulting utf8 character
 		# ex: pressing shift + 0 up and down generates ')' char
 		glfw.set_key_callback(cls.window, cls.setup_event('key'))
 		glfw.set_char_callback(cls.window, cls.setup_event('char'))
+
+		# mouse stuff
+		glfw.set_mouse_button_callback(cls.window, cls.setup_event('mouse_click'))
+		glfw.set_cursor_pos_callback(cls.window, cls.setup_event('mouse_move'))
+		glfw.set_cursor_enter_callback(cls.window, cls.setup_event('mouse_enter'))
+		glfw.set_scroll_callback(cls.window, cls.setup_event('mouse_scroll'))
 
 
 	@classmethod
@@ -148,11 +149,11 @@ class RenderContext:
 
 
 	@classmethod
-	def subscribe_event(cls, channel_name:str, handler:callable) -> None:
+	def subscribe_event(cls, channel_name:str, handler:Callable) -> None:
 		cls.event_handlers[channel_name].append(handler)
 
 	@classmethod
-	def setup_event(cls, channel_name:str, mapper:callable=None, info_log:bool=True) -> callable:
+	def setup_event(cls, channel_name:str, mapper:Callable|None=None, info_log:bool=False) -> Callable:
 		
 		def print_handler(*args):
 			print(channel_name, *args)
@@ -216,16 +217,16 @@ class _RenderPass:
 
 	def __init__(self,
 			#shader:BetterShader = None,
-			camera:Camera = None,
+			camera:Camera|None = None,
 			#texture:img.Framebuffer = None
 			clear_color:tuple=(0.0, 0.0, 0.0, 1.0)
 		):
 		#self.shader = shader
-		self.camera:Camera = camera
-		self.clear_color = clear_color
+		self.camera:Camera|None= camera
+		self.clear_color : Tuple[float,float,float,float] = clear_color
 		#self.texture = texture
 		self.render_pass:wgpu.GPURenderCommandsMixin = None
-		self.command_encoder = None
+		self.command_encoder:wgpu.CommandEncoder = None
 
 	def __enter__(self):
 		# TODO: support drawing into a custom framebuffer (self.texture)
@@ -265,9 +266,9 @@ class _RenderPass:
 			self.command_encoder.finish()
 		])
 
-	def draw(self, mesh:'Mesh', uniforms:'UniformBuffer') -> None:
+	def draw(self, mesh:'Mesh', shader:'_Shader', uniforms:'_UniformBuffer') -> None:
 		render_pass = self.render_pass
-		render_pass.set_pipeline(mesh.render_pipeline)
+		render_pass.set_pipeline(mesh.create_draw_call(shader))
 		render_pass.set_bind_group(0, uniforms.bind_group)
 		render_pass.set_vertex_buffer(0, mesh.vertex_buffer)
 		if mesh.instanced:
@@ -365,7 +366,7 @@ def dtype_to_vertex_format(dtype: np.dtype) -> Tuple:
 	# not all kinds of of format supported !!
 	#print(wgpu.VertexFormat.__dict__)
 
-	_SCALAR_MAP = {
+	_SCALAR_MAP : Dict[Any, str] = {
 		np.int8:	"sint8",
 		np.uint8:	"uint8",
 		np.int16:	"sint16",
@@ -399,7 +400,7 @@ def dtype_to_vertex_format(dtype: np.dtype) -> Tuple:
 
 	# Array case
 	base_dtype, shape = dtype.subdtype
-	base_dtype = base_dtype.type
+	base_type = base_dtype.type
 
 	if len(shape) != 1:
 		raise TypeError(f"Only 1D array dtypes are valid vertex attributes (found {shape})")
@@ -410,9 +411,9 @@ def dtype_to_vertex_format(dtype: np.dtype) -> Tuple:
 		raise ValueError(f"VertexFormat arrays must have 1–4 components (found {count})")
 
 	try:
-		prefix = _SCALAR_MAP[base_dtype]
+		prefix = _SCALAR_MAP[base_type]
 	except KeyError:
-		raise TypeError(f"Unsupported vertex base dtype: {base_dtype}")
+		raise TypeError(f"Unsupported vertex base dtype: {base_type}")
 
 	if count == 1:
 		return getattr(wgpu.VertexFormat, prefix)
@@ -460,11 +461,6 @@ class _Shader:
 			bind_group_layouts=[self.bind_group_layout]
 		)
 
-
-	# NOTE: we pass the shader since the mesh needs it for setup
-	def Mesh(self, *args, **kwargs) -> '_Mesh':
-		return _Mesh(self, *args, **kwargs)
-
 	# NOTE: we pass the shader since the mesh needs it for setup
 	def UniformBuffer(self, *args, **kwargs) -> '_UniformBuffer':
 		return _UniformBuffer(self, *args, **kwargs)
@@ -503,13 +499,12 @@ class _UniformBuffer:
 
 
 # TODO: pool meshes with same vertex attributes
-class _Mesh:
+class Mesh:
 
 	# NOTE: is there a point to supporting meshes with no indices these days
-	def __init__(self, shader:_Shader, vertex_data:np.ndarray, indices:np.ndarray, instance_data:np.ndarray|None = None):
+	def __init__(self, vertex_data:np.ndarray, indices:np.ndarray, instance_data:np.ndarray|None = None):
 		device = RenderContext.device
 
-		self.shader = shader
 		self.index_count = indices.size
 		self.instanced = isinstance(instance_data, np.ndarray)
 		vertex_dtype = vertex_data.dtype
@@ -527,7 +522,7 @@ class _Mesh:
 		self.vertex_buffer = device.create_buffer_with_data(data=vertex_data.view(np.uint8), usage=wgpu.BufferUsage.VERTEX)
 		self.index_buffer = device.create_buffer_with_data(data=indices.view(np.uint8), usage=wgpu.BufferUsage.INDEX)
 
-		buffers_spec = [
+		self.buffers_spec = [
 			wgpu.VertexBufferLayout(
 				array_stride=vertex_dtype.itemsize,
 				step_mode=wgpu.VertexStepMode.vertex,
@@ -548,19 +543,20 @@ class _Mesh:
 
 			self.instance_buffer = device.create_buffer_with_data(data=instance_data.view(np.uint8), usage=wgpu.BufferUsage.VERTEX|wgpu.BufferUsage.COPY_DST)
 
-			buffers_spec.append(
+			self.buffers_spec.append(
 				wgpu.VertexBufferLayout(
 					array_stride=vertex_dtype.itemsize,
 					step_mode=wgpu.VertexStepMode.Instance,
 					attributes=instanceAttributes
 				))
 
-		self.render_pipeline =  device.create_render_pipeline(
-			layout=self.shader.pipeline_layout,
+	def create_draw_call(self, shader:_Shader):
+		return RenderContext.device.create_render_pipeline(
+			layout=shader.pipeline_layout,
 			vertex=wgpu.VertexState(
-				module=self.shader.vert_module,
+				module=shader.vert_module,
 				entry_point="main",
-				buffers=buffers_spec,
+				buffers=self.buffers_spec,
 			),
 			primitive=wgpu.PrimitiveState(
 				topology=wgpu.PrimitiveTopology.triangle_list,
@@ -573,7 +569,7 @@ class _Mesh:
 				depth_compare=wgpu.CompareFunction.less,
 			),
 			fragment=wgpu.FragmentState(
-				module=self.shader.frag_module,
+				module=shader.frag_module,
 				entry_point="main",
 				targets=[
 					wgpu.ColorTargetState(format=RenderContext.presentation_format)
@@ -629,11 +625,11 @@ class ShaderSource:
 	def __init__(
 		self,
 		*,
-		source: str = None,
-		filepath: str = None,
-		basedir: str = None,
-		features: Optional[Sequence[str]] = None,
-		params: Optional[Dict[str, Any]] = None,
+		source: str|None = None,
+		filepath: str|None = None,
+		basedir: str|None = None,
+		features: Sequence[str]|None = None,
+		params: Dict[str, Any]|None = None,
 		glsl_version: str = '#version 450 core'
 	):
 		# :param source: master shader definition code (template).
@@ -641,6 +637,8 @@ class ShaderSource:
 		# :param features: Dict of feature flags for conditionals, e.g. {'FEATURE_FOG': True}.
 		# :param params: Any extra variables you want available in templates.
 		# :param glsl_version: Override #version.
+
+		assert( source or filepath )
 
 		self.source = source if source else open(filepath, 'r').read()
 		self._basedir = basedir if basedir else os.path.dirname(os.path.abspath(filepath)) if filepath else glob('**/shaders/', recursive=True)
@@ -667,7 +665,7 @@ class ShaderSource:
 		# Generate final vertex/fragment GLSL
 		self._generate_glsl()
 
-	def _render_template(self, features: Sequence[str], params: Dict[str, Any]) -> str:
+	def _render_template(self, features: Sequence[str]|None, params: Dict[str, Any]|None) -> str:
 		# evaluate the preprocessor sections using jinja2
 
 		env = Environment(

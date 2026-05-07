@@ -20,26 +20,27 @@ light_dir = l.astype(np.float32)
 
 
 RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE)#, vsync=False)
+#RenderContext.capture_mouse()
 #RenderContext.setup(highpower=False)
 
 # seems to use a weird color space
 renderpass = RenderContext.RenderPass(camera = camera, clear_color = (0.02, 0.02, 0.03, 1.0))
 shader = RenderContext.Shader(ShaderSource(filepath='scenes/shaders/simple.shader'))
 vertices, indices = load_gltf_first_mesh_interleaved('scenes/resources/rooftop_utility_pole.glb')
-mesh = shader.Mesh(vertices, indices)
+mesh = Mesh(vertices, indices)
 uniformBuffer = shader.UniformBuffer()
 
 
 print('init done')
 
 scale = 10.0
-start_t = time.time()
+start_t = time.monotonic()
 frame_start = start_t
 fps_frames = 0
 while RenderContext.WindowLoop():
 
     # time since start of the simulation 
-    now = time.time()
+    now = time.monotonic()
     elapsed = now - start_t
     
     # simple FPS to console
@@ -64,4 +65,4 @@ while RenderContext.WindowLoop():
         uniformBuffer.uniforms['uLightDir'] = light_dir
         uniformBuffer.uniforms['uTint'] = (0.7, 0.5, 0.3, 1.0)
         uniformBuffer.write_uniforms()
-        rp.draw(mesh, uniformBuffer)
+        rp.draw(mesh, shader, uniformBuffer)
