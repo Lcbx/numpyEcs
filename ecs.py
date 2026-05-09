@@ -5,6 +5,15 @@ from dataclasses import dataclass
 from enum import Flag, IntFlag, auto
 
 
+
+# NOTES:
+# * referencing components or entities is not easy bc reused Entity Ids and slots can create collisions
+# a solution would be generational ids : reserve some bits from Entity Id for the 'version' then check on access ?
+# but let's not fix problems we dont have yet.
+# * if we wanted to support a really big number of entities, we could use a paged array for the sparse
+# it would add an additional indirection but avoid allocating a lot of empty memory
+
+
 # useful when we'll instanciate scenes, so we can translate entity ids stored in components
 class Entity(int): pass
 
@@ -31,8 +40,6 @@ class ComponentStorage:
 		self._size		: int = 0
 		self._dense = {}
 
-		# NOTE: if we wanted to support a really big number of entities, we could a paged array for the sparse
-		# it would add an additional indirection but avoid allocating a lot of empty memory
 		self._sparse : np.array = np.full(self._capacity, ComponentStorage.NONE, dtype=int)
 		self._dense['entity']	= np.full(self._capacity, ComponentStorage.NONE, dtype=int)
 
@@ -190,13 +197,13 @@ class ComponentStorage:
 		if idx.size == 0:
 			return np.empty(0, dtype=int)
 
-		ns = {field: self._dense[field][idx] for field in inspect_signature(condition).parameters.keys()}
+		arguments = {field: self._dense[field][idx] for field in inspect_signature(condition).parameters.keys()}
 
 		def raiseError():
 			raise ValueError("Condition must accept all component properties as params and return a boolean array of the same length as the evaluated rows.")
 
 		try:
-			mask = condition(**ns)
+			mask = condition(**arguments)
 		except:
 			raiseError()
 
@@ -205,8 +212,6 @@ class ComponentStorage:
 			raiseError()
 
 		matched = ent[mask]
-		if matched.size == 0:
-			return np.empty(0, dtype=int)
 
 		return matched.astype(int)
 
@@ -547,10 +552,10 @@ class LazyDict(dict):
 		return self._dense.keys()
 
 	def __iter__(self):
-		yield from [ (field, self.__getitem__(field)) for field in self.keys() ]
+		yield from ( (field, self.__getitem__(field)) for field in self.keys() )
 
 	def __repr__(self):
-		return '{' + ','.join( [f'"{k}":{v}' for k,v in self] ) +  '}'
+		return '{' + ','.join( (f'"{k}":{v}' for k,v in self) ) +  '}'
 
 
 # utility function for constructing multi-field vectors

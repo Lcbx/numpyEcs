@@ -43,7 +43,7 @@ class RenderContext:
 	# simple window loop on top of glfw
 	# inspired by https://github.com/pygfx/rendercanvas/blob/main/rendercanvas/glfw.py
 
-	canvas : wgpu.GPUCanvasContext
+	canvas : wgpu.GPUCanvasContext|None = None
 	adapter : wgpu.GPUAdapter
 	device : wgpu.GPUDevice
 	presentation_format : str
