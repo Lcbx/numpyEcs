@@ -126,7 +126,7 @@ class RenderContext:
 
 
 	@classmethod
-	def updateWindowSize(cls, wh : Tuple[int, int]):
+	def updateWindowSize(cls, wh : Tuple[int, int]) -> None:
 		# NOTE: some versions of glfw send resize events
 		w, h = wh
 		cls.windowDimensions = wh
@@ -167,12 +167,12 @@ class RenderContext:
 		cls.event_handlers[channel_name] = handlers
 
 		# usually first arg is window and we don't need that
-		def deflt_mapper(*args):
+		def deflt_mapper(*args)->None:
 			return args[1:]
 
 		mapper = mapper if mapper else deflt_mapper
 
-		def handlers_call(*args):
+		def handlers_call(*args)->None:
 			if mapper: args = mapper(*args)
 			for handler in cls.event_handlers[channel_name]:
 				if handler(*args): break
@@ -361,7 +361,7 @@ def make_std430_dtype(
 	return np.dtype(dfields, align=False)
 
 
-def dtype_to_vertex_format(dtype: np.dtype) -> Tuple:
+def dtype_to_vertex_format(dtype: np.dtype) -> Tuple | int:
 	"""
 	Determine the wgpu.VertexFormat corresponding to a NumPy dtype.
 
@@ -564,7 +564,7 @@ class Mesh:
 					attributes=instanceAttributes
 				))
 
-	def create_draw_call(self, shader:_Shader):
+	def create_draw_call(self, shader:_Shader) -> wgpu.GPURenderPipeline:
 		return RenderContext.device.create_render_pipeline(
 			layout=shader.pipeline_layout,
 			vertex=wgpu.VertexState(
@@ -592,7 +592,7 @@ class Mesh:
 		)
 
 
-def build_shader_program(shaderPath : str, **kwargs):
+def build_shader_program(shaderPath : str, **kwargs) -> Tuple['ShaderSource', _Shader]:
 	sh = RenderContext.Shader(filepath=shaderPath, **kwargs)
 	return sh.source, sh
 
@@ -699,7 +699,7 @@ class ShaderSource:
 		return template.render(FEATURES=featuresDict, PARAMS=params or {})
 
 	
-	def _parse_rendered_text(self, text: str):
+	def _parse_rendered_text(self, text: str) -> None:
 		# Declarations
 		for loc, qual, typ, name in self._decl_pattern.findall(text):
 			if qual == 'uniform':
@@ -730,7 +730,7 @@ class ShaderSource:
 				#print('-> got frag', hasattr(self, '_fragment_start'))
 
 
-	def _generate_glsl(self):
+	def _generate_glsl(self) -> None:
 		def inoutFmt(loc, tup, *, inoutStr):
 			if len(tup) == 4:
 				loc_, typ, name, flat = tup
@@ -834,7 +834,7 @@ def _get_data_from_accessor(gltf: GLTF2, accessor_index: int) -> np.ndarray:
 
 
 
-def load_gltf_first_mesh(glb_path: str):
+def load_gltf_first_mesh(glb_path: str) -> Tuple[np.ndarray,np.ndarray,np.ndarray,np.ndarray]:
 	gltf = GLTF2().load(glb_path)
 	mesh = gltf.meshes[0]
 	prim = mesh.primitives[0]
@@ -857,7 +857,7 @@ def load_gltf_first_mesh(glb_path: str):
 	return pos, nor, uv, idx
 
 
-def load_gltf_first_mesh_interleaved(glb_path: str):
+def load_gltf_first_mesh_interleaved(glb_path: str) -> Tuple[np.ndarray,np.ndarray]:
 	( pos, nor, uv, idx ) = load_gltf_first_mesh(glb_path)
 
 	N = pos.shape[0]
