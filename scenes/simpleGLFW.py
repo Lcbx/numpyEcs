@@ -25,13 +25,29 @@ RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE)#, vsync=False)
 
 # seems to use a weird color space
 renderpass = RenderContext.RenderPass(camera = camera, clear_color = (0.02, 0.02, 0.03, 1.0))
-shader = RenderContext.Shader(ShaderSource(filepath='scenes/shaders/simple.shader'))
+shader = RenderContext.Shader(filepath='scenes/shaders/simple.shader')
 vertices, indices = load_gltf_first_mesh_interleaved('scenes/resources/rooftop_utility_pole.glb')
 mesh = Mesh(vertices, indices)
 uniformBuffer = shader.UniformBuffer()
 
 
 print('init done')
+
+def clamp(val, val_min, val_max):
+    return min(max(val, val_min), val_max)
+
+def scroll_callback(xoff, yoff):
+    global camera_dist, camera
+    camera_dist = clamp(camera_dist - 5.0 * yoff, 5.0, 100.0)
+    y_factor = 1.0 if camera.position[1] < 15.0 else 3.0
+    camera.position = tuple(
+        ( val - y_factor * yoff if i == 1 else val)
+        for i, val in enumerate(camera.position)
+    )
+    return True
+
+RenderContext.event_handlers['mouse_scroll'].append(scroll_callback)
+
 
 scale = 10.0
 start_t = time.monotonic()

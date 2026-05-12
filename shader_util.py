@@ -56,6 +56,8 @@ class RenderContext:
 	depth :  wgpu.GPUTextureView
 
 	# event_name:[handlers]
+	# handlers return True if no need to propagate further
+	# NOTE: we should in reverse order if more recent handler have priority
 	event_handlers : Dict[str, List[Callable]] = {}
 
 	def __init__(self):
@@ -111,7 +113,7 @@ class RenderContext:
 		glfw.set_mouse_button_callback(cls.window, cls.setup_event('mouse_click'))
 		glfw.set_cursor_pos_callback(cls.window, cls.setup_event('mouse_move'))
 		glfw.set_cursor_enter_callback(cls.window, cls.setup_event('mouse_enter'))
-		glfw.set_scroll_callback(cls.window, cls.setup_event('mouse_scroll'))
+		glfw.set_scroll_callback(cls.window, cls.setup_event('mouse_scroll'))#, info_log=True))
 
 
 	@classmethod
@@ -164,10 +166,16 @@ class RenderContext:
 
 		cls.event_handlers[channel_name] = handlers
 
+		# usually first arg is window and we don't need that
+		def deflt_mapper(*args):
+			return args[1:]
+
+		mapper = mapper if mapper else deflt_mapper
+
 		def handlers_call(*args):
 			if mapper: args = mapper(*args)
 			for handler in cls.event_handlers[channel_name]:
-				handler(args)
+				if handler(*args): break
 
 		return handlers_call
 
@@ -423,8 +431,11 @@ def dtype_to_vertex_format(dtype: np.dtype) -> Tuple:
 
 # TODO: don't compile shaders we already compiled before
 class _Shader:
-	def __init__(self, source:'ShaderSource'):
+
+
+	def __init__(self, *args, **kwargs):
 		device = RenderContext.device
+		source = self.ShaderSource(*args, **kwargs)
 		self.source = source
 
 		#print(source.vertex_glsl)
@@ -464,6 +475,9 @@ class _Shader:
 	# NOTE: we pass the shader since the mesh needs it for setup
 	def UniformBuffer(self, *args, **kwargs) -> '_UniformBuffer':
 		return _UniformBuffer(self, *args, **kwargs)
+
+	def ShaderSource(self, *args, **kwargs) -> 'ShaderSource':
+		return ShaderSource(*args, **kwargs)
 
 
 class _UniformBuffer:
@@ -579,8 +593,8 @@ class Mesh:
 
 
 def build_shader_program(shaderPath : str, **kwargs):
-	src = ShaderSource(filepath=shaderPath, **kwargs)
-	return src, RenderContext.Shader(src)
+	sh = RenderContext.Shader(filepath=shaderPath, **kwargs)
+	return sh.source, sh
 
 
 class DefaultFalseDict(Dict):
