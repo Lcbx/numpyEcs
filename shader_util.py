@@ -1,8 +1,7 @@
 
 
 import numpy as np
-from pyrr import Matrix44 as Mat4, Vector3
-
+from pyrr import Matrix44 as Mat4, Vector3 as Vec3, Vector4 as Vec4
 import glfw, ctypes, atexit, time
 
 import wgpu
@@ -18,9 +17,9 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 class Camera:
 	def __init__(self, position: tuple, target: tuple, up: tuple, fovy_deg:float, near:float=0.1, far:float=1000.0, perspective:bool=True):
-		self.position = Vector3(position)
-		self.target = Vector3(target)
-		self.up = Vector3(up)
+		self.position = Vec3(position)
+		self.target = Vec3(target)
+		self.up = Vec3(up)
 		self.fovy_deg = fovy_deg
 		self.near = near
 		self.far = far
@@ -99,6 +98,11 @@ class RenderContext:
 		cls.setup(highpower=highpower)
 		cls.presentation_format = cls.canvas.get_preferred_format(cls.adapter)
 		cls.canvas.configure(device=cls.device, format=cls.presentation_format, usage=wgpu.TextureUsage.RENDER_ATTACHMENT)
+
+		#print(cls.canvas._get_capabilities_screen(cls.adapter))
+		# ['Fifo', 'FifoRelaxed', 'Mailbox', 'Immediate']
+		#cls.canvas.set_present_mode('FifoRelaxed') #edited the wgpu library to add this method
+		#cls.canvas._configure_screen_real()
 
 	@classmethod
 	def setup_callbacks(cls) -> None:
@@ -291,7 +295,7 @@ class _RenderPass:
 		render_pass.draw_indexed(mesh.index_count, mesh.instance_count, 0, 0, 0)
 
 
-GL_to_dtype: Dict[str, np.dtype] = {
+_GL_to_dtype: Dict[str, np.dtype] = {
 	"float":	 np.dtype((np.float32, ())),
 	"vec2": 	 np.dtype((np.float32, (2,))),
 	"vec3": 	 np.dtype((np.float32, (3,))),
@@ -308,47 +312,40 @@ GL_to_dtype: Dict[str, np.dtype] = {
 	"sampler2D": np.dtype((np.uint32, ())),
 }
 
+def glsl_to_dtype(spec:str)-> np.dtype:
 
-def make_std430_dtype(
-	fields: Iterable[Tuple[str, str]]
-) -> np.dtype:
-	"""
-	Assumptions:
-	  - fields param is List[type, name] where type is a glsl base type or an array of it
-	  - struct alignment is always 16 bytes
-	  - supports base types and arrays of base types only
-	  - sampler2D is represented as a u32 handle/index
+	# array case
+	if '[' in spec:
+		definition = spec.replace(']', '').split('[')
+		spec = definition[0]
+		counts = tuple(map(int,definition[1:]))
+	else: counts = None
 
-	Returns dtype
-	"""
+	info = _GL_to_dtype.get(spec)
+	if info is None:
+		raise ValueError(f"Unsupported type {spec!r}")
+
+	if counts:
+		# rebuild item dimensions
+		info = np.dtype( (info.base, info.shape + counts) )
+	
+	return info
+
+
+def make_std430_dtype( original: List[Tuple[str, np.dtype]] ) -> np.dtype:
 
 	dfields: List[Tuple[str, np.dtype]] = []
 	offset = 0
 	pad_idx = 0
 
-	for spec, name in fields:
-		#print(name, spec, offset)
+	for name, dtype in original:
+		print(name, dtype)
+		dtype = np.dtype(dtype)
 
-		# array case
-		if '[' in spec:
-			definition = spec.replace(']', '').split('[')
-			spec = definition[0]
-			counts = tuple(map(int,definition[1:]))
-		else: counts = None
+		dfields.append((name, dtype))
+		offset += dtype.itemsize
 
-		info = GL_to_dtype.get(spec)
-		if info is None:
-			raise ValueError(f"Unsupported type {spec!r}")
-
-		if counts:
-			# rebuild item dimensions
-			info = np.dtype( (info.base, info.shape + counts) )
-			#print(info)
-
-		dfields.append((name, info))
-		#print(f'{name=} {spec=} {info.itemsize=}')
-		offset += info.itemsize
-
+		#print(dfields)
 		missing_offset = (16 - offset) % 16
 		if missing_offset != 0:
 			#print(f'adding new pad {missing_offset}')
@@ -358,35 +355,25 @@ def make_std430_dtype(
 
 	#print(dfields)
 
-	return np.dtype(dfields, align=False)
+	#return np.dtype(dfields, align=False)
+	return np.dtype(dfields, align=True)
 
 
-def dtype_to_vertex_format(dtype: np.dtype) -> List | int:
-	"""
-	Determine the wgpu.VertexFormat corresponding to a NumPy dtype.
 
-	Assumptions:
-	- dtype is within wgpu spec
-	- dtype may be an array of a valid vertex scalar type
-	- no normalization, no padding
-	"""
-
-	# not all kinds of of format supported !!
-	#print(wgpu.VertexFormat.__dict__)
-
-	_SCALAR_MAP : Dict[Any, str] = {
-		np.int8:	"sint8",
-		np.uint8:	"uint8",
-		np.int16:	"sint16",
-		np.uint16:	"uint16",
-		np.uint32:	"uint32",
-		np.int32:	"sint32",
-		np.uint32:	"uint32",
-		np.float16:	"float16",
-		np.float32:	"float32",
-		np.float64:	"float64",
-	}
-
+_VertexFormat : Dict[Any, Tuple[str, int]] = {
+	np.int8:	("sint8",   1),
+	np.uint8:	("uint8",   1),
+	np.int16:	("sint16",  2),
+	np.uint16:	("uint16",  2),
+	np.int32:	("sint32",  4),
+	np.uint32:	("uint32",  4),
+	np.uint32:	("uint32",  4),
+	np.float16:	("float16", 2),
+	np.float32:	("float32", 4),
+	np.float64:	("float64", 8),
+}
+# NOTE: wgpu.vertexFormat enum are strings in wgpu-py 
+def dtype_to_vertex_format(dtype: np.dtype) -> List | str:
 
 	dtype = np.dtype(dtype)
 
@@ -409,7 +396,7 @@ def dtype_to_vertex_format(dtype: np.dtype) -> List | int:
 	# Scalar case
 	if dtype.subdtype is None:
 		try:
-			prefix = _SCALAR_MAP[dtype]
+			(prefix, scalar_size) = _VertexFormat[dtype]
 		except KeyError:
 			raise TypeError(f"Unsupported vertex scalar dtype: {dtype}")
 
@@ -424,7 +411,7 @@ def dtype_to_vertex_format(dtype: np.dtype) -> List | int:
 	if count < 1 or count > 4:
 		raise ValueError(f"VertexFormat arrays must have 1–4 components (found {count})")
 	try:
-		prefix = _SCALAR_MAP[base_type]
+		(prefix, scalar_size) = _VertexFormat[base_type]
 	except KeyError:
 		raise TypeError(f"Unsupported vertex base dtype: {base_type}")
 
@@ -437,21 +424,9 @@ def dtype_to_vertex_format(dtype: np.dtype) -> List | int:
 	if shape_len == 1:
 		return vFormat
 	# matrix 
-	if shape_len == 2 and shape[0] == shape[1]:
-		_SIZE_MAP : Dict[Any, str] = {
-			np.int8:	1,
-			np.uint8:	1,
-			np.int16:	2,
-			np.uint16:	2,
-			np.uint32:	4,
-			np.int32:	4,
-			np.uint32:	4,
-			np.float16:	2,
-			np.float32:	4,
-			np.float64:	8,
-		}
-		scalar_size = _SIZE_MAP[base_type]
-		return [ (vFormat, scalar_size * count * i) for i in range(count) ]
+	if shape_len == 2:
+		row_count = shape[1]
+		return [ (vFormat, scalar_size * count * i) for i in range(row_count) ]
 	
 	else:
 		raise TypeError(f"Only 1D or 2D array dtypes are valid vertex attributes (found {shape})")
@@ -480,7 +455,9 @@ class _Shader:
 			print(source.fragment_glsl)
 			raise e
 
-		self.uniforms_dtype = make_std430_dtype(self.source.uniforms)
+		self.uniforms_dtype = make_std430_dtype(
+			[(name, glsl_to_dtype(spec)) for spec, name in self.source.uniforms]
+		)
 
 		self.bind_group_layout = device.create_bind_group_layout(
 			entries=[

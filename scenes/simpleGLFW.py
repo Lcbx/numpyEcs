@@ -28,14 +28,20 @@ renderpass = RenderContext.RenderPass(camera = camera, clear_color = (0.02, 0.02
 shader = RenderContext.Shader(filepath='scenes/shaders/simple.shader')
 vertices, indices = load_gltf_first_mesh_interleaved('scenes/resources/rooftop_utility_pole.glb')
 scale = 10.0
+Vec3_type = np.dtype( (np.float32, (3,)) )
+Vec4_type = np.dtype( (np.float32, (4,)) )
+Mat4_type = np.dtype( (np.float32, (4,4)) )
 instance_data_type = make_std430_dtype(
     [
-        ("mat4", "uModel"),
-        ("vec4", "uTint")
+        ("uModel", Mat4_type), # NOTE: 4x4 float32 mat is a lot of memory if we just needed position, orientation, scale 
+        ("uTint",  Vec4_type)
     ])
 instance_data = np.zeros(10, instance_data_type)
-instance_data[0]["uModel"] = Mat4.from_scale([scale, scale, scale], dtype=np.float32)
+scale_mat = Mat4.from_scale([scale, scale, scale])
+instance_data[0]["uModel"] = scale_mat
 instance_data[0]["uTint"] = (0.7, 0.5, 0.3, 1.0)
+instance_data[1]["uModel"] = scale_mat @ Mat4.from_translation([15.0, 0.0, 15.0]) 
+instance_data[1]["uTint"] = (0.3, 0.5, 0.7, 1.0)
 mesh = Mesh(vertices, indices, instance_data=instance_data)
 #mesh = Mesh(vertices, indices)
 uniformBuffer = shader.UniformBuffer()
