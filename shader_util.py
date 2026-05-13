@@ -101,7 +101,7 @@ class RenderContext:
 		cls.canvas.configure(device=cls.device, format=cls.presentation_format, usage=wgpu.TextureUsage.RENDER_ATTACHMENT)
 
 	@classmethod
-	def setup_callbacks(cls)->None:
+	def setup_callbacks(cls) -> None:
 
 		# key is key down, key up
 		# char is resulting utf8 character
@@ -278,10 +278,10 @@ class _RenderPass:
 		render_pass = self.render_pass
 		render_pass.set_pipeline(mesh.create_draw_call(shader))
 		render_pass.set_bind_group(0, uniforms.bind_group)
-		render_pass.set_vertex_buffer(0, mesh.vertex_buffer)
+		render_pass.set_vertex_buffer(0, mesh.vertex_buffer.handle)
 		if mesh.instanced:
-			render_pass.set_vertex_buffer(1, mesh.instance_buffer)
-		render_pass.set_index_buffer(mesh.index_buffer, wgpu.IndexFormat.uint32)
+			render_pass.set_vertex_buffer(1, mesh.instance_buffer.handle)
+		render_pass.set_index_buffer(mesh.index_buffer.handle, wgpu.IndexFormat.uint32)
 
 		#index_count (int) – The number of indices to draw.
 		#instance_count (int) – The number of instances to draw. Default 1.
@@ -361,7 +361,7 @@ def make_std430_dtype(
 	return np.dtype(dfields, align=False)
 
 
-def dtype_to_vertex_format(dtype: np.dtype) -> Tuple | int:
+def dtype_to_vertex_format(dtype: np.dtype) -> List | int:
 	"""
 	Determine the wgpu.VertexFormat corresponding to a NumPy dtype.
 
@@ -395,7 +395,16 @@ def dtype_to_vertex_format(dtype: np.dtype) -> Tuple | int:
 	if dtype.fields is not None:
 		fields_data = dtype.fields.values()
 		#print(fields_data)
-		return tuple((dtype_to_vertex_format(field_dtype), offset) for field_dtype, offset in fields_data)
+		res = []
+		for field_dtype, offset in fields_data:
+			vFormat = dtype_to_vertex_format(field_dtype)
+			#print('vFormat', vFormat, type(vFormat))
+			if isinstance(vFormat,str):
+				res.append( (vFormat, offset) )
+			elif isinstance(vFormat,List):
+				for vf, local_offset in vFormat:
+					res.append( (vf, offset+local_offset) )
+		return res
 
 	# Scalar case
 	if dtype.subdtype is None:
@@ -410,23 +419,42 @@ def dtype_to_vertex_format(dtype: np.dtype) -> Tuple | int:
 	base_dtype, shape = dtype.subdtype
 	base_type = base_dtype.type
 
-	if len(shape) != 1:
-		raise TypeError(f"Only 1D array dtypes are valid vertex attributes (found {shape})")
-
 	count = shape[0]
 
 	if count < 1 or count > 4:
 		raise ValueError(f"VertexFormat arrays must have 1–4 components (found {count})")
-
 	try:
 		prefix = _SCALAR_MAP[base_type]
 	except KeyError:
 		raise TypeError(f"Unsupported vertex base dtype: {base_type}")
 
-	if count == 1:
-		return getattr(wgpu.VertexFormat, prefix)
+	shape_len = len(shape)
+	vFormat = (
+			 getattr(wgpu.VertexFormat, prefix) if count == 1
+		else getattr(wgpu.VertexFormat, f"{prefix}x{count}")
+	)
 
-	return getattr(wgpu.VertexFormat, f"{prefix}x{count}")
+	if shape_len == 1:
+		return vFormat
+	# matrix 
+	if shape_len == 2 and shape[0] == shape[1]:
+		_SIZE_MAP : Dict[Any, str] = {
+			np.int8:	1,
+			np.uint8:	1,
+			np.int16:	2,
+			np.uint16:	2,
+			np.uint32:	4,
+			np.int32:	4,
+			np.uint32:	4,
+			np.float16:	2,
+			np.float32:	4,
+			np.float64:	8,
+		}
+		scalar_size = _SIZE_MAP[base_type]
+		return [ (vFormat, scalar_size * count * i) for i in range(count) ]
+	
+	else:
+		raise TypeError(f"Only 1D or 2D array dtypes are valid vertex attributes (found {shape})")
 
 
 # TODO: don't compile shaders we already compiled before
@@ -462,7 +490,7 @@ class _Shader:
 					buffer=wgpu.BufferBindingLayout(
 						type=wgpu.BufferBindingType.uniform,
 						has_dynamic_offset=False,
-						min_binding_size=self.uniforms_dtype.itemsize,
+						#min_binding_size=self.uniforms_dtype.itemsize,
 					),
 				)
 			]
@@ -479,19 +507,29 @@ class _Shader:
 	def ShaderSource(self, *args, **kwargs) -> 'ShaderSource':
 		return ShaderSource(*args, **kwargs)
 
+class GpuBuffer:
 
-class _UniformBuffer:
+	def __init__(self, content : np.ndarray, usage:int | wgpu.BufferUsage):#, max_count:int=1):
+		device = RenderContext.device
+		self.content = content
+		self.handle = device.create_buffer_with_data(data=content, usage=usage)
+		#buffer_size = max(max_count, content.size) * content.itemsize
+		#print(buffer_size)
+		#self.handle = device.create_buffer(size=content.itemsize * buffer_item_max_count, usage=usage)
+
+	def upload(self) -> None:
+		RenderContext.device.queue.write_buffer(self.handle, 0, self.content)
+
+
+class _UniformBuffer(GpuBuffer):
 
 	def __init__(self, shader : _Shader):
 		device = RenderContext.device
 		self.shader = shader
 
-		self.uniforms = np.zeros((1), dtype=shader.uniforms_dtype)
+		content = np.empty((1),dtype=shader.uniforms_dtype)
 
-		self.uniform_buffer = device.create_buffer(
-			size=shader.uniforms_dtype.itemsize,
-			usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST,
-		)
+		super().__init__(content, wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
 
 		self.bind_group = device.create_bind_group(
 			layout=shader.bind_group_layout,
@@ -499,17 +537,14 @@ class _UniformBuffer:
 				wgpu.BindGroupEntry(
 					binding=0,
 					resource=wgpu.BufferBinding(
-						buffer=self.uniform_buffer,
+						buffer=self.handle,
 						offset=0,
-						size=shader.uniforms_dtype.itemsize,
+						size=content.nbytes,
 					),
 				)
 			],
 		)
 
-	# usage: us.uniform['name'] = value; us.write_uniforms()
-	def write_uniforms(self) -> None:
-		RenderContext.device.queue.write_buffer(self.uniform_buffer, 0, self.uniforms)
 
 
 # TODO: pool meshes with same vertex attributes
@@ -523,18 +558,21 @@ class Mesh:
 		self.instanced = isinstance(instance_data, np.ndarray)
 		vertex_dtype = vertex_data.dtype
 
+		vformat = dtype_to_vertex_format(vertex_dtype)
+		vertex_loc_count = len(vformat) 
+		print("instance", vformat, vertex_dtype.itemsize)
 		vertexAttributes = [ wgpu.VertexAttribute(
 				shader_location = i,
 				offset=offset,
 				format=vertexFormat
 			) for i, (vertexFormat, offset)
-			in enumerate(dtype_to_vertex_format(vertex_data.dtype))
+			in enumerate(vformat)
 		]
 		
 
 		# TODO: test if view(np.uint8) truly tobytes() but wihout a copy ?
-		self.vertex_buffer = device.create_buffer_with_data(data=vertex_data.view(np.uint8), usage=wgpu.BufferUsage.VERTEX)
-		self.index_buffer = device.create_buffer_with_data(data=indices.view(np.uint8), usage=wgpu.BufferUsage.INDEX)
+		self.vertex_buffer = GpuBuffer(vertex_data, wgpu.BufferUsage.VERTEX)
+		self.index_buffer = GpuBuffer(indices, wgpu.BufferUsage.INDEX)
 
 		self.buffers_spec = [
 			wgpu.VertexBufferLayout(
@@ -545,22 +583,24 @@ class Mesh:
 		]
 		self.instance_count = instance_data.size if self.instanced else 1
 
-		# TODO: managing multiple instances separately
 		if self.instanced:
+			instance_dtype = instance_data.dtype
+			vformat = dtype_to_vertex_format(instance_dtype)
+			print("instance", vformat, instance_dtype.itemsize)
 			instanceAttributes = [ wgpu.VertexAttribute(
-					shader_location = i,
+					shader_location = i + vertex_loc_count,
 					offset=offset,
 					format=vertexFormat
 				) for i, (vertexFormat, offset)
-				in enumerate(dtype_to_vertex_format(instance_data.dtype))
+				in enumerate(vformat)
 			]
 
-			self.instance_buffer = device.create_buffer_with_data(data=instance_data.view(np.uint8), usage=wgpu.BufferUsage.VERTEX|wgpu.BufferUsage.COPY_DST)
+			self.instance_buffer = GpuBuffer(instance_data, wgpu.BufferUsage.VERTEX|wgpu.BufferUsage.COPY_DST)
 
 			self.buffers_spec.append(
 				wgpu.VertexBufferLayout(
-					array_stride=vertex_dtype.itemsize,
-					step_mode=wgpu.VertexStepMode.Instance,
+					array_stride=instance_dtype.itemsize,
+					step_mode=wgpu.VertexStepMode.instance,
 					attributes=instanceAttributes
 				))
 

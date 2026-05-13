@@ -27,7 +27,17 @@ RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE)#, vsync=False)
 renderpass = RenderContext.RenderPass(camera = camera, clear_color = (0.02, 0.02, 0.03, 1.0))
 shader = RenderContext.Shader(filepath='scenes/shaders/simple.shader')
 vertices, indices = load_gltf_first_mesh_interleaved('scenes/resources/rooftop_utility_pole.glb')
-mesh = Mesh(vertices, indices)
+scale = 10.0
+instance_data_type = make_std430_dtype(
+    [
+        ("mat4", "uModel"),
+        ("vec4", "uTint")
+    ])
+instance_data = np.zeros(10, instance_data_type)
+instance_data[0]["uModel"] = Mat4.from_scale([scale, scale, scale], dtype=np.float32)
+instance_data[0]["uTint"] = (0.7, 0.5, 0.3, 1.0)
+mesh = Mesh(vertices, indices, instance_data=instance_data)
+#mesh = Mesh(vertices, indices)
 uniformBuffer = shader.UniformBuffer()
 
 
@@ -49,7 +59,6 @@ def scroll_callback(xoff, yoff):
 RenderContext.event_handlers['mouse_scroll'].append(scroll_callback)
 
 
-scale = 10.0
 start_t = time.monotonic()
 frame_start = start_t
 fps_frames = 0
@@ -75,10 +84,10 @@ while RenderContext.WindowLoop():
     )
 
     with renderpass as rp:
-        uniformBuffer.uniforms['uView'] = renderpass.view
-        uniformBuffer.uniforms['uProj'] = renderpass.projection
-        uniformBuffer.uniforms['uModel'] = Mat4.from_scale([scale, scale, scale], dtype=np.float32)
-        uniformBuffer.uniforms['uLightDir'] = light_dir
-        uniformBuffer.uniforms['uTint'] = (0.7, 0.5, 0.3, 1.0)
-        uniformBuffer.write_uniforms()
+        uniformBuffer.content['uView'] = renderpass.view
+        uniformBuffer.content['uProj'] = renderpass.projection
+        uniformBuffer.content['uLightDir'] = light_dir
+        #uniformBuffer.content['uTint'] = (0.7, 0.5, 0.3, 1.0)
+        #uniformBuffer.content['uModel'] = Mat4.from_scale([scale, scale, scale], dtype=np.float32)
+        uniformBuffer.upload()
         rp.draw(mesh, shader, uniformBuffer)
