@@ -3,7 +3,7 @@ import pytest
 from shader_util import *
 from pyrr import Matrix44
 
-RenderContext.setup(highpower=False)
+RenderContext.setup_graphics_backend(highpower_gpu=False)
 
 # will throw if invalid
 source1, shader1 = build_shader_program('tests/test.shader')

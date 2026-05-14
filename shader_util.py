@@ -13,6 +13,8 @@ from glob import glob
 from typing import Any, Sequence, Iterable, List, Dict, Tuple, NamedTuple, Callable
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
+getTime = time.perf_counter
+sleep = time.sleep
 
 
 class Camera:
@@ -51,6 +53,10 @@ class RenderContext:
 	windowDimensions : tuple[float,float] = (0.0,0.0)
 	aspect : float = 1.0
 
+	target_frame_time : float|None = None
+	frame_start : float			   = 0.0
+	frame_time : float			   = 0.0
+
 	depth_format : str = wgpu.TextureFormat.depth24plus
 	depth :  wgpu.GPUTextureView
 
@@ -63,19 +69,24 @@ class RenderContext:
 		raise Exception('this class is not meant to be instanciated')
 
 	@classmethod
-	def InitWindow(cls, w:float, h:float, title:str, vsync:bool=True, highpower:bool=True) -> None:
+	def InitWindow(cls, w:float, h:float, title:str, highpower_gpu:bool=True, target_fps:int=0) -> None:
+		""" init a window and wgpu rendering context.
+		:param highpower_gpu: use the high performance gpu if there are multiple
+		:param target_fps: -1 is limitless, 0 is vsync, other values is fps limit
+		"""
 
-		print(f'{glfw.__version__=}')
+		#print(f'{glfw.__version__=}')
 		glfw.init()
 		atexit.register(glfw.terminate)
 		
 		# in case monitor setup becomes relevant
-		monitors = glfw.get_monitors()
-		for monitor in monitors:
-			mode = glfw.get_video_mode(monitor)
-			print(f'{mode=}')
+		#monitors = glfw.get_monitors()
+		#for monitor in monitors:
+		#	video_mode = glfw.get_video_mode(monitor)
+		#	print(f'{video_mode=}')
 
-		# NOTE: we can set to fullscreen with glfw.set_window_monitor(monitor)
+		# uncomment to set to fullscreen
+		# glfw.set_window_monitor(monitor)
 
 		glfw.window_hint(glfw.CLIENT_API, glfw.NO_API)
 		#glfw.window_hint(glfw.RESIZABLE, True)
@@ -86,23 +97,52 @@ class RenderContext:
 		glfw.window_hint(glfw.POSITION_X, monitor_w-w)
 		glfw.window_hint(glfw.POSITION_Y, 30) 
 
+		# had weird case where vsync was not blocking
+		if target_fps == 0:
+			video_mode = glfw.get_video_mode(monitor)
+			#print(f'{video_mode=}')
+			target_fps = video_mode.refresh_rate
+
+		if target_fps != -1:
+			cls.target_frame_time = 1.0 / float(target_fps)
+
 		# width, height, title, monitor (for full screen), window (for opengl context sharing)
 		cls.window = glfw.create_window(w, h, title, None, None)
 		cls.setup_callbacks()
 		#glfw.set_window_pos(cls.window, monitor_w-w, 30)
 
 		# wgpu context
+		#print(f'{present_info=}')
+
+		cls.setup_graphics(vsync=target_fps==0,highpower_gpu=highpower_gpu)
+
+		cls.frame_start = getTime()
+
+	@classmethod
+	def setup_graphics(cls, *, vsync:bool, highpower_gpu:bool) -> None:
+		""" setup gpu compute & render surface """
 		present_info = get_glfw_present_info(cls.window, vsync=vsync)
 		cls.canvas = wgpu.gpu.get_canvas_context(present_info)
-
-		cls.setup(highpower=highpower)
+		cls.setup_graphics_backend(highpower_gpu=highpower_gpu)
 		cls.presentation_format = cls.canvas.get_preferred_format(cls.adapter)
+		#print(f'{cls.presentation_format=}')
+		#print(f'{cls.canvas._get_capabilities_screen(cls.adapter)=}')
 		cls.canvas.configure(device=cls.device, format=cls.presentation_format, usage=wgpu.TextureUsage.RENDER_ATTACHMENT)
 
-		#print(cls.canvas._get_capabilities_screen(cls.adapter))
 		# ['Fifo', 'FifoRelaxed', 'Mailbox', 'Immediate']
 		#cls.canvas.set_present_mode('FifoRelaxed') #edited the wgpu library to add this method
 		#cls.canvas._configure_screen_real()
+
+
+	@classmethod
+	def setup_graphics_backend(cls, *, highpower_gpu:bool) -> None:
+		""" setup gpu compute, not necessarily with canvas output. used notably for tests """
+		request_params = {'power_preference': 'high-performance' if highpower_gpu else 'low-power' }
+		if cls.canvas: request_params['canvas'] = cls.canvas
+		cls.adapter = wgpu.gpu.request_adapter_sync(**request_params)
+		#print(f'{cls.adapter.info=}')
+		cls.device = cls.adapter.request_device_sync()
+
 
 	@classmethod
 	def setup_callbacks(cls) -> None:
@@ -118,15 +158,6 @@ class RenderContext:
 		glfw.set_cursor_pos_callback(cls.window, cls.setup_event('mouse_move'))
 		glfw.set_cursor_enter_callback(cls.window, cls.setup_event('mouse_enter'))
 		glfw.set_scroll_callback(cls.window, cls.setup_event('mouse_scroll'))#, info_log=True))
-
-
-	@classmethod
-	def setup(cls, *, highpower:bool) -> None:
-		""" setup gpu compute, not necessarily with canvas output. used notably for tests """
-		request_params = {'power_preference': 'high-performance' if highpower else 'low-power' }
-		if cls.canvas: request_params['canvas'] = cls.canvas
-		cls.adapter = wgpu.gpu.request_adapter_sync(**request_params)
-		cls.device = cls.adapter.request_device_sync()
 
 
 	@classmethod
@@ -187,8 +218,6 @@ class RenderContext:
 	@classmethod
 	def cleanup(cls):
 
-		#cls.device._poll(True) # wait for last frame
-
 		cls.canvas.unconfigure()
 
 		glfw.destroy_window(cls.window)
@@ -207,7 +236,20 @@ class RenderContext:
 			cls.updateWindowSize(wh)
 
 		cls.canvas.present()
-		# TODO: apply frame pacing here
+		
+
+		now = getTime()
+		cls.frame_time = now - cls.frame_start
+		
+		# if we have a target frame time, wait until we match it
+		if cls.target_frame_time and cls.frame_time < cls.target_frame_time - 0.001:
+			sleep_time = cls.target_frame_time - cls.frame_time - 0.001 # 1ms sleep margin
+			sleep(sleep_time)
+			end = cls.frame_start + cls.target_frame_time
+			# busy wait for the last 1ms
+			while now < end: now = getTime()
+		
+		cls.frame_start = now
 
 		glfw.poll_events()
 
@@ -340,7 +382,7 @@ def make_std430_dtype( original: List[Tuple[str, np.dtype]] ) -> np.dtype:
 	pad_idx = 0
 
 	for name, dtype in original:
-		print(name, dtype)
+		#print(name, dtype)
 		dtype = np.dtype(dtype)
 
 		dfields.append((name, dtype))
@@ -538,7 +580,7 @@ class Mesh:
 
 		vformat = dtype_to_vertex_format(vertex_dtype)
 		vertex_loc_count = len(vformat) 
-		print("instance", vformat, vertex_dtype.itemsize)
+		#print("vertex", vformat, vertex_dtype.itemsize)
 		vertexAttributes = [ wgpu.VertexAttribute(
 				shader_location = i,
 				offset=offset,
@@ -547,8 +589,6 @@ class Mesh:
 			in enumerate(vformat)
 		]
 		
-
-		# TODO: test if view(np.uint8) truly tobytes() but wihout a copy ?
 		self.vertex_buffer = GpuBuffer(vertex_data, wgpu.BufferUsage.VERTEX)
 		self.index_buffer = GpuBuffer(indices, wgpu.BufferUsage.INDEX)
 
@@ -564,7 +604,7 @@ class Mesh:
 		if self.instanced:
 			instance_dtype = instance_data.dtype
 			vformat = dtype_to_vertex_format(instance_dtype)
-			print("instance", vformat, instance_dtype.itemsize)
+			#print("instance", vformat, instance_dtype.itemsize)
 			instanceAttributes = [ wgpu.VertexAttribute(
 					shader_location = i + vertex_loc_count,
 					offset=offset,

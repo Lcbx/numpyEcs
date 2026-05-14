@@ -19,9 +19,11 @@ l = l / np.linalg.norm(l)
 light_dir = l.astype(np.float32)
 
 
-RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE)#, vsync=False)
+RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE
+)
+#, target_fps=120)
+#, target_fps=-1)
 #RenderContext.capture_mouse()
-#RenderContext.setup(highpower=False)
 
 # seems to use a weird color space
 renderpass = RenderContext.RenderPass(camera = camera, clear_color = (0.02, 0.02, 0.03, 1.0))
@@ -54,39 +56,38 @@ def clamp(val, val_min, val_max):
 def scroll_callback(xoff, yoff):
     global camera_dist, camera
     camera_dist = clamp(camera_dist - 5.0 * yoff, 5.0, 100.0)
-    y_factor = 1.0 if camera.position[1] < 15.0 else 3.0
-    camera.position = tuple(
-        ( val - y_factor * yoff if i == 1 else val)
-        for i, val in enumerate(camera.position)
-    )
+    cp = camera.position
+    y_factor = 1.0 if cp.y < 15.0 else 3.0
+    #print(f'{y_factor=}')
+    camera.position = Vec3( (cp.x, cp.y - y_factor * yoff, cp.z) )
     return True
 
 RenderContext.event_handlers['mouse_scroll'].append(scroll_callback)
 
 
-start_t = time.monotonic()
-frame_start = start_t
 fps_frames = 0
+start_t = getTime()
+fps_print_timestamp = start_t
 while RenderContext.WindowLoop():
 
-    # time since start of the simulation 
-    now = time.monotonic()
-    elapsed = now - start_t
-    
+    now = RenderContext.frame_start
+
     # simple FPS to console
     fps_frames += 1
-    if now - frame_start >= 1.0:
+    if now - fps_print_timestamp >= 1.0:
         print(f"fps {fps_frames}")
-        frame_start = now
         fps_frames = 0
+        fps_print_timestamp = now
 
-    # orbit update
+
+    # orbit update (based on time wince start)
+    elapsed = now - start_t
     cam_ang = elapsed * 0.5
-    camera.position = (
+    camera.position = Vec3( (
         cos(cam_ang) * camera_dist,
-        camera.position[1],
+        camera.position.y,
         sin(cam_ang) * camera_dist
-    )
+    ) )
 
     with renderpass as rp:
         uniformBuffer.content['uView'] = renderpass.view
@@ -96,3 +97,4 @@ while RenderContext.WindowLoop():
         #uniformBuffer.content['uModel'] = Mat4.from_scale([scale, scale, scale], dtype=np.float32)
         uniformBuffer.upload()
         rp.draw(mesh, shader, uniformBuffer)
+
