@@ -297,20 +297,20 @@ class _RenderPass:
 
 
 _GL_to_dtype: Dict[str, np.dtype] = {
-	"float":	 np.dtype((np.float32, ())),
-	"vec2": 	 np.dtype((np.float32, (2,))),
-	"vec3": 	 np.dtype((np.float32, (3,))),
-	"vec4": 	 np.dtype((np.float32, (4,))),
-	"mat4": 	 np.dtype((np.float32, (4,4))),
-	"uint": 	 np.dtype((np.uint32, ())),
-	"uvec2":	 np.dtype((np.int32, (2,))),
-	"uvec3":	 np.dtype((np.int32, (3,))),
-	"uvec4":	 np.dtype((np.int32, (4,))),
-	"int":  	 np.dtype((np.int32, ())),
-	"ivec2":	 np.dtype((np.int32, (2,))),
-	"ivec3":	 np.dtype((np.int32, (3,))),
-	"ivec4":	 np.dtype((np.int32, (4,))),
-	"sampler2D": np.dtype((np.uint32, ())),
+	"float":	 np.dtype( (np.float32, () )   ),
+	"vec2": 	 np.dtype( (np.float32, (2,))  ),
+	"vec3": 	 np.dtype( (np.float32, (3,))  ),
+	"vec4": 	 np.dtype( (np.float32, (4,))  ),
+	"mat4": 	 np.dtype( (np.float32, (4,4)) ),
+	"uint": 	 np.dtype( (np.uint32,  () )   ),
+	"uvec2":	 np.dtype( (np.int32,   (2,))  ),
+	"uvec3":	 np.dtype( (np.int32,   (3,))  ),
+	"uvec4":	 np.dtype( (np.int32,   (4,))  ),
+	"int":  	 np.dtype( (np.int32,   () )   ),
+	"ivec2":	 np.dtype( (np.int32,   (2,))  ),
+	"ivec3":	 np.dtype( (np.int32,   (3,))  ),
+	"ivec4":	 np.dtype( (np.int32,   (4,))  ),
+	"sampler2D": np.dtype( (np.uint32,  () )   ), 
 }
 
 def glsl_to_dtype(spec:str)-> np.dtype:
@@ -657,12 +657,12 @@ class ShaderSource:
 	def __init__(
 		self,
 		*,
-		source: str|None = None,
-		filepath: str|None = None,
-		basedir: str|None = None,
-		features: Sequence[str]|None = None,
-		params: Dict[str, Any]|None = None,
-		glsl_version: str = '#version 450 core'
+		source       : str            | None = None,
+		filepath     : str            | None = None,
+		basedir      : str            | None = None,
+		features     : Sequence[str]  | None = None,
+		params       : Dict[str, Any] | None = None,
+		glsl_version : str = '#version 450 core'
 	):
 		# :param source: master shader definition code (template).
 		# :param filepath: Path to the master shader definition file (template).
@@ -676,13 +676,13 @@ class ShaderSource:
 		self._basedir = basedir if basedir else os.path.dirname(os.path.abspath(filepath)) if filepath else glob('**/shaders/', recursive=True)
 		self._glsl_version = glsl_version
 		
-		self.uniforms = []	  # list[(type, name)]
-		self.varyings = []	  # list[(type, name)]
-		self.ins = []		   # list[(loc, type, name)]
-		self.outs = []		  # list[(loc, type, name)]
-		self.consts = []		# list[(type, name)]
-		self.functions = []	 # list[str]
-		self.vertex_glsl = ''   # rendered vertex GLSL
+		self.uniforms      = [] # list[(type, name)]
+		self.varyings      = [] # list[(type, name)]
+		self.ins           = [] # list[(loc, type, name)]
+		self.outs          = [] # list[(loc, type, name)]
+		self.consts        = [] # list[(type, name)]
+		self.functions     = [] # list[str]
+		self.vertex_glsl   = '' # rendered vertex GLSL
 		self.fragment_glsl = '' # rendered fragment GLSL
 
 		#print(f'{self._basedir=}')
@@ -720,7 +720,7 @@ class ShaderSource:
 	def _parse_rendered_text(self, text: str) -> None:
 		# Declarations
 		for loc, qual, typ, name in self._decl_pattern.findall(text):
-			if qual == 'uniform':
+			if qual   == 'uniform':
 				self.uniforms.append((typ, name))
 			elif qual == 'varying':
 				self.varyings.append((loc, typ, name, False))
@@ -859,18 +859,16 @@ def load_gltf_first_mesh(glb_path: str) -> Tuple[np.ndarray,np.ndarray,np.ndarra
 	
 	#print(f'{mesh=}')
 
-	pos = _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
-	nor = (
-		_get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float16)
+	idx =   _get_data_from_accessor(gltf, prim.indices)
+	pos =   _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
+	nor = ( _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float16)
 		if prim.attributes.NORMAL is not None
-		else np.zeros_like(pos, dtype=np.float16)
+		else np.zeros_like( pos.shape, dtype=np.float16)
 	)
-	uv = (
-		_get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float16)
+	uv  = ( _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float16)
 		if prim.attributes.TEXCOORD_0 is not None
-		else np.zeros((pos.shape[0], 2), dtype=np.float16)
+		else np.zeros( (pos.shape[0], 2), dtype=np.float16)
 	)
-	idx = _get_data_from_accessor(gltf, prim.indices)
 
 	return pos, nor, uv, idx
 
