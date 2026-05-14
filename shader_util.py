@@ -207,6 +207,7 @@ class RenderContext:
 			cls.updateWindowSize(wh)
 
 		cls.canvas.present()
+		# TODO: apply frame pacing here
 
 		glfw.poll_events()
 

@@ -30,5 +30,5 @@ def test_shader_variants():
 
 def test_uniform_buffer():
 	u = shader1.UniformBuffer()
-	u.uniforms['mvp'] = Matrix44.from_scale([1.0, 1.0, 1.0], dtype=np.float32)
-	u.write_uniforms()
+	u.content['mvp'] = Matrix44.from_scale([1.0, 1.0, 1.0], dtype=np.float32)
+	u.upload()

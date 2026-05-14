@@ -1,3 +1,4 @@
+* add frame pacing (presenting is not blocking on newer nvidia gpus per default)
 * implement a gpu / shader api similar to pyglet / raylib
 * plug imGUI (see https://github.com/pygfx/wgpu-py/blob/main/wgpu/utils/imgui/imgui_renderer.py)
 * implement gpu animation using custom vertex attributes and animation texture atlas
