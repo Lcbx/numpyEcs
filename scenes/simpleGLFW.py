@@ -64,6 +64,8 @@ def scroll_callback(xoff, yoff):
 
 RenderContext.event_handlers['mouse_scroll'].append(scroll_callback)
 
+#import random as rd
+#draw_cube( (0.7, 0.5, 0.3, 1.0), (1,1,1), (0.5, 0.5, 0.5, 1.0))
 
 fps_frames = 0
 start_t = getTime()
@@ -78,6 +80,8 @@ while RenderContext.WindowLoop():
         print(f"fps {fps_frames}")
         fps_frames = 0
         fps_print_timestamp = now
+        #instance_data[1]["uModel"] = scale_mat @ Mat4.from_translation([rd.random()*15.0, 0.0, rd.random()*15.0])
+        #mesh.instance_buffer.upload()
 
 
     # orbit update (based on time wince start)
@@ -88,6 +92,7 @@ while RenderContext.WindowLoop():
         camera.position.y,
         sin(cam_ang) * camera_dist
     ) )
+
 
     with renderpass as rp:
         uniformBuffer.content['uView'] = renderpass.view

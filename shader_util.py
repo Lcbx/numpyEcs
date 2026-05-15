@@ -237,19 +237,8 @@ class RenderContext:
 
 		cls.canvas.present()
 		
-
-		now = getTime()
-		cls.frame_time = now - cls.frame_start
-		
-		# if we have a target frame time, wait until we match it
-		if cls.target_frame_time and cls.frame_time < cls.target_frame_time - 0.001:
-			sleep_time = cls.target_frame_time - cls.frame_time - 0.001 # 1ms sleep margin
-			sleep(sleep_time)
-			end = cls.frame_start + cls.target_frame_time
-			# busy wait for the last 1ms
-			while now < end: now = getTime()
-		
-		cls.frame_start = now
+		# save frame start timestamp, frame time, cap fps
+		cls._frame_pacing()
 
 		glfw.poll_events()
 
@@ -258,6 +247,24 @@ class RenderContext:
 			return False
 
 		return True
+
+	_FRAME_WAIT_MARGIN = 0.001 # 1ms
+	@classmethod
+	def _frame_pacing(cls):
+		now = getTime()
+		cls.frame_time = now - cls.frame_start
+		
+		# if we have a target frame time, wait until we m1atch it
+		if cls.target_frame_time and cls.frame_time < cls.target_frame_time:
+			# margin is because scheduled sleep is not guaranteed to end on time
+			sleep_time = cls.target_frame_time - cls.frame_time - cls._FRAME_WAIT_MARGIN
+			if sleep_time > 0.0: sleep(sleep_time)
+			# busy wait for the last 1ms
+			wait_end = cls.frame_start + cls.target_frame_time
+			while now < wait_end: now = getTime()
+		
+		cls.frame_start = now
+
 
 	@classmethod
 	def RenderPass(cls, *args, **kwargs) -> '_RenderPass':
@@ -527,15 +534,24 @@ class _Shader:
 	def ShaderSource(self, *args, **kwargs) -> 'ShaderSource':
 		return ShaderSource(*args, **kwargs)
 
+# NOTE: we could add the notion of transitory buffers
+# they get filled during frame, cleared at frame draw
+# important for the cubes utility draw
+
+# NOTE: permanent buffers need to mark dirty ranges and upload changes only
+# irl we have a lot to gain from storing the positions of moving geometry in different buffers
 class GpuBuffer:
 
-	def __init__(self, content : np.ndarray, usage:int | wgpu.BufferUsage):#, max_count:int=1):
+	def __init__(self, content : np.ndarray, usage:wgpu.BufferUsage):
 		device = RenderContext.device
 		self.content = content
 		self.handle = device.create_buffer_with_data(data=content, usage=usage)
-		#buffer_size = max(max_count, content.size) * content.itemsize
-		#print(buffer_size)
-		#self.handle = device.create_buffer(size=content.itemsize * buffer_item_max_count, usage=usage)
+		#self.handle = device.create_buffer(size=content.nbytes, usage=usage)
+
+	def resize(self, size:int):
+		# no way to destroy the old buffer explicitly afaik
+		self.handle = device.create_buffer(size=size * self.content.itemsize, usage=usage)
+		# will need to call upload
 
 	def upload(self) -> None:
 		RenderContext.device.queue.write_buffer(self.handle, 0, self.content)
@@ -625,6 +641,12 @@ class Mesh:
 	def create_draw_call(self, shader:_Shader) -> wgpu.GPURenderPipeline:
 		return RenderContext.device.create_render_pipeline(
 			layout=shader.pipeline_layout,
+			#multisample = wgpu.MultisampleState(
+				# needs render texture to have the same multisample count
+		   		#count = 4,  #u32
+			    #mask # u64
+			    #alpha_to_coverage_enabled # bool
+			#),
 			vertex=wgpu.VertexState(
 				module=shader.vert_module,
 				entry_point="main",
@@ -901,9 +923,9 @@ def load_gltf_first_mesh(glb_path: str) -> Tuple[np.ndarray,np.ndarray,np.ndarra
 
 	idx =   _get_data_from_accessor(gltf, prim.indices)
 	pos =   _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
-	nor = ( _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float16)
+	nor = ( _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32)
 		if prim.attributes.NORMAL is not None
-		else np.zeros_like( pos.shape, dtype=np.float16)
+		else np.zeros_like( pos.shape, dtype=np.float32)
 	)
 	uv  = ( _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float16)
 		if prim.attributes.TEXCOORD_0 is not None
@@ -915,26 +937,70 @@ def load_gltf_first_mesh(glb_path: str) -> Tuple[np.ndarray,np.ndarray,np.ndarra
 
 def load_gltf_first_mesh_interleaved(glb_path: str) -> Tuple[np.ndarray,np.ndarray]:
 	( pos, nor, uv, idx ) = load_gltf_first_mesh(glb_path)
+	verts = interleave_mesh_position_normal_uv(pos, nor, uv)
+	return verts, idx.astype(np.uint32).reshape(-1)
 
-	N = pos.shape[0]
-	vertex_dtype = np.dtype(
-	[
-		("position", np.float32, (3,)),
-		("normal",   np.float32, (3,)), # float16x3 does not exist in wgpu
-		("uv",	   	 np.float16, (2,)),
-	], align=False,   # important: keep it tightly packed (no padding surprises)
+def interleave_mesh_position_normal_uv(pos, nor, uv):
+	vertex_dtype = np.dtype([
+			("position", np.float32, (3,)),
+			("normal",   np.float32, (3,)), # float16x3 does not exist in wgpu
+			("uv",	   	 np.float16, (2,)),
+		], align=False,   # important: keep it tightly packed (no padding surprises)
 	)
-
 	#print("stride:", vertex_dtype.itemsize)
 	#print("offsets:", {n: vertex_dtype.fields[n][1] for n in vertex_dtype.names})
 
-	verts = np.empty(N, dtype=vertex_dtype)
+	verts = np.empty(pos.shape[0], dtype=vertex_dtype)
 	verts["position"] = pos
 	verts["normal"]   = nor
 	verts["uv"]		  = uv
+	return verts
 
-	# interleave
-	return verts, idx.astype(np.uint32).reshape(-1)
+
+CUBE_POSITIONS_24 = np.array((
+	# +Z (front)
+	(-0.5,-0.5,+0.5), (+0.5,-0.5,+0.5), (+0.5,+0.5,+0.5), (-0.5,+0.5,+0.5),
+	# -Z (back)
+	(+0.5,-0.5,-0.5), (-0.5,-0.5,-0.5), (-0.5,+0.5,-0.5), (+0.5,+0.5,-0.5),
+	# +X (right)
+	(+0.5,-0.5,+0.5), (+0.5,-0.5,-0.5), (+0.5,+0.5,-0.5), (+0.5,+0.5,+0.5),
+	# -X (left)
+	(-0.5,-0.5,-0.5), (-0.5,-0.5,+0.5), (-0.5,+0.5,+0.5), (-0.5,+0.5,-0.5),
+	# +Y (top)
+	(-0.5,+0.5,+0.5), (+0.5,+0.5,+0.5), (+0.5,+0.5,-0.5), (-0.5,+0.5,-0.5),
+	# -Y (bottom)
+	(-0.5,-0.5,-0.5), (+0.5,-0.5,-0.5), (+0.5,-0.5,+0.5), (-0.5,-0.5,+0.5),
+))
+
+CUBE_NORMALS_24 = np.array(
+	([ Vec3( ( 0.0, 0.0, 1.0) ) ] * 4) +   # +Z
+	([ Vec3( ( 0.0, 0.0,-1.0) ) ] * 4) +   # -Z
+	([ Vec3( ( 1.0, 0.0, 0.0) ) ] * 4) +   # +X
+	([ Vec3( (-1.0, 0.0, 0.0) ) ] * 4) +   # -X
+	([ Vec3( ( 0.0, 1.0, 0.0) ) ] * 4) +   # +Y
+	([ Vec3( ( 0.0,-1.0, 0.0) ) ] * 4),    # -Y
+	dtype=np.float32
+)
+
+CUBE_UVS_24 = np.array([ (0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] * 6, dtype=np.float32)
+
+CUBE_INDICES_36 = np.array([
+	0, 1, 2,  2, 3, 0,		 # +Z
+	4, 5, 6,  6, 7, 4,		 # -Z
+	8, 9, 10,  10, 11, 8,	 # +X
+	12, 13, 14,  14, 15, 12, # -X
+	16, 17, 18,  18, 19, 16, # +Y
+	20, 21, 22,  22, 23, 20, # -Y
+], dtype=np.uint32)
+
+
+def draw_cube(position:Vec3, size:Vec3, colors:Vec4) -> None:
+	mesh = Mesh(interleave_mesh_position_normal_uv(CUBE_POSITIONS_24, CUBE_NORMALS_24, CUBE_UVS_24), CUBE_INDICES_36)
+	# TODO: make instanced
+	# TODO: automatically draw at main renderpass draw
+	# TODO: clear instances after draw
+	#renderpass.command_encoder.clear_buffer(mesh.instance_buffer)
+
 
 
 """
@@ -1212,67 +1278,5 @@ def load_gltf_meshes(program : Program, glb_path: str)-> IndexedVertexList:
 
 
 
-# NOTES:
-# * default shader takes tint as a uniform so this can't set multiple colors
-# * would perform better with instanciation (but this allows keeping the same shader)
-# * we should also just update the vertex list each frame when moving them instead of recreating a mesh
-def Cubes(program, positions, sizes, color
-	) -> Mesh:
-
-	CUBE_POSITIONS_24 = np.array((
-		# +Z (front)
-		(-0.5,-0.5,+0.5), (+0.5,-0.5,+0.5), (+0.5,+0.5,+0.5), (-0.5,+0.5,+0.5),
-		# -Z (back)
-		(+0.5,-0.5,-0.5), (-0.5,-0.5,-0.5), (-0.5,+0.5,-0.5), (+0.5,+0.5,-0.5),
-		# +X (right)
-		(+0.5,-0.5,+0.5), (+0.5,-0.5,-0.5), (+0.5,+0.5,-0.5), (+0.5,+0.5,+0.5),
-		# -X (left)
-		(-0.5,-0.5,-0.5), (-0.5,-0.5,+0.5), (-0.5,+0.5,+0.5), (-0.5,+0.5,-0.5),
-		# +Y (top)
-		(-0.5,+0.5,+0.5), (+0.5,+0.5,+0.5), (+0.5,+0.5,-0.5), (-0.5,+0.5,-0.5),
-		# -Y (bottom)
-		(-0.5,-0.5,-0.5), (+0.5,-0.5,-0.5), (+0.5,-0.5,+0.5), (-0.5,-0.5,+0.5),
-	))
-
-	CUBE_NORMALS_24 = np.array(
-		([ 0.0, 0.0, 1.0] * 4) +   # +Z
-		([ 0.0, 0.0,-1.0] * 4) +   # -Z
-		([ 1.0, 0.0, 0.0] * 4) +   # +X
-		([-1.0, 0.0, 0.0] * 4) +   # -X
-		([ 0.0, 1.0, 0.0] * 4) +   # +Y
-		([ 0.0,-1.0, 0.0] * 4),	# -Y
-		dtype=np.float32
-	)
-
-	CUBE_UVS_24 = np.array([0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0] * 6, dtype=np.float32)
-
-	CUBE_INDICES_36 = np.array([
-		0, 1, 2,  2, 3, 0,		# +Z
-		4, 5, 6,  6, 7, 4,		# -Z
-		8, 9, 10,  10, 11, 8,	 # +X
-		12, 13, 14,  14, 15, 12,  # -X
-		16, 17, 18,  18, 19, 16,  # +Y
-		20, 21, 22,  22, 23, 20,  # -Y
-	], dtype=np.uint32)
-
-	positions = np.asarray(positions, dtype=np.float32)
-	sizes	 = np.asarray(sizes, dtype=np.float32)
-
-	n = positions.shape[0]
-
-	# repeat normals/uvs per cube
-	normals = np.tile(CUBE_NORMALS_24, n)   # (N*24*3,)
-	uvs	 = np.tile(CUBE_UVS_24, n)	   # (N*24*2,)
-
-	# (N,3): positions & sizes
-	# (N,24,3): base scaled per-cube + per-cube position
-	pos = (positions[:, None, :] + CUBE_POSITIONS_24[None, :, :] * sizes[:, None, :]).reshape(-1).astype(np.float32)
-
-	# (N,36): base indices + 24*i
-	indices = (CUBE_INDICES_36[None, :] + (np.arange(n, dtype=np.uint32) * 24)[:, None]).reshape(-1).astype(np.uint32)
-
-	mesh = Mesh(program, pos, normals, uvs, indices)
-	mesh['uTint'] = color
-	return mesh
 
 """
