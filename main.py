@@ -3,6 +3,7 @@
 import argparse
 import sys
 from pathlib import Path as path
+from importlib import import_module
 
 parser = argparse.ArgumentParser(
 	prog='python game engine',
@@ -15,16 +16,14 @@ parser.add_argument('-c', '--compile', action='store_true', help='compile scene 
 args = parser.parse_args()
 
 normalize_path = lambda p: path(p).as_posix()
-to_module = lambda p: p.replace('/', '.').replace('.py', '')
+to_module = lambda p: normalize_path(p).replace('/', '.').replace('.py', '')
 
 if args.test or args.tests:
 	from glob import glob
-	test_paths = list(map(normalize_path, glob('./tests/*.py')))
-	test_paths.remove('tests/__init__.py')
+	test_paths = glob('./tests/*.py')
 
 # run particular test
 if args.test:
-	from importlib import import_module
 	modules = [ import_module( to_module(test_path) ) for test_path in test_paths ]
 	failed = True
 	for m in modules:
@@ -39,7 +38,7 @@ if args.test:
 	if failed:
 		print(f'could not find "{args.test}" test. candidates:')
 		from pprint import pp 
-		pp( list(f for m in modules for f in m.__dict__ if 'test' in f) )
+		pp( list(f for m in modules for f in m.__dict__ )) # if 'test' in f) )
 
 # run whole test suite using pytest
 elif args.tests:
@@ -54,4 +53,4 @@ else:
 		import subprocess
 		subprocess.run( f'py -m nuitka --output-dir=build --standalone {scene}'.split(' ') )
 	else:
-		__import__( to_module(normalize_path(scene)) )
+		import_module( to_module(scene) )

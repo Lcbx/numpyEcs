@@ -111,9 +111,6 @@ class RenderContext:
 		cls.setup_callbacks()
 		#glfw.set_window_pos(cls.window, monitor_w-w, 30)
 
-		# wgpu context
-		#print(f'{present_info=}')
-
 		cls.setup_graphics(vsync=target_fps==0,highpower_gpu=highpower_gpu)
 
 		cls.frame_start = getTime()
@@ -123,11 +120,14 @@ class RenderContext:
 		""" setup gpu compute & render surface """
 		present_info = get_glfw_present_info(cls.window, vsync=vsync)
 		cls.canvas = wgpu.gpu.get_canvas_context(present_info)
+		#print(f'{present_info=}')
 		cls.setup_graphics_backend(highpower_gpu=highpower_gpu)
 		cls.presentation_format = cls.canvas.get_preferred_format(cls.adapter)
 		#print(f'{cls.presentation_format=}')
 		#print(f'{cls.canvas._get_capabilities_screen(cls.adapter)=}')
-		cls.canvas.configure(device=cls.device, format=cls.presentation_format, usage=wgpu.TextureUsage.RENDER_ATTACHMENT)
+
+		# usage = wgpu.TextureUsage.RENDER_ATTACHMENT for offsceen
+		cls.canvas.configure(device=cls.device, format=cls.presentation_format)
 
 		# ['Fifo', 'FifoRelaxed', 'Mailbox', 'Immediate']
 		#cls.canvas.set_present_mode('FifoRelaxed') #edited the wgpu library to add this method
