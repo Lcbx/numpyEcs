@@ -26,6 +26,8 @@ RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE
 #, target_fps=-1)
 #RenderContext.capture_mouse()
 
+#print(RenderContext.resources)
+
 # seems to use a weird color space
 renderpass = RenderContext.RenderPass(camera = camera, clear_color = (0.02, 0.02, 0.03, 1.0))
 shader = RenderContext.Shader(filepath='scenes/shaders/simple.shader')
@@ -44,7 +46,8 @@ instance_data[0]["uModel"] = scale_mat
 instance_data[0]["uTint"] = (0.7, 0.5, 0.3, 1.0)
 instance_data[1]["uModel"] = scale_mat @ Mat4.from_translation([15.0, 0.0, 15.0]) 
 instance_data[1]["uTint"] = (0.3, 0.5, 0.7, 1.0)
-mesh = Mesh(vertices, indices, instance_data=instance_data)
+mesh = Mesh(vertices, indices)
+mesh.set_instances(instance_data)
 #mesh = Mesh(vertices, indices)
 uniformBuffer = shader.UniformBuffer()
 
@@ -102,5 +105,5 @@ while RenderContext.WindowLoop():
         #uniformBuffer.content['uTint'] = (0.7, 0.5, 0.3, 1.0)
         #uniformBuffer.content['uModel'] = Mat4.from_scale([scale, scale, scale], dtype=np.float32)
         uniformBuffer.upload()
-        rp.draw(mesh, shader, uniformBuffer)
+        mesh.draw(rp, shader, uniformBuffer)
 

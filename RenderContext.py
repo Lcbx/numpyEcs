@@ -43,6 +43,11 @@ class RenderContext:
 	# NOTE: we should in reverse order if more recent handler have priority
 	event_handlers : Dict[str, List[Callable]] = {}
 
+	# before startup -> resource_name:func
+	# after startup  -> resource_name:resource
+	# used to setup utils if imported
+	resources = {}
+
 	def __init__(self):
 		raise Exception('this class is not meant to be instanciated')
 
@@ -90,6 +95,9 @@ class RenderContext:
 		#glfw.set_window_pos(cls.window, monitor_w-w, 30)
 
 		cls.setup_graphics(vsync=target_fps==0,highpower_gpu=highpower_gpu)
+
+		for name, init in cls.resources.items():
+			cls.resources[name] = init()
 
 		cls.frame_start = getTime()
 
@@ -306,22 +314,6 @@ class _RenderPass:
 			self.command_encoder.finish()
 		])
 
-	def draw(self, mesh:'Mesh', shader:'_Shader', uniforms:'_UniformBuffer') -> None:
-		render_pass = self.render_pass
-		render_pass.set_pipeline(mesh.create_draw_call(shader))
-		render_pass.set_bind_group(0, uniforms.bind_group)
-		render_pass.set_vertex_buffer(0, mesh.vertex_buffer.handle)
-		if mesh.instanced:
-			render_pass.set_vertex_buffer(1, mesh.instance_buffer.handle)
-		render_pass.set_index_buffer(mesh.index_buffer.handle, wgpu.IndexFormat.uint32)
-
-		#index_count (int) – The number of indices to draw.
-		#instance_count (int) – The number of instances to draw. Default 1.
-		#first_index (int) – The index offset. Default 0.
-		#base_vertex (int) – A number added to each index in the index buffer. Default 0.
-		#first_instance (int) – The instance offset. Default 0.
-		render_pass.draw_indexed(mesh.index_count, mesh.instance_count, 0, 0, 0)
-
 
 _GL_to_dtype: Dict[str, np.dtype] = {
 	"float":	 np.dtype( (np.float32, () )   ),
@@ -512,6 +504,39 @@ class _Shader:
 	def ShaderSource(self, *args, **kwargs) -> 'ShaderSource':
 		return ShaderSource(*args, **kwargs)
 
+	def create_render_pipeline(self, buffers_spec:List[wgpu.VertexBufferLayout]) -> wgpu.GPURenderPipeline:
+		return RenderContext.device.create_render_pipeline(
+			layout=self.pipeline_layout,
+			#multisample = wgpu.MultisampleState(
+				# needs render texture to have the same multisample count
+		   		#count = 4,  #u32
+			    #mask # u64
+			    #alpha_to_coverage_enabled # bool
+			#),
+			vertex=wgpu.VertexState(
+				module=self.vert_module,
+				entry_point="main",
+				buffers=buffers_spec,
+			),
+			primitive=wgpu.PrimitiveState(
+				topology=wgpu.PrimitiveTopology.triangle_list,
+				cull_mode=wgpu.CullMode.back,
+				front_face=wgpu.FrontFace.ccw,
+			),
+			depth_stencil=wgpu.DepthStencilState(
+				format=RenderContext.depth_format,
+				depth_write_enabled=True,
+				depth_compare=wgpu.CompareFunction.less,
+			),
+			fragment=wgpu.FragmentState(
+				module=self.frag_module,
+				entry_point="main",
+				targets=[
+					wgpu.ColorTargetState(format=RenderContext.presentation_format)
+				],
+			),
+		)
+
 # NOTE: we could add the notion of transitory buffers
 # they get filled during frame, cleared at frame draw
 # important for the cubes utility draw
@@ -565,17 +590,16 @@ class _UniformBuffer(GpuBuffer):
 class Mesh:
 
 	# NOTE: is there a point to supporting meshes with no indices these days
-	def __init__(self, vertex_data:np.ndarray, indices:np.ndarray, instance_data:np.ndarray|None = None):
+	def __init__(self, vertex_data:np.ndarray, indices:np.ndarray):
 		device = RenderContext.device
 
 		self.index_count = indices.size
-		self.instanced = isinstance(instance_data, np.ndarray)
 		vertex_dtype = vertex_data.dtype
 
 		vformat = dtype_to_vertex_format(vertex_dtype)
 		vertex_loc_count = len(vformat) 
 		#print("vertex", vformat, vertex_dtype.itemsize)
-		vertexAttributes = [ wgpu.VertexAttribute(
+		self.vertexAttributes = [ wgpu.VertexAttribute(
 				shader_location = i,
 				offset=offset,
 				format=vertexFormat
@@ -585,69 +609,58 @@ class Mesh:
 		
 		self.vertex_buffer = GpuBuffer(vertex_data, wgpu.BufferUsage.VERTEX)
 		self.index_buffer = GpuBuffer(indices, wgpu.BufferUsage.INDEX)
+		
+		self.instance_buffer : GpuBuffer|None = None
+		self.instance_count = 1
 
 		self.buffers_spec = [
 			wgpu.VertexBufferLayout(
 				array_stride=vertex_dtype.itemsize,
 				step_mode=wgpu.VertexStepMode.vertex,
-				attributes=vertexAttributes
+				attributes=self.vertexAttributes
 			)
 		]
-		self.instance_count = instance_data.size if self.instanced else 1
 
-		if self.instanced:
-			instance_dtype = instance_data.dtype
-			vformat = dtype_to_vertex_format(instance_dtype)
-			#print("instance", vformat, instance_dtype.itemsize)
-			instanceAttributes = [ wgpu.VertexAttribute(
-					shader_location = i + vertex_loc_count,
-					offset=offset,
-					format=vertexFormat
-				) for i, (vertexFormat, offset)
-				in enumerate(vformat)
-			]
+	def set_instances(self, instance_data:np.ndarray) -> None:
+		# TODO: handle adding more instances  
 
-			self.instance_buffer = GpuBuffer(instance_data, wgpu.BufferUsage.VERTEX|wgpu.BufferUsage.COPY_DST)
+		instance_dtype = instance_data.dtype
+		vformat = dtype_to_vertex_format(instance_dtype)
+		#print("instance", vformat, instance_dtype.itemsize)
+		instanceAttributes = [ wgpu.VertexAttribute(
+				shader_location = i + len(self.vertexAttributes),
+				offset=offset,
+				format=vertexFormat
+			) for i, (vertexFormat, offset)
+			in enumerate(vformat)
+		]
 
-			self.buffers_spec.append(
-				wgpu.VertexBufferLayout(
-					array_stride=instance_dtype.itemsize,
-					step_mode=wgpu.VertexStepMode.instance,
-					attributes=instanceAttributes
-				))
+		self.instance_count = instance_data.size
+		self.instance_buffer = GpuBuffer(instance_data, wgpu.BufferUsage.VERTEX|wgpu.BufferUsage.COPY_DST)
 
-	def create_draw_call(self, shader:_Shader) -> wgpu.GPURenderPipeline:
-		return RenderContext.device.create_render_pipeline(
-			layout=shader.pipeline_layout,
-			#multisample = wgpu.MultisampleState(
-				# needs render texture to have the same multisample count
-		   		#count = 4,  #u32
-			    #mask # u64
-			    #alpha_to_coverage_enabled # bool
-			#),
-			vertex=wgpu.VertexState(
-				module=shader.vert_module,
-				entry_point="main",
-				buffers=self.buffers_spec,
-			),
-			primitive=wgpu.PrimitiveState(
-				topology=wgpu.PrimitiveTopology.triangle_list,
-				cull_mode=wgpu.CullMode.back,
-				front_face=wgpu.FrontFace.ccw,
-			),
-			depth_stencil=wgpu.DepthStencilState(
-				format=RenderContext.depth_format,
-				depth_write_enabled=True,
-				depth_compare=wgpu.CompareFunction.less,
-			),
-			fragment=wgpu.FragmentState(
-				module=shader.frag_module,
-				entry_point="main",
-				targets=[
-					wgpu.ColorTargetState(format=RenderContext.presentation_format)
-				],
-			),
-		)
+		self.buffers_spec.append(
+			wgpu.VertexBufferLayout(
+				array_stride=instance_dtype.itemsize,
+				step_mode=wgpu.VertexStepMode.instance,
+				attributes=instanceAttributes
+			))
+
+
+	def draw(self, renderpass:RenderPass, shader:'_Shader', uniforms:'_UniformBuffer') -> None:
+		render_pass = renderpass.render_pass
+		render_pass.set_pipeline(shader.create_render_pipeline(self.buffers_spec))
+		render_pass.set_bind_group(0, uniforms.bind_group)
+		render_pass.set_vertex_buffer(0, self.vertex_buffer.handle)
+		if self.instance_buffer:
+			render_pass.set_vertex_buffer(1, self.instance_buffer.handle)
+		render_pass.set_index_buffer(self.index_buffer.handle, wgpu.IndexFormat.uint32)
+
+		#index_count (int) – The number of indices to draw.
+		#instance_count (int) – The number of instances to draw. Default 1.
+		#first_index (int) – The index offset. Default 0.
+		#base_vertex (int) – A number added to each index in the index buffer. Default 0.
+		#first_instance (int) – The instance offset. Default 0.
+		render_pass.draw_indexed(self.index_count, self.instance_count, 0, 0, 0)
 
 
 def build_shader_program(shaderPath : str, **kwargs) -> Tuple['ShaderSource', _Shader]:

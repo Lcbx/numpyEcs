@@ -211,9 +211,11 @@ CUBE_INDICES_36 = np.array([
 	20, 21, 22,  22, 23, 20, # -Y
 ], dtype=np.uint32)
 
-
+RenderContext.resources["cube"] = lambda : (
+	Mesh(interleave_mesh_position_normal_uv(CUBE_POSITIONS_24, CUBE_NORMALS_24, CUBE_UVS_24), CUBE_INDICES_36)
+)
 def draw_cube(position:Vec3, size:Vec3, colors:Vec4) -> None:
-	mesh = Mesh(interleave_mesh_position_normal_uv(CUBE_POSITIONS_24, CUBE_NORMALS_24, CUBE_UVS_24), CUBE_INDICES_36)
+	pass
 	# TODO: make instanced
 	# TODO: automatically draw at main renderpass draw
 	# TODO: clear instances after draw
