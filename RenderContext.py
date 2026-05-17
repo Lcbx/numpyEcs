@@ -251,6 +251,9 @@ class RenderContext:
 		
 		cls.frame_start = now
 
+	@classmethod
+	def Command(cls) -> wgpu.CommandEncoder:
+		return cls.device.create_command_encoder()
 
 	@classmethod
 	def RenderPass(cls, *args, **kwargs) -> '_RenderPass':
@@ -270,11 +273,11 @@ class _RenderPass:
 			clear_color:tuple=(0.0, 0.0, 0.0, 1.0)
 		):
 		#self.shader = shader
-		self.camera:Camera|None= camera
+		self.camera = camera
 		self.clear_color : Tuple[float,float,float,float] = clear_color
 		#self.texture = texture
-		self.render_pass:wgpu.GPURenderCommandsMixin = None
-		self.command_encoder:wgpu.CommandEncoder = None
+		self.render_pass : wgpu.GPURenderCommandsMixin = None
+		self.commands : List[wgpu.CommandEncoder] = None
 
 	def __enter__(self):
 		# TODO: support drawing into a custom framebuffer (self.texture)
@@ -288,8 +291,8 @@ class _RenderPass:
 		#	if 'uView' in self.shader._uniforms: self.shader['uView'] = self.view
 		#	if 'uProj' in self.shader._uniforms: self.shader['uProj'] = self.projection
 		#	if 'uViewProj' in self.shader._uniforms: self.shader['uViewProj'] = self.view @ self.projection
-		self.command_encoder = RenderContext.device.create_command_encoder()
-		self.render_pass = self.command_encoder.begin_render_pass(
+		command = RenderContext.Command()
+		self.render_pass = command.begin_render_pass(
 			color_attachments=[
 				wgpu.RenderPassColorAttachment(
 					view=RenderContext.canvas.get_current_texture().create_view(),
@@ -300,18 +303,19 @@ class _RenderPass:
 			],
 			depth_stencil_attachment=
 				wgpu.RenderPassDepthStencilAttachment(
-			        view = RenderContext.depth,
-			        depth_clear_value = 1.0,
-			        depth_load_op= "clear",
-			        depth_store_op= "store",
+					view = RenderContext.depth,
+					depth_clear_value = 1.0,
+					depth_load_op= "clear",
+					depth_store_op= "store",
 				)
 		)
+		self.commands = [command]
 		return self
 
 	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
 		self.render_pass.end()
 		RenderContext.device.queue.submit([
-			self.command_encoder.finish()
+			command.finish() for command in self.commands
 		])
 
 
@@ -510,8 +514,8 @@ class _Shader:
 			#multisample = wgpu.MultisampleState(
 				# needs render texture to have the same multisample count
 		   		#count = 4,  #u32
-			    #mask # u64
-			    #alpha_to_coverage_enabled # bool
+				#mask # u64
+				#alpha_to_coverage_enabled # bool
 			#),
 			vertex=wgpu.VertexState(
 				module=self.vert_module,
@@ -537,24 +541,28 @@ class _Shader:
 			),
 		)
 
-# NOTE: we could add the notion of transitory buffers
-# they get filled during frame, cleared at frame draw
-# important for the cubes utility draw
+def nearest_pow2(n: int) -> int:
+	# NOTE: bit shift alone is actually faster
+	#if n & (nm1:=n-1) == 0: return n
+	return 1<<(n-1).bit_length()
 
 # NOTE: permanent buffers need to mark dirty ranges and upload changes only
 # irl we have a lot to gain from storing the positions of moving geometry in different buffers
 class GpuBuffer:
 
 	def __init__(self, content : np.ndarray, usage:wgpu.BufferUsage):
-		device = RenderContext.device
 		self.content = content
-		self.handle = device.create_buffer_with_data(data=content, usage=usage)
-		#self.handle = device.create_buffer(size=content.nbytes, usage=usage)
+		self.handle = RenderContext.device.create_buffer_with_data(data=content, usage=usage)
+		#self.handle = RenderContext.device.create_buffer(size=content.nbytes, usage=usage)
 
-	def resize(self, size:int):
-		# no way to destroy the old buffer explicitly afaik
-		self.handle = device.create_buffer(size=size * self.content.itemsize, usage=usage)
-		# will need to call upload
+	def resize(self, count:int):
+		#print('count', count, self.content.size)
+		count = nearest_pow2(count)
+		size = count * self.content.itemsize
+		current = self.handle.size
+		if size > current:
+			#print('resize', size, current)
+			self.handle = RenderContext.device.create_buffer(size=size, usage=self.handle.usage)
 
 	def upload(self) -> None:
 		RenderContext.device.queue.write_buffer(self.handle, 0, self.content)
@@ -621,8 +629,20 @@ class Mesh:
 			)
 		]
 
+	def add_instances(self, instance_data:np.ndarray) -> None:
+		if buffer := self.instance_buffer:
+			instance_data = np.append(buffer.content, instance_data)
+		self.set_instances(instance_data)
+
 	def set_instances(self, instance_data:np.ndarray) -> None:
-		# TODO: handle adding more instances  
+		
+		self.instance_count = instance_data.size
+
+		# NOTE: if the buffer exists we don't upload it immediately
+		if buffer := self.instance_buffer:
+			buffer.resize(instance_data.size)
+			buffer.content = instance_data
+			return
 
 		instance_dtype = instance_data.dtype
 		vformat = dtype_to_vertex_format(instance_dtype)
@@ -635,7 +655,6 @@ class Mesh:
 			in enumerate(vformat)
 		]
 
-		self.instance_count = instance_data.size
 		self.instance_buffer = GpuBuffer(instance_data, wgpu.BufferUsage.VERTEX|wgpu.BufferUsage.COPY_DST)
 
 		self.buffers_spec.append(
@@ -726,8 +745,12 @@ class ShaderSource:
 		assert( source or filepath )
 
 		self.source = source if source else open(filepath, 'r').read()
-		self._basedir = basedir if basedir else os.path.dirname(os.path.abspath(filepath)) if filepath else glob('**/shaders/', recursive=True)
-		self._glsl_version = glsl_version
+		self._basedir = (
+			basedir if basedir
+			else os.path.dirname(os.path.abspath(filepath)) if filepath
+			else glob('**/shaders/', recursive=True)
+		)
+		self._glsl_version  = glsl_version
 		
 		self.uniforms      = [] # list[(type, name)]
 		self.varyings      = [] # list[(type, name)]

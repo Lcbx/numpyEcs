@@ -4,6 +4,9 @@ import numpy as np
 from pyrr import Matrix44 as Mat4, Vector3 as Vec3, Vector4 as Vec4
 from pygltflib import GLTF2, BufferView, Accessor
 
+Vec3_type = np.dtype( (np.float32, (3,)) )
+Vec4_type = np.dtype( (np.float32, (4,)) )
+Mat4_type = np.dtype( (np.float32, (4,4)) )
 
 class Camera:
 	def __init__(self, position: tuple, target: tuple, up: tuple, fovy_deg:float, near:float=0.1, far:float=1000.0, perspective:bool=True):
@@ -214,9 +217,35 @@ CUBE_INDICES_36 = np.array([
 RenderContext.resources["cube"] = lambda : (
 	Mesh(interleave_mesh_position_normal_uv(CUBE_POSITIONS_24, CUBE_NORMALS_24, CUBE_UVS_24), CUBE_INDICES_36)
 )
+
+
+instance_dtype = make_std430_dtype([
+    ("uModel", Mat4_type), # TODO: use smth more compact than 4x4 float32
+    ("uTint",  Vec4_type)
+])
+
+
+def flush_cubes(rp:RenderPass, shader:_Shader, uniformBuffer:_UniformBuffer):
+	cube_mesh = RenderContext.resources["cube"]
+	
+	# draw
+	cube_mesh.instance_buffer.upload()
+	cube_mesh.draw(rp, shader, uniformBuffer)
+
+	# clear
+	encoder = RenderContext.Command()
+	encoder.clear_buffer(cube_mesh.instance_buffer.handle)
+	rp.commands.append(encoder)
+
+	# NOTE: we keep reallocating numpy arrays on cpu
+	# optimally we'd reuse them but that complicates implementation
+	cube_mesh.instance_buffer.content = np.empty(0,instance_dtype)
+
 def draw_cube(position:Vec3, size:Vec3, colors:Vec4) -> None:
-	pass
-	# TODO: make instanced
-	# TODO: automatically draw at main renderpass draw
-	# TODO: clear instances after draw
-	#renderpass.command_encoder.clear_buffer(mesh.instance_buffer)
+	instance_data = np.empty(1, instance_dtype)
+	instance_data[0]["uModel"] = Mat4.from_scale(size) @ Mat4.from_translation(position)
+	instance_data[0]["uTint"] = colors
+	draw_cubes(instance_data)
+
+def draw_cubes(instance_data:np.ndarray) -> None:
+	RenderContext.resources["cube"].add_instances(instance_data)

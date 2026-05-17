@@ -33,14 +33,7 @@ renderpass = RenderContext.RenderPass(camera = camera, clear_color = (0.02, 0.02
 shader = RenderContext.Shader(filepath='scenes/shaders/simple.shader')
 vertices, indices = load_gltf_first_mesh_interleaved('scenes/resources/rooftop_utility_pole.glb')
 scale = 10.0
-Vec3_type = np.dtype( (np.float32, (3,)) )
-Vec4_type = np.dtype( (np.float32, (4,)) )
-Mat4_type = np.dtype( (np.float32, (4,4)) )
-instance_data_type = make_std430_dtype([
-    ("uModel", Mat4_type), # NOTE: 4x4 float32 mat is a lot of memory if we just needed position, orientation, scale 
-    ("uTint",  Vec4_type)
-])
-instance_data = np.zeros(10, instance_data_type)
+instance_data = np.zeros(10, instance_dtype)
 scale_mat = Mat4.from_scale([scale, scale, scale])
 instance_data[0]["uModel"] = scale_mat
 instance_data[0]["uTint"] = (0.7, 0.5, 0.3, 1.0)
@@ -69,13 +62,12 @@ def scroll_callback(xoff, yoff):
 RenderContext.event_handlers['mouse_scroll'].append(scroll_callback)
 
 #import random as rd
-#draw_cube( (0.7, 0.5, 0.3, 1.0), (1,1,1), (0.5, 0.5, 0.5, 1.0))
+
 
 fps_frames = 0
 start_t = getTime()
 fps_print_timestamp = start_t
 while RenderContext.WindowLoop():
-
     now = RenderContext.frame_start
 
     # simple FPS to console
@@ -99,6 +91,9 @@ while RenderContext.WindowLoop():
 
 
     with renderpass as rp:
+        draw_cube(  (3, 5, -3), (2,2,2), (0.5, 0.5, 0.5, 1.0))
+        draw_cube( (-3, 5, -3), (1,5,1), (0.5, 0.5, 0.5, 1.0))
+
         uniformBuffer.content['uView'] = renderpass.view
         uniformBuffer.content['uProj'] = renderpass.projection
         uniformBuffer.content['uLightDir'] = light_dir
@@ -106,4 +101,5 @@ while RenderContext.WindowLoop():
         #uniformBuffer.content['uModel'] = Mat4.from_scale([scale, scale, scale], dtype=np.float32)
         uniformBuffer.upload()
         mesh.draw(rp, shader, uniformBuffer)
+        flush_cubes(rp, shader, uniformBuffer)
 
