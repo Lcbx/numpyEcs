@@ -1,7 +1,7 @@
 import pytest
 
-from shader_util import *
-from pyrr import Matrix44
+from RenderContext import *
+from pyrr import Matrix44 as Mat4
 
 RenderContext.setup_graphics_backend(highpower_gpu=False)
 
@@ -30,5 +30,5 @@ def test_shader_variants():
 
 def test_uniform_buffer():
 	u = shader1.UniformBuffer()
-	u.content['mvp'] = Matrix44.from_scale([1.0, 1.0, 1.0], dtype=np.float32)
+	u.content['mvp'] = Mat4.from_scale([1.0, 1.0, 1.0], dtype=np.float32)
 	u.upload()

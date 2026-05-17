@@ -1,4 +1,5 @@
-from shader_util import *
+from RenderContext import *
+from Utils import *
 from math import cos, sin
 
 WINDOW_W, WINDOW_H = 1800, 900

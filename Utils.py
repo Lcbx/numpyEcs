@@ -1,0 +1,220 @@
+from RenderContext import *
+
+import numpy as np
+from pyrr import Matrix44 as Mat4, Vector3 as Vec3, Vector4 as Vec4
+from pygltflib import GLTF2, BufferView, Accessor
+
+
+class Camera:
+	def __init__(self, position: tuple, target: tuple, up: tuple, fovy_deg:float, near:float=0.1, far:float=1000.0, perspective:bool=True):
+		self.position = Vec3(position)
+		self.target = Vec3(target)
+		self.up = Vec3(up)
+		self.fovy_deg = fovy_deg
+		self.near = near
+		self.far = far
+		self.perspective = perspective
+
+	def view(self) -> Mat4:
+		return Mat4.look_at(self.position, self.target, self.up)
+
+	def projection(self, aspect) -> Mat4:
+		if self.perspective:
+			return Mat4.perspective_projection( self.fovy_deg, aspect, self.near, self.far )
+
+		top = self.fovy_deg * 0.5;
+		right = top*aspect;
+		return Mat4.orthogonal_projection(-right, right, top, -top, self.near, self.far)
+
+
+def _get_data_from_accessor(gltf: GLTF2, accessor_index: int) -> np.ndarray:
+	acc: Accessor = gltf.accessors[accessor_index]
+	bv: BufferView = gltf.bufferViews[acc.bufferView]
+	buf = gltf.buffers[bv.buffer]
+
+	if buf.uri is None:  # GLB
+		bin_chunk = gltf.binary_blob()
+	else:
+		raise NotImplementedError("External buffers not handled")
+
+	b = bv.byteOffset or 0
+	e = b + (bv.byteLength or 0)
+	view_bytes = memoryview(bin_chunk)[b:e]
+
+	type_num_comps = {
+		"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4, "MAT3": 9, "MAT4": 16
+	}[acc.type]
+
+	np_dtype = {
+		5120: np.int8,
+		5121: np.uint8,
+		5122: np.int16,
+		5123: np.uint16,
+		5125: np.uint32,
+		5126: np.float32
+	}[acc.componentType]
+
+	stride = bv.byteStride or (np.dtype(np_dtype).itemsize * type_num_comps)
+	count = acc.count
+	offset = acc.byteOffset or 0
+	tight = np.dtype(np_dtype).itemsize * type_num_comps
+
+	arr = np.frombuffer(view_bytes, dtype=np_dtype, count=count * type_num_comps, offset=offset)
+	if stride != tight:
+		rec = np.empty((count, type_num_comps), dtype=np_dtype)
+		base = offset
+		for i in range(count):
+			start = base + i * stride
+			rec[i] = np.frombuffer(view_bytes, dtype=np_dtype, count=type_num_comps, offset=start)
+		return rec
+	else:
+		return arr.reshape(count, type_num_comps)
+
+
+
+def load_gltf_first_mesh(glb_path: str) -> Tuple[np.ndarray,np.ndarray,np.ndarray,np.ndarray]:
+	gltf = GLTF2().load(glb_path)
+	mesh = gltf.meshes[0]
+	prim = mesh.primitives[0]
+	
+	#print(f'{mesh=}')
+
+	idx =   _get_data_from_accessor(gltf, prim.indices)
+	pos =   _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
+	nor = ( _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32)
+		if prim.attributes.NORMAL is not None
+		else np.zeros_like( pos.shape, dtype=np.float32)
+	)
+	uv  = ( _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float16)
+		if prim.attributes.TEXCOORD_0 is not None
+		else np.zeros( (pos.shape[0], 2), dtype=np.float16)
+	)
+
+	return pos, nor, uv, idx
+
+
+def load_gltf_first_mesh_interleaved(glb_path: str) -> Tuple[np.ndarray,np.ndarray]:
+	( pos, nor, uv, idx ) = load_gltf_first_mesh(glb_path)
+	verts = interleave_mesh_position_normal_uv(pos, nor, uv)
+	return verts, idx.astype(np.uint32).reshape(-1)
+
+def interleave_mesh_position_normal_uv(pos, nor, uv):
+	vertex_dtype = np.dtype([
+			("position", np.float32, (3,)),
+			("normal",   np.float32, (3,)), # float16x3 does not exist in wgpu
+			("uv",	   	 np.float16, (2,)),
+		], align=False,   # important: keep it tightly packed (no padding surprises)
+	)
+	#print("stride:", vertex_dtype.itemsize)
+	#print("offsets:", {n: vertex_dtype.fields[n][1] for n in vertex_dtype.names})
+
+	verts = np.empty(pos.shape[0], dtype=vertex_dtype)
+	verts["position"] = pos
+	verts["normal"]   = nor
+	verts["uv"]		  = uv
+	return verts
+
+
+""" # not perfect
+def load_gltf_meshes(program : Program, glb_path: str)-> IndexedVertexList:
+	gltf = GLTF2().load(glb_path)
+
+	meshes = []
+	for mesh in gltf.meshes:
+		for prim in mesh.primitives:
+			pos = _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
+			nor = _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32) if prim.attributes.NORMAL is not None else np.zeros_like(pos)
+			uv  = _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float32) if prim.attributes.TEXCOORD_0 is not None else np.zeros((pos.shape[0],2), dtype=np.float32)
+			idx = _get_data_from_accessor(gltf, prim.indices)
+			if idx.dtype != np.uint32:
+				idx = idx.astype(np.uint32)
+
+		model = Mesh(program, pos, nor, uv, idx)
+		meshes.append(model)
+
+	return meshes
+
+class WatchTimer:
+	nesting : int = 0
+	timers: list = []
+	report = ''
+	
+	def __init__(self, region:str):
+		self.region = region
+	
+	def __enter__(self) -> None:
+		self.start_time = rl.GetTime()
+		self.nesting = WatchTimer.nesting
+		WatchTimer.nesting += 1
+		WatchTimer.timers.append(self)
+
+	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
+		WatchTimer.nesting -= 1
+		self.message = self.get_message()
+		rl.TraceLog(rl.LOG_DEBUG, self.message.encode())
+	
+	def get_message(self):
+		#return ('  ' * self.nesting + f'{self.region} : { self.elapsed_ms() :.1f}ms')	
+		return ('  ' * self.nesting + f'{self.region} : { self.elapsed_percent() :.0f}%')	
+	
+	def elapsed_ms(self):
+		return (rl.GetTime() - self.start_time) * 1000.0
+
+	def elapsed_percent(self):
+		ft = rl.GetFrameTime() + 0.0001
+		return (rl.GetTime() - self.start_time) / ft * 100.0
+	
+	def capture():
+		WatchTimer.report = '\n'.join( list(map(
+			lambda t: t.message if hasattr(t, 'message') else t.get_message(),
+			WatchTimer.timers))
+		)
+		WatchTimer.timers.clear()
+
+	def display(x, y, size, color):
+		rl.DrawText(WatchTimer.report.encode(), x, y, size, color)
+"""
+
+CUBE_POSITIONS_24 = np.array((
+	# +Z (front)
+	(-0.5,-0.5,+0.5), (+0.5,-0.5,+0.5), (+0.5,+0.5,+0.5), (-0.5,+0.5,+0.5),
+	# -Z (back)
+	(+0.5,-0.5,-0.5), (-0.5,-0.5,-0.5), (-0.5,+0.5,-0.5), (+0.5,+0.5,-0.5),
+	# +X (right)
+	(+0.5,-0.5,+0.5), (+0.5,-0.5,-0.5), (+0.5,+0.5,-0.5), (+0.5,+0.5,+0.5),
+	# -X (left)
+	(-0.5,-0.5,-0.5), (-0.5,-0.5,+0.5), (-0.5,+0.5,+0.5), (-0.5,+0.5,-0.5),
+	# +Y (top)
+	(-0.5,+0.5,+0.5), (+0.5,+0.5,+0.5), (+0.5,+0.5,-0.5), (-0.5,+0.5,-0.5),
+	# -Y (bottom)
+	(-0.5,-0.5,-0.5), (+0.5,-0.5,-0.5), (+0.5,-0.5,+0.5), (-0.5,-0.5,+0.5),
+))
+
+CUBE_NORMALS_24 = np.array(
+	([ Vec3( ( 0.0, 0.0, 1.0) ) ] * 4) +   # +Z
+	([ Vec3( ( 0.0, 0.0,-1.0) ) ] * 4) +   # -Z
+	([ Vec3( ( 1.0, 0.0, 0.0) ) ] * 4) +   # +X
+	([ Vec3( (-1.0, 0.0, 0.0) ) ] * 4) +   # -X
+	([ Vec3( ( 0.0, 1.0, 0.0) ) ] * 4) +   # +Y
+	([ Vec3( ( 0.0,-1.0, 0.0) ) ] * 4),    # -Y
+	dtype=np.float32
+)
+
+CUBE_UVS_24 = np.array([ (0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] * 6, dtype=np.float32)
+
+CUBE_INDICES_36 = np.array([
+	0, 1, 2,  2, 3, 0,		 # +Z
+	4, 5, 6,  6, 7, 4,		 # -Z
+	8, 9, 10,  10, 11, 8,	 # +X
+	12, 13, 14,  14, 15, 12, # -X
+	16, 17, 18,  18, 19, 16, # +Y
+	20, 21, 22,  22, 23, 20, # -Y
+], dtype=np.uint32)
+
+
+def draw_cube(position:Vec3, size:Vec3, colors:Vec4) -> None:
+	mesh = Mesh(interleave_mesh_position_normal_uv(CUBE_POSITIONS_24, CUBE_NORMALS_24, CUBE_UVS_24), CUBE_INDICES_36)
+	# TODO: make instanced
+	# TODO: automatically draw at main renderpass draw
+	# TODO: clear instances after draw
+	#renderpass.command_encoder.clear_buffer(mesh.instance_buffer)

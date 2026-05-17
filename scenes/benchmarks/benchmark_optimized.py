@@ -1,7 +1,7 @@
 from scenes.benchmarks.benchmark_loop import *
 import scenes.benchmarks.benchmark_loop as loop
 from pyray import *
-from ecs import *
+from ECS import *
 
 @component
 class Position:

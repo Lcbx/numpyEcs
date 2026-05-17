@@ -1,6 +1,6 @@
 import pytest
 
-from ecs import *
+from ECS import *
 
 
 def test_no_free_entities():
