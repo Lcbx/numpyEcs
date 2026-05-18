@@ -136,6 +136,7 @@ def load_gltf_meshes(program : Program, glb_path: str)-> IndexedVertexList:
 		meshes.append(model)
 
 	return meshes
+"""
 
 class WatchTimer:
 	nesting : int = 0
@@ -146,26 +147,30 @@ class WatchTimer:
 		self.region = region
 	
 	def __enter__(self) -> None:
-		self.start_time = rl.GetTime()
+		self.start_time = getTime()
 		self.nesting = WatchTimer.nesting
 		WatchTimer.nesting += 1
+		for i,t in enumerate(WatchTimer.timers):
+			if t.region == self.region:
+				WatchTimer.timers[i] = self
+				return
 		WatchTimer.timers.append(self)
 
 	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
 		WatchTimer.nesting -= 1
 		self.message = self.get_message()
-		rl.TraceLog(rl.LOG_DEBUG, self.message.encode())
+		#print(self.message.encode())
 	
 	def get_message(self):
 		#return ('  ' * self.nesting + f'{self.region} : { self.elapsed_ms() :.1f}ms')	
 		return ('  ' * self.nesting + f'{self.region} : { self.elapsed_percent() :.0f}%')	
 	
 	def elapsed_ms(self):
-		return (rl.GetTime() - self.start_time) * 1000.0
+		return (getTime() - self.start_time) * 1000.0
 
 	def elapsed_percent(self):
-		ft = rl.GetFrameTime() + 0.0001
-		return (rl.GetTime() - self.start_time) / ft * 100.0
+		ft = RenderContext.frame_time + 0.00001
+		return (getTime() - self.start_time) / ft * 100.0
 	
 	def capture():
 		WatchTimer.report = '\n'.join( list(map(
@@ -173,10 +178,11 @@ class WatchTimer:
 			WatchTimer.timers))
 		)
 		WatchTimer.timers.clear()
+		return WatchTimer.report
 
-	def display(x, y, size, color):
-		rl.DrawText(WatchTimer.report.encode(), x, y, size, color)
-"""
+	#def display(x, y, size, color):
+	#	rl.DrawText(WatchTimer.report.encode(), x, y, size, color)
+
 
 CUBE_POSITIONS_24 = np.array((
 	# +Z (front)
@@ -233,13 +239,11 @@ def flush_cubes(rp:RenderPass, shader:_Shader, uniformBuffer:_UniformBuffer):
 	cube_mesh.draw(rp, shader, uniformBuffer)
 
 	# clear
-	encoder = RenderContext.Command()
-	encoder.clear_buffer(cube_mesh.instance_buffer.handle)
-	rp.commands.append(encoder)
-
+	cube_mesh.instance_buffer.clear(rp)
 	# NOTE: we keep reallocating numpy arrays on cpu
 	# optimally we'd reuse them but that complicates implementation
 	cube_mesh.instance_buffer.content = np.empty(0,instance_dtype)
+
 
 def draw_cube(position:Vec3, size:Vec3, colors:Vec4) -> None:
 	instance_data = np.empty(1, instance_dtype)
@@ -249,3 +253,15 @@ def draw_cube(position:Vec3, size:Vec3, colors:Vec4) -> None:
 
 def draw_cubes(instance_data:np.ndarray) -> None:
 	RenderContext.resources["cube"].add_instances(instance_data)
+
+"""
+import timeit
+import math
+import collections
+
+def test(f):
+	for i in range(1, 1000001): f(i)
+
+def timetest(f):
+	print('{}: {}'.format(timeit.timeit(lambda: test(f), number=10), f.__name__))
+"""

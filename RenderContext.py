@@ -1,12 +1,11 @@
 
 
 
-import glfw, ctypes, atexit, time
+import glfw, atexit, time, os, re, gc
 
 import wgpu
 from wgpu.utils.glfw_present_info import get_glfw_present_info
 
-import os, re
 import numpy as np
 
 from glob import glob
@@ -17,41 +16,37 @@ getTime = time.perf_counter
 sleep = time.sleep
 
 
-type GLFWwindow_ptr = ctypes._Pointer[glfw._GLFWwindow]
 class RenderContext:
 	# simple window loop on top of glfw
 	# inspired by https://github.com/pygfx/rendercanvas/blob/main/rendercanvas/glfw.py
 
-	canvas : wgpu.GPUCanvasContext|None = None
-	adapter : wgpu.GPUAdapter
-	device : wgpu.GPUDevice
-	presentation_format : str
-
-	window : GLFWwindow_ptr
-	windowDimensions : tuple[float,float] = (0.0,0.0)
-	aspect : float = 1.0
-
-	target_frame_time : float|None = None
-	frame_start : float			   = 0.0
-	frame_time : float			   = 0.0
-
-	depth_format : str = wgpu.TextureFormat.depth24plus
-	depth :  wgpu.GPUTextureView
-
-	# event_name:[handlers]
-	# handlers return True if no need to propagate further
-	# NOTE: we should in reverse order if more recent handler have priority
-	event_handlers : Dict[str, List[Callable]] = {}
-
-	# before startup -> resource_name:func
-	# after startup  -> resource_name:resource
-	# used to setup utils if imported
-	resources = {}
-
 	def __init__(self):
-		raise Exception('this class is not meant to be instanciated')
+		self.canvas : wgpu.GPUCanvasContext|None = None
+		self.adapter : wgpu.GPUAdapter
+		self.device : wgpu.GPUDevice
+		self.presentation_format : str
 
-	@classmethod
+		self.window : glfw._GLFWwindow
+		self.windowDimensions : tuple[float,float] = (0.0,0.0)
+		self.aspect : float = 1.0
+
+		self.target_frame_time : float|None = None
+		self.frame_start : float			   = 0.0
+		self.frame_time : float			   = 0.0
+
+		self.depth_format : str = wgpu.TextureFormat.depth24plus
+		self.depth :  wgpu.GPUTextureView
+
+		# event_name:[handlers]
+		# handlers return True if no need to propagate further
+		# NOTE: we should in reverse order if more recent handler have priority
+		self.event_handlers : Dict[str, List[Callable]] = {}
+
+		# before startup -> resource_name:func
+		# after startup  -> resource_name:resource
+		# used to setup utils if imported
+		self.resources = {}
+
 	def InitWindow(cls, w:float, h:float, title:str, highpower_gpu:bool=True, target_fps:int=0) -> None:
 		""" init a window and wgpu rendering context.
 		:param highpower_gpu: use the high performance gpu if there are multiple
@@ -60,7 +55,7 @@ class RenderContext:
 
 		#print(f'{glfw.__version__=}')
 		glfw.init()
-		atexit.register(glfw.terminate)
+		atexit.register(cls.cleanup)
 		
 		# in case monitor setup becomes relevant
 		#monitors = glfw.get_monitors()
@@ -101,7 +96,6 @@ class RenderContext:
 
 		cls.frame_start = getTime()
 
-	@classmethod
 	def setup_graphics(cls, *, vsync:bool, highpower_gpu:bool) -> None:
 		""" setup gpu compute & render surface """
 		present_info = get_glfw_present_info(cls.window, vsync=vsync)
@@ -119,8 +113,6 @@ class RenderContext:
 		#cls.canvas.set_present_mode('FifoRelaxed') #edited the wgpu library to add this method
 		#cls.canvas._configure_screen_real()
 
-
-	@classmethod
 	def setup_graphics_backend(cls, *, highpower_gpu:bool) -> None:
 		""" setup gpu compute, not necessarily with canvas output. used notably for tests """
 		request_params = {'power_preference': 'high-performance' if highpower_gpu else 'low-power' }
@@ -130,7 +122,6 @@ class RenderContext:
 		cls.device = cls.adapter.request_device_sync()
 
 
-	@classmethod
 	def setup_callbacks(cls) -> None:
 
 		# key is key down, key up
@@ -146,7 +137,6 @@ class RenderContext:
 		glfw.set_scroll_callback(cls.window, cls.setup_event('mouse_scroll'))#, info_log=True))
 
 
-	@classmethod
 	def updateWindowSize(cls, wh : Tuple[int, int]) -> None:
 		# NOTE: some versions of glfw send resize events
 		w, h = wh
@@ -160,7 +150,6 @@ class RenderContext:
 		).create_view()
 
 
-	@classmethod
 	def capture_mouse(cls, capture:bool=True) -> None:
 		""" hide and keep the mouse inside the window
 		NOTE: there's also glfw.CURSOR_HIDDEN which lets the cursor get out of the window
@@ -171,11 +160,9 @@ class RenderContext:
 		glfw.set_input_mode(cls.window, glfw.CURSOR, glfw.CURSOR_DISABLED if capture else glfw.CURSOR_NORMAL)
 
 
-	@classmethod
 	def subscribe_event(cls, channel_name:str, handler:Callable) -> None:
 		cls.event_handlers[channel_name].append(handler)
 
-	@classmethod
 	def setup_event(cls, channel_name:str, mapper:Callable|None=None, info_log:bool=False) -> Callable:
 		
 		def print_handler(*args):
@@ -201,7 +188,6 @@ class RenderContext:
 		return handlers_call
 
 
-	@classmethod
 	def cleanup(cls):
 
 		cls.canvas.unconfigure()
@@ -213,8 +199,9 @@ class RenderContext:
 		while time.perf_counter() < end_time:
 			glfw.wait_events_timeout(end_time - time.perf_counter())
 
+		glfw.terminate()
 
-	@classmethod
+
 	def WindowLoop(cls) -> bool:
 
 		wh = glfw.get_framebuffer_size(cls.window)
@@ -228,14 +215,14 @@ class RenderContext:
 
 		glfw.poll_events()
 
-		if glfw.window_should_close(cls.window):
-			cls.cleanup()
-			return False
+		# calling a shallow gc collect
+		# to prevent big freezes from accumulated junk
+		# TODO: stress tests 	
+		#gc.collect(0)
 
-		return True
+		return not glfw.window_should_close(cls.window)
 
 	_FRAME_WAIT_MARGIN = 0.001 # 1ms
-	@classmethod
 	def _frame_pacing(cls):
 		now = getTime()
 		cls.frame_time = now - cls.frame_start
@@ -251,18 +238,16 @@ class RenderContext:
 		
 		cls.frame_start = now
 
-	@classmethod
 	def Command(cls) -> wgpu.CommandEncoder:
 		return cls.device.create_command_encoder()
 
-	@classmethod
 	def RenderPass(cls, *args, **kwargs) -> '_RenderPass':
 		return _RenderPass(*args, **kwargs)
 
-	@classmethod
 	def Shader(cls, *args, **kwargs) -> '_Shader':
 		return _Shader(*args, **kwargs)
 
+RenderContext = RenderContext()
 
 class _RenderPass:
 
@@ -314,9 +299,10 @@ class _RenderPass:
 
 	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
 		self.render_pass.end()
-		RenderContext.device.queue.submit([
-			command.finish() for command in self.commands
-		])
+		RenderContext.device.queue.submit(
+			[ command.finish() for command in self.commands ]
+		)
+
 
 
 _GL_to_dtype: Dict[str, np.dtype] = {
@@ -567,6 +553,12 @@ class GpuBuffer:
 	def upload(self) -> None:
 		RenderContext.device.queue.write_buffer(self.handle, 0, self.content)
 
+	def clear(self, rp:RenderPass) -> None:
+		command = RenderContext.Command()
+		command.clear_buffer(self.handle)
+		rp.commands.append(command)
+
+
 
 class _UniformBuffer(GpuBuffer):
 
@@ -640,7 +632,7 @@ class Mesh:
 
 		# NOTE: if the buffer exists we don't upload it immediately
 		if buffer := self.instance_buffer:
-			buffer.resize(instance_data.size)
+			buffer.resize(self.instance_count)
 			buffer.content = instance_data
 			return
 

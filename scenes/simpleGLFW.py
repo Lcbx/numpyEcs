@@ -21,9 +21,9 @@ light_dir = l.astype(np.float32)
 
 
 RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE
-)
+#)
 #, target_fps=120)
-#, target_fps=-1)
+, target_fps=-1)
 #RenderContext.capture_mouse()
 
 #print(RenderContext.resources)
@@ -64,6 +64,36 @@ RenderContext.event_handlers['mouse_scroll'].append(scroll_callback)
 #import random as rd
 
 
+import psutil # NOTE: this is not a built-in lib
+process = psutil.Process(os.getpid())
+
+import tracemalloc
+tracemalloc.start()
+
+import gc
+_gc_start = None
+
+print(f'{gc.get_threshold()=}')
+gc.set_threshold(1000, 30, 2) # deflt 2000, 10, 10
+
+
+def gc_probe(phase, info):
+    global _gc_start
+
+    if phase == "start":
+        _gc_start = getTime()
+    elif phase == "stop":
+        dt_ms = (getTime() - _gc_start) * 1000
+        if not any(info.values()): return
+        print(
+            f"GC gen={info['generation']} "
+            f"collected={info['collected']} "
+            f"uncollectable={info['uncollectable']} "
+            f"time={dt_ms:.3f} ms"
+        )
+gc.callbacks.append(gc_probe)
+
+
 fps_frames = 0
 start_t = getTime()
 fps_print_timestamp = start_t
@@ -76,8 +106,27 @@ while RenderContext.WindowLoop():
         print(f"fps {fps_frames}")
         fps_frames = 0
         fps_print_timestamp = now
+        
         #instance_data[1]["uModel"] = scale_mat @ Mat4.from_translation([rd.random()*15.0, 0.0, rd.random()*15.0])
         #mesh.instance_buffer.upload()
+
+        #print(WatchTimer.capture())
+
+        rss = process.memory_info().rss
+        print(f"Process RSS: {rss / 1024 / 1024:.1f} MiB")
+        
+        #snapshot = tracemalloc.take_snapshot()
+        current, peak = tracemalloc.get_traced_memory()
+        print(f"traced current: {current / 1024 / 1024:.2f} MiB")
+        print(f"traced peak:    {peak / 1024 / 1024:.2f} MiB")
+
+        #print("gc stats")
+        #for s in gc.get_stats():
+        #    print(s)
+        #for i in range(3):
+        #    print("generation", i, len(gc.get_objects(i)))
+
+        print("")
 
 
     # orbit update (based on time wince start)
@@ -90,16 +139,22 @@ while RenderContext.WindowLoop():
     ) )
 
 
-    with renderpass as rp:
-        draw_cube(  (3, 5, -3), (2,2,2), (0.5, 0.5, 0.5, 1.0))
-        draw_cube( (-3, 5, -3), (1,5,1), (0.5, 0.5, 0.5, 1.0))
+    with WatchTimer("draw"):
+        with renderpass as rp:
+            with WatchTimer("draw_cube"):
+                draw_cube(  (3, 5, -3), (2,2,2), (0.5, 0.5, 0.5, 1.0))
+                draw_cube( (-3, 5, -3), (1,5,1), (0.5, 0.5, 0.5, 1.0))
 
-        uniformBuffer.content['uView'] = renderpass.view
-        uniformBuffer.content['uProj'] = renderpass.projection
-        uniformBuffer.content['uLightDir'] = light_dir
-        #uniformBuffer.content['uTint'] = (0.7, 0.5, 0.3, 1.0)
-        #uniformBuffer.content['uModel'] = Mat4.from_scale([scale, scale, scale], dtype=np.float32)
-        uniformBuffer.upload()
-        mesh.draw(rp, shader, uniformBuffer)
-        flush_cubes(rp, shader, uniformBuffer)
+            with WatchTimer("update_uniform"):
+                uniformBuffer.content['uView'] = renderpass.view
+                uniformBuffer.content['uProj'] = renderpass.projection
+                uniformBuffer.content['uLightDir'] = light_dir
+                #uniformBuffer.content['uTint'] = (0.7, 0.5, 0.3, 1.0)
+                #uniformBuffer.content['uModel'] = Mat4.from_scale([scale, scale, scale], dtype=np.float32)
+                uniformBuffer.upload()
+
+            with WatchTimer("draw_model"):
+                mesh.draw(rp, shader, uniformBuffer)
+            with WatchTimer("flush_cube"):
+                flush_cubes(rp, shader, uniformBuffer)
 
