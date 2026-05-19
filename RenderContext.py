@@ -215,10 +215,8 @@ class RenderContext:
 
 		glfw.poll_events()
 
-		# calling a shallow gc collect
-		# to prevent big freezes from accumulated junk
-		# TODO: stress tests 	
-		#gc.collect(0)
+		# TODO: implement a strategy to ensure gc does not freeze the app
+		#gc.collect(0) # not a good strategy
 
 		return not glfw.window_should_close(cls.window)
 
@@ -358,8 +356,19 @@ def make_std430_dtype( original: List[Tuple[str, np.dtype]] ) -> np.dtype:
 		#print(dfields)
 		missing_offset = (16 - offset) % 16
 		if missing_offset != 0:
-			#print(f'adding new pad {missing_offset}')
-			dfields.append((f"_pad{pad_idx}", np.dtype(("u1", missing_offset))))
+			print(f'adding new pad {missing_offset}')
+			pad_type = None
+			pad_count = 0 
+			if missing_offset % 4 == 0:
+				pad_type = "u4"
+				pad_count = missing_offset//4
+			elif missing_offset % 2 == 0:
+				pad_type = "u2"
+				pad_count = missing_offset//2
+			else:
+				pad_type = "u1"
+				pad_count = missing_offset
+			dfields.append( (f"_pad{pad_idx}", np.dtype( (pad_type, pad_count) )) ) 
 			offset += missing_offset
 			pad_idx += 1
 
@@ -387,15 +396,14 @@ def dtype_to_vertex_format(dtype: np.dtype) -> List | str:
 
 	dtype = np.dtype(dtype)
 
-	#print(dtype)
-
 	if dtype.fields is not None:
-		fields_data = dtype.fields.values()
+		fields_data = dtype.fields.items()
 		#print(fields_data)
 		res = []
-		for field_dtype, offset in fields_data:
+		for name, (field_dtype, offset) in fields_data:
+			#print(name, field_dtype)
 			vFormat = dtype_to_vertex_format(field_dtype)
-			#print('vFormat', vFormat, type(vFormat))
+			#print(name, field_dtype, vFormat)
 			if isinstance(vFormat,str):
 				res.append( (vFormat, offset) )
 			elif isinstance(vFormat,List):
@@ -419,7 +427,7 @@ def dtype_to_vertex_format(dtype: np.dtype) -> List | str:
 	count = shape[0]
 
 	if count < 1 or count > 4:
-		raise ValueError(f"VertexFormat arrays must have 1–4 components (found {count})")
+		raise ValueError(f"VertexFormat arrays must have 1–4 components (found {count} for {dtype.subdtype}")
 	try:
 		(prefix, scalar_size) = _VertexFormat[base_type]
 	except KeyError:
@@ -439,7 +447,7 @@ def dtype_to_vertex_format(dtype: np.dtype) -> List | str:
 		return [ (vFormat, scalar_size * count * i) for i in range(row_count) ]
 	
 	else:
-		raise TypeError(f"Only 1D or 2D array dtypes are valid vertex attributes (found {shape})")
+		raise TypeError(f"Only 1D or 2D array dtypes are valid vertex attributes (found {shape} for {dtype.subdtype})")
 
 
 # TODO: don't compile shaders we already compiled before

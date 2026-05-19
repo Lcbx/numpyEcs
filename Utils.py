@@ -1,12 +1,14 @@
 from RenderContext import *
 
 import numpy as np
-from pyrr import Matrix44 as Mat4, Vector3 as Vec3, Vector4 as Vec4
+from pyrr import Matrix44 as Mat4, Vector3 as Vec3, Vector4 as Vec4, Quaternion
 from pygltflib import GLTF2, BufferView, Accessor
 
-Vec3_type = np.dtype( (np.float32, (3,)) )
-Vec4_type = np.dtype( (np.float32, (4,)) )
-Mat4_type = np.dtype( (np.float32, (4,4)) )
+Vec3_f32_type = np.dtype( (np.float32, (3,))  )
+Vec4_f32_type = np.dtype( (np.float32, (4,))  )
+Vec4_f16_type = np.dtype( (np.float16, (4,))  )
+Mat4_f32_type = np.dtype( (np.float32, (4,4)) )
+Color_type    = np.dtype( (np.uint32,  (1,))  )
 
 class Camera:
 	def __init__(self, position: tuple, target: tuple, up: tuple, fovy_deg:float, near:float=0.1, far:float=1000.0, perspective:bool=True):
@@ -225,10 +227,29 @@ RenderContext.resources["cube"] = lambda : (
 )
 
 
-instance_dtype = make_std430_dtype([
-    ("uModel", Mat4_type), # TODO: use smth more compact than 4x4 float32
-    ("uTint",  Vec4_type)
+instance_dtype = np.dtype([
+	#("uModel", Mat4_type),
+	("iPosition", Vec3_f32_type),
+	("iRotation", Vec4_f16_type), # quaternion
+	("iScale",    Vec4_f16_type), # last float16 is unused
+	("iTint",     Color_type)
 ])
+
+
+def linear_to_srgb(x):
+	x = np.asarray(x, dtype=np.float32)
+	return np.where(
+		x <= 0.0031308,
+		x * 12.92,
+		1.055 * np.power(x, 1.0 / 2.4) - 0.055,
+	)
+
+_RGBA_SHIFT = np.array([0, 8, 16, 24], dtype=np.uint32)
+def pack_rgba8_srgb(rgba:Vec4):
+	rgba = np.array([ *linear_to_srgb(rgba.xyz), rgba.w])
+	rgba8 = np.rint(rgba * 255).astype(np.uint32)
+	#print(rgba8)
+	return np.uint32(np.sum(rgba8 << _RGBA_SHIFT))
 
 
 def flush_cubes(rp:RenderPass, shader:_Shader, uniformBuffer:_UniformBuffer):
@@ -245,10 +266,12 @@ def flush_cubes(rp:RenderPass, shader:_Shader, uniformBuffer:_UniformBuffer):
 	cube_mesh.instance_buffer.content = np.empty(0,instance_dtype)
 
 
-def draw_cube(position:Vec3, size:Vec3, colors:Vec4) -> None:
+def draw_cube(position:Vec3, size:Vec3, color:Vec4, rotation:Quaternion = Quaternion()) -> None:
 	instance_data = np.empty(1, instance_dtype)
-	instance_data[0]["uModel"] = Mat4.from_scale(size) @ Mat4.from_translation(position)
-	instance_data[0]["uTint"] = colors
+	instance_data[0]["iPosition"] = position
+	instance_data[0]["iRotation"] = rotation
+	instance_data[0]["iScale"] = [*size, 0.0] # this is a vec3, shader expects a vec4 so we pad the numpy array
+	instance_data[0]["iTint"] = pack_rgba8_srgb(Vec4(color))
 	draw_cubes(instance_data)
 
 def draw_cubes(instance_data:np.ndarray) -> None:

@@ -34,14 +34,13 @@ shader = RenderContext.Shader(filepath='scenes/shaders/simple.shader')
 vertices, indices = load_gltf_first_mesh_interleaved('scenes/resources/rooftop_utility_pole.glb')
 scale = 10.0
 instance_data = np.zeros(10, instance_dtype)
-scale_mat = Mat4.from_scale([scale, scale, scale])
-instance_data[0]["uModel"] = scale_mat
-instance_data[0]["uTint"] = (0.7, 0.5, 0.3, 1.0)
-instance_data[1]["uModel"] = scale_mat @ Mat4.from_translation([15.0, 0.0, 15.0]) 
-instance_data[1]["uTint"] = (0.3, 0.5, 0.7, 1.0)
+instance_data[0]["iPosition"] = Vec3([15.0, 0.0, 15.0])
+instance_data[0]["iRotation"] = Quaternion()
+instance_data[0]["iScale"] = [scale] * 4 # only 3 of are used
+instance_data[0]["iTint"] = pack_rgba8_srgb(Vec4([0.3, 0.5, 0.7, 1.0]))
+print(instance_data[0]["iTint"])
 mesh = Mesh(vertices, indices)
 mesh.set_instances(instance_data)
-#mesh = Mesh(vertices, indices)
 uniformBuffer = shader.UniformBuffer()
 
 
@@ -142,7 +141,7 @@ while RenderContext.WindowLoop():
     with WatchTimer("draw"):
         with renderpass as rp:
             with WatchTimer("draw_cube"):
-                draw_cube(  (3, 5, -3), (2,2,2), (0.5, 0.5, 0.5, 1.0))
+                draw_cube(  (3, 5, -3), (2,2,2), (0.5, 0.5, 0.5, 1.0), Quaternion.from_eulers([0.6,0.0,0.0]) )
                 draw_cube( (-3, 5, -3), (1,5,1), (0.5, 0.5, 0.5, 1.0))
 
             with WatchTimer("update_uniform"):
