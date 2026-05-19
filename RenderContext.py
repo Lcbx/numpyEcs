@@ -551,8 +551,7 @@ class GpuBuffer:
 
 	def resize(self, count:int):
 		#print('count', count, self.content.size)
-		count = nearest_pow2(count)
-		size = count * self.content.itemsize
+		size = nearest_pow2(count * self.content.itemsize)
 		current = self.handle.size
 		if size > current:
 			#print('resize', size, current)
