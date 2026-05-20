@@ -26,8 +26,6 @@ RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE
 , target_fps=-1)
 #RenderContext.capture_mouse()
 
-#print(RenderContext.resources)
-
 # seems to use a weird color space
 renderpass = RenderContext.RenderPass(camera = camera, clear_color = (0.02, 0.02, 0.03, 1.0))
 shader = RenderContext.Shader(filepath='scenes/shaders/simple.shader')
@@ -36,9 +34,8 @@ scale = 10.0
 instance_data = np.zeros(10, instance_dtype)
 instance_data[0]["iPosition"] = Vec3([15.0, 0.0, 15.0])
 instance_data[0]["iRotation"] = Quaternion()
-instance_data[0]["iScale"] = [scale] * 4 # only 3 of are used
+instance_data[0]["iScale"] = [scale] * 4 # only 3 are used
 instance_data[0]["iTint"] = pack_rgba8_srgb(Vec4([0.3, 0.5, 0.7, 1.0]))
-print(instance_data[0]["iTint"])
 mesh = Mesh(vertices, indices)
 mesh.set_instances(instance_data)
 uniformBuffer = shader.UniformBuffer()
@@ -60,37 +57,8 @@ def scroll_callback(xoff, yoff):
 
 RenderContext.event_handlers['mouse_scroll'].append(scroll_callback)
 
-#import random as rd
-
-
-import psutil # NOTE: this is not a built-in lib
-process = psutil.Process(os.getpid())
-
-import tracemalloc
-tracemalloc.start()
-
-import gc
-_gc_start = None
-
-print(f'{gc.get_threshold()=}')
-gc.set_threshold(1000, 30, 2) # deflt 2000, 10, 10
-
-
-def gc_probe(phase, info):
-    global _gc_start
-
-    if phase == "start":
-        _gc_start = getTime()
-    elif phase == "stop":
-        dt_ms = (getTime() - _gc_start) * 1000
-        if not any(info.values()): return
-        print(
-            f"GC gen={info['generation']} "
-            f"collected={info['collected']} "
-            f"uncollectable={info['uncollectable']} "
-            f"time={dt_ms:.3f} ms"
-        )
-gc.callbacks.append(gc_probe)
+#setup_gc_monitor()
+#print_memory = setup_memory_monitor()
 
 
 fps_frames = 0
@@ -106,24 +74,15 @@ while RenderContext.WindowLoop():
         fps_frames = 0
         fps_print_timestamp = now
         
-        #instance_data[1]["uModel"] = scale_mat @ Mat4.from_translation([rd.random()*15.0, 0.0, rd.random()*15.0])
-        #mesh.instance_buffer.upload()
+        instance_data[1]["iPosition"] = Vec3([np.random.rand()*15.0, 0.0, np.random.rand()*15.0])
+        instance_data[1]["iRotation"] = Quaternion()
+        instance_data[1]["iScale"] = [scale] * 4 # only 3 are used
+        instance_data[1]["iTint"] = pack_rgba8_srgb(Vec4([0.6, 0.5, 0.4, 1.0]))
+
+        mesh.instance_buffer.upload()
 
         #print(WatchTimer.capture())
-
-        rss = process.memory_info().rss
-        print(f"Process RSS: {rss / 1024 / 1024:.1f} MiB")
-        
-        #snapshot = tracemalloc.take_snapshot()
-        current, peak = tracemalloc.get_traced_memory()
-        print(f"traced current: {current / 1024 / 1024:.2f} MiB")
-        print(f"traced peak:    {peak / 1024 / 1024:.2f} MiB")
-
-        #print("gc stats")
-        #for s in gc.get_stats():
-        #    print(s)
-        #for i in range(3):
-        #    print("generation", i, len(gc.get_objects(i)))
+        #print_memory()
 
         print("")
 
@@ -148,8 +107,6 @@ while RenderContext.WindowLoop():
                 uniformBuffer.content['uView'] = renderpass.view
                 uniformBuffer.content['uProj'] = renderpass.projection
                 uniformBuffer.content['uLightDir'] = light_dir
-                #uniformBuffer.content['uTint'] = (0.7, 0.5, 0.3, 1.0)
-                #uniformBuffer.content['uModel'] = Mat4.from_scale([scale, scale, scale], dtype=np.float32)
                 uniformBuffer.upload()
 
             with WatchTimer("draw_model"):

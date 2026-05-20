@@ -16,7 +16,7 @@ getTime = time.perf_counter
 sleep = time.sleep
 
 
-class RenderContext:
+class _RenderContext:
 	# simple window loop on top of glfw
 	# inspired by https://github.com/pygfx/rendercanvas/blob/main/rendercanvas/glfw.py
 
@@ -245,7 +245,7 @@ class RenderContext:
 	def Shader(cls, *args, **kwargs) -> '_Shader':
 		return _Shader(*args, **kwargs)
 
-RenderContext = RenderContext()
+RenderContext = _RenderContext()
 
 class _RenderPass:
 

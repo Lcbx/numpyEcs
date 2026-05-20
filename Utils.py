@@ -288,3 +288,40 @@ def test(f):
 def timetest(f):
 	print('{}: {}'.format(timeit.timeit(lambda: test(f), number=10), f.__name__))
 """
+
+def setup_gc_monitor() -> None:
+	print(f'{gc.get_threshold()=}')
+	#gc.set_threshold(1000, 30, 2) # deflt 2000, 10, 10
+	_gc_start = None
+
+	def gc_probe(phase:str, info:dict) -> None:
+		nonlocal _gc_start
+		if phase == "start":
+			_gc_start = getTime()
+		elif phase == "stop":
+			dt_ms = (getTime() - _gc_start) * 1000
+			if not any(info.values()): return
+			print(
+				f"GC gen={info['generation']} "
+				f"collected={info['collected']} "
+				f"uncollectable={info['uncollectable']} "
+				f"time={dt_ms:.3f} ms"
+			)
+
+	gc.callbacks.append(gc_probe)
+
+def setup_memory_monitor() -> Callable:
+	import psutil # NOTE: this is not a built-in lib
+	process = psutil.Process(os.getpid())
+
+	import tracemalloc
+	tracemalloc.start()
+
+	def print_report() -> None:
+		rss = process.memory_info().rss
+		print(f"process RSS: {rss / 1024 / 1024:.1f} MiB")
+		current, peak = tracemalloc.get_traced_memory()
+		print(f"traced memory: {current / 1024 / 1024:.2f} MiB")
+
+	return print_report
+
