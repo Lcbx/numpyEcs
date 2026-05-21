@@ -361,16 +361,15 @@ def make_std430_dtype( original: List[Tuple[str, np.dtype]] ) -> np.dtype:
 		offset += dtype.itemsize
 
 		#print(dfields)
-		missing_offset = (16 - offset) % 16
-		if missing_offset != 0:
-			#print(f'adding new pads {missing_offset} before {name}')
+		if (missing_offset := (nearest_pow2(offset) - offset) % 16) > 0:
+			print(f'adding new pads {missing_offset} before {name}')
 			if (u4_count := missing_offset//4) > 0:
 				add_pad("u4", u4_count)
 				missing_offset -= u4_count * 4
 			if (u2_count := missing_offset//2) > 0:
 				add_pad("u2", u2_count)
 				missing_offset -= u2_count * 2
-			if missing_offset != 0:
+			if missing_offset > 0:
 				add_pad("u1", missing_offset)
 
 	#print(dfields)
