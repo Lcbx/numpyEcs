@@ -2,7 +2,7 @@ from RenderContext import *
 from Utils import *
 from math import cos, sin
 
-WINDOW_W, WINDOW_H = 1800, 900
+WINDOW_W, WINDOW_H = 1200, 1200
 TITLE = "glfw + wgpu"
 
 
@@ -81,10 +81,11 @@ while RenderContext.WindowLoop():
 
         mesh.instance_buffer.upload()
 
+        camera.perspective = not camera.perspective
+
         #print(WatchTimer.capture())
         #print_memory()
-
-        print("")
+        #print("")
 
 
     # orbit update (based on time wince start)

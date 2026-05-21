@@ -1,7 +1,7 @@
 
 
 
-import glfw, atexit, time, os, re, gc
+import time, os, re, gc
 
 import wgpu
 from wgpu.utils.glfw_present_info import get_glfw_present_info
@@ -52,7 +52,9 @@ class _RenderContext:
 		:param highpower_gpu: use the high performance gpu if there are multiple
 		:param target_fps: -1 is limitless, 0 is vsync, other values is fps limit
 		"""
-
+		global glfw
+		import glfw, atexit
+		
 		#print(f'{glfw.__version__=}')
 		glfw.init()
 		atexit.register(cls.cleanup)
@@ -236,7 +238,7 @@ class _RenderContext:
 		
 		cls.frame_start = now
 
-	def Command(cls) -> wgpu.CommandEncoder:
+	def Command(cls) -> wgpu.GPUCommandEncoder:
 		return cls.device.create_command_encoder()
 
 	def RenderPass(cls, *args, **kwargs) -> '_RenderPass':
@@ -251,7 +253,7 @@ class _RenderPass:
 
 	def __init__(self,
 			#shader:BetterShader = None,
-			camera:Camera|None = None,
+			camera = None,
 			#texture:img.Framebuffer = None
 			clear_color:tuple=(0.0, 0.0, 0.0, 1.0)
 		):
@@ -346,6 +348,11 @@ def make_std430_dtype( original: List[Tuple[str, np.dtype]] ) -> np.dtype:
 	offset = 0
 	pad_idx = 0
 
+	def add_pad(pad_type:str, pad_count:int):
+		nonlocal pad_idx
+		dfields.append( (f"_pad{pad_idx}", np.dtype( (pad_type, pad_count) )) ) 
+		pad_idx += 1
+
 	for name, dtype in original:
 		#print(name, dtype)
 		dtype = np.dtype(dtype)
@@ -356,21 +363,15 @@ def make_std430_dtype( original: List[Tuple[str, np.dtype]] ) -> np.dtype:
 		#print(dfields)
 		missing_offset = (16 - offset) % 16
 		if missing_offset != 0:
-			print(f'adding new pad {missing_offset}')
-			pad_type = None
-			pad_count = 0 
-			if missing_offset % 4 == 0:
-				pad_type = "u4"
-				pad_count = missing_offset//4
-			elif missing_offset % 2 == 0:
-				pad_type = "u2"
-				pad_count = missing_offset//2
-			else:
-				pad_type = "u1"
-				pad_count = missing_offset
-			dfields.append( (f"_pad{pad_idx}", np.dtype( (pad_type, pad_count) )) ) 
-			offset += missing_offset
-			pad_idx += 1
+			#print(f'adding new pads {missing_offset} before {name}')
+			if (u4_count := missing_offset//4) > 0:
+				add_pad("u4", u4_count)
+				missing_offset -= u4_count * 4
+			if (u2_count := missing_offset//2) > 0:
+				add_pad("u2", u2_count)
+				missing_offset -= u2_count * 2
+			if missing_offset != 0:
+				add_pad("u1", missing_offset)
 
 	#print(dfields)
 
@@ -543,11 +544,16 @@ def nearest_pow2(n: int) -> int:
 # NOTE: permanent buffers need to mark dirty ranges and upload changes only
 # irl we have a lot to gain from storing the positions of moving geometry in different buffers
 class GpuBuffer:
+	#DEFAULT_SIZE = 512
+
+	# TODO: track dirty sectors for upload here
 
 	def __init__(self, content : np.ndarray, usage:wgpu.BufferUsage):
 		self.content = content
+		#if content.shape[0] > 0:
 		self.handle = RenderContext.device.create_buffer_with_data(data=content, usage=usage)
-		#self.handle = RenderContext.device.create_buffer(size=content.nbytes, usage=usage)
+		#else:
+		#	self.handle = RenderContext.device.create_buffer(size=GpuBuffer.DEFAULT_SIZE, usage=usage)
 
 	def resize(self, count:int):
 		#print('count', count, self.content.size)
@@ -560,7 +566,7 @@ class GpuBuffer:
 	def upload(self) -> None:
 		RenderContext.device.queue.write_buffer(self.handle, 0, self.content)
 
-	def clear(self, rp:RenderPass) -> None:
+	def clear(self, rp:_RenderPass) -> None:
 		command = RenderContext.Command()
 		command.clear_buffer(self.handle)
 		rp.commands.append(command)
@@ -596,7 +602,13 @@ class _UniformBuffer(GpuBuffer):
 # TODO: pool meshes with same vertex attributes
 class Mesh:
 
-	# NOTE: is there a point to supporting meshes with no indices these days
+	# caches to pull vertices with the same attributes
+	vertex_buffers   = {}
+	# idem for instance
+	instance_buffers = {}
+	# split between uint16 and uint32 ?
+	index_buffers    = {}
+
 	def __init__(self, vertex_data:np.ndarray, indices:np.ndarray):
 		device = RenderContext.device
 
@@ -664,7 +676,7 @@ class Mesh:
 			))
 
 
-	def draw(self, renderpass:RenderPass, shader:'_Shader', uniforms:'_UniformBuffer') -> None:
+	def draw(self, renderpass:_RenderPass, shader:'_Shader', uniforms:'_UniformBuffer') -> None:
 		render_pass = renderpass.render_pass
 		render_pass.set_pipeline(shader.create_render_pipeline(self.buffers_spec))
 		render_pass.set_bind_group(0, uniforms.bind_group)

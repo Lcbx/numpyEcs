@@ -4,6 +4,18 @@ import numpy as np
 from pyrr import Matrix44 as Mat4, Vector3 as Vec3, Vector4 as Vec4, Quaternion
 from pygltflib import GLTF2, BufferView, Accessor
 
+# equivalent to:
+#from functools import lru_cache
+#cache_1 = lru_cache(maxsize=1)
+def cache_1(func):
+	prev_args = None; cached = None 
+	def wrapper(*args):
+		nonlocal cached, prev_args
+		if args == prev_args: return cached
+		prev_args = args; cached = func(*args)
+		return cached
+	return wrapper
+
 Vec3_f32_type = np.dtype( (np.float32, (3,))  )
 Vec4_f32_type = np.dtype( (np.float32, (4,))  )
 Vec4_f16_type = np.dtype( (np.float16, (4,))  )
@@ -20,16 +32,56 @@ class Camera:
 		self.far = far
 		self.perspective = perspective
 
+	# NOTE: view changes often, and Vec3s are not haashable (though we could ceonvert them to tuples)
 	def view(self) -> Mat4:
-		return Mat4.look_at(self.position, self.target, self.up)
+		return Camera.calc_view(self.position, self.target, self.up)
+	
+	def calc_view(position, target:Vec3, up:Vec3) -> Mat4:
+		return Mat4.look_at(position, target, up)
+	
+	# NOTE: we could split this class into orth and perspective cameras
+	def projection(self, aspect:float) -> Mat4:
+		if self.perspective: return Camera.perspective_projection(self.fovy_deg, aspect, self.near, self.far )
+		top = self.fovy_deg * 0.5
+		right = top*aspect
+		left = -right
+		bottom = -top
+		return Camera.orthogonal_projection(left, right, bottom, top, self.near, self.far)
+	
+	# can't use pyrr projections since it follows opengl convetions
+	# opengl has ndc -1->1, wgpu is 0->1
 
-	def projection(self, aspect) -> Mat4:
-		if self.perspective:
-			return Mat4.perspective_projection( self.fovy_deg, aspect, self.near, self.far )
+	@cache_1
+	def perspective_projection(fovy_deg:float, aspect:float, near:float, far:float) -> Mat4:
+		f = 1.0/np.tan(fovy_deg*3.14159/180.0 *0.5)
+		far_factor = far/(near-far)
+		mat = np.array([
+			[f/aspect, 0.0,            0.0,  0.0],
+			[0.0,        f,            0.0,  0.0],
+			[0.0,      0.0,     far_factor, -1.0],
+			[0.0,      0.0, far_factor*near, 0.0],
+		], dtype=np.float32)
+		#return np.ascontiguousarray(mat, dtype=np.float32)
+		return mat
 
-		top = self.fovy_deg * 0.5;
-		right = top*aspect;
-		return Mat4.orthogonal_projection(-right, right, top, -top, self.near, self.far)
+	@cache_1
+	def orthogonal_projection(left:float, right:float, bottom:float, top:float, near:float, far:float) -> Mat4:
+
+		rml = right - left
+		rpl = right + left
+		tmb = top - bottom
+		tpb = top + bottom
+		fn = far - near
+
+		mat = np.array([
+			[2.0/rml,       0.0,      0.0, 0.0],
+			[0.0,       2.0/tmb,      0.0, 0.0],
+			[0.0,           0.0,  -1.0/fn, 0.0],
+			[-rpl/rml, -tpb/tmb, -near/fn, 1.0],
+		], dtype=np.float32)
+
+		return mat
+
 
 
 def _get_data_from_accessor(gltf: GLTF2, accessor_index: int) -> np.ndarray:
@@ -84,15 +136,18 @@ def load_gltf_first_mesh(glb_path: str) -> Tuple[np.ndarray,np.ndarray,np.ndarra
 	
 	#print(f'{mesh=}')
 
-	idx =   _get_data_from_accessor(gltf, prim.indices)
 	pos =   _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
+	pos_count = pos.shape[0]
+	idx =   _get_data_from_accessor(gltf, prim.indices).astype(
+		np.uint32 if pos_count.bit_length() > 32 else np.uint16
+	)
 	nor = ( _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32)
 		if prim.attributes.NORMAL is not None
 		else np.zeros_like( pos.shape, dtype=np.float32)
 	)
 	uv  = ( _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float16)
 		if prim.attributes.TEXCOORD_0 is not None
-		else np.zeros( (pos.shape[0], 2), dtype=np.float16)
+		else np.zeros( (pos_count, 2), dtype=np.float16)
 	)
 
 	return pos, nor, uv, idx
@@ -252,7 +307,7 @@ def pack_rgba8_srgb(rgba:Vec4):
 	return np.uint32(np.sum(rgba8 << _RGBA_SHIFT))
 
 
-def flush_cubes(rp:RenderPass, shader:_Shader, uniformBuffer:_UniformBuffer):
+def flush_cubes(rp:"_RenderPass", shader:"_Shader", uniformBuffer:"_UniformBuffer"):
 	cube_mesh = RenderContext.resources["cube"]
 	
 	# draw
