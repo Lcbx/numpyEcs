@@ -4,18 +4,6 @@ import numpy as np
 from pyrr import Matrix44 as Mat4, Vector3 as Vec3, Vector4 as Vec4, Quaternion
 from pygltflib import GLTF2, BufferView, Accessor
 
-# equivalent to:
-#from functools import lru_cache
-#cache_1 = lru_cache(maxsize=1)
-def cache_1(func):
-	prev_args = None; cached = None 
-	def wrapper(*args):
-		nonlocal cached, prev_args
-		if args == prev_args: return cached
-		prev_args = args; cached = func(*args)
-		return cached
-	return wrapper
-
 Vec3_f32_type = np.dtype( (np.float32, (3,))  )
 Vec4_f32_type = np.dtype( (np.float32, (4,))  )
 Vec4_f16_type = np.dtype( (np.float16, (4,))  )

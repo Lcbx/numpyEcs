@@ -1,7 +1,13 @@
 import pytest
 
+from common import *
 from ECS import *
 
+def test_higher_pow2():
+    for i in range(0,512):
+        res = higher_pow2(i)
+        #print(res)
+        assert(i<res)
 
 def test_no_free_entities():
     ecs = ECS()
@@ -61,24 +67,24 @@ class Foo:
 
 def test_single_component_storage_basic():
     s = ComponentStorage(Foo, capacity=2)
-    assert s.get(1) is None
+    assert s.get_1(1) is None
     
     s._add(1, Foo(1.23, "first"))
-    proxy = s.get(1)
+    proxy = s.get_1(1)
     assert proxy is not None
     assert pytest.approx(proxy.a) == 1.23
     assert proxy.b == "first"
     
     s._remove(proxy)
-    assert s.get(1) is None
+    assert s.get_1(1) is None
     s._add(1, Foo(4.56, "second"))
-    proxy = s.get(1)
+    proxy = s.get_1(1)
     assert pytest.approx(proxy.a) == 4.56
     assert proxy.b == "second"
     
     s._add(2, Foo(7.89, "third"))
     s._add(3, Foo(0.12, "fourth"))  # forces _grow_dense
-    proxy = s.get(3)
+    proxy = s.get_1(3)
     assert pytest.approx(proxy.a) == 0.12
     assert proxy.b == "fourth"
 
@@ -89,10 +95,10 @@ def test_single_component_storage_basic():
 
     # check __setattr__ modifies the store 
     proxy.a = 0.69
-    assert pytest.approx(s.get(3).a) == 0.69
+    assert pytest.approx(s.get_1(3).a) == 0.69
 
-    s._remove(s.get(2))
-    assert s.get(2) is None
+    s._remove(s.get_1(2))
+    assert s.get_1(2) is None
 
 def test_single_component_storage_sparse_dense_integrity():
     s = ComponentStorage(Foo, capacity=1)
@@ -105,13 +111,13 @@ def test_single_component_storage_sparse_dense_integrity():
         idx = s._sparse[eid]
         assert 0 <= idx < s._size
     
-    foo6 = s.get(6)
+    foo6 = s.get_1(6)
     assert foo6 is not None
     
     s._remove(foo6)
-    assert s.get(6) is None
-    assert s.get(5) is not None and s.get(5).a == pytest.approx(10.0)
-    assert s.get(7) is not None and s.get(7).a == pytest.approx(30.0)
+    assert s.get_1(6) is None
+    assert s.get_1(5) is not None and s.get_1(5).a == pytest.approx(10.0)
+    assert s.get_1(7) is not None and s.get_1(7).a == pytest.approx(30.0)
 
 
 
@@ -238,8 +244,8 @@ def test_get_whole_vector():
 
 def test_get_rows():
     pos = make_pos2d_store([(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)])
-    pos._remove(pos.get(3))
-    pos._remove(pos.get(0))
+    pos._remove(pos.get_1(3))
+    pos._remove(pos.get_1(0))
     pos._add(5, Position2D(-1,-1))
     # remember : rows are the indices in the dense array
     rows = pos._get_rows(range(4))
@@ -247,7 +253,7 @@ def test_get_rows():
     rows = pos._get_rows()
     assert sorted(rows.tolist()) == [0,1,2,3]
     rows = pos._get_rows([])
-    assert not rows
+    assert rows.shape == (0,)
 
 def test_query_simple_vectorized():
     pos = make_pos2d_store([(0, 0), (1, 2), (5, -3), (-1, 1), (4, 10)])
@@ -283,7 +289,7 @@ def test_query_can_use_entity_id_in_predicate():
 
 def test_query_raises_on_length_mismatch():
     pos = make_pos2d_store([(0, 0), (1, 1), (2, 2)])
-    with pytest.raises(ValueError):
+    with pytest.raises(IndexError):
         pos.query(lambda x, y: np.array([True, False]))
 
 def test_query_on_empty_storage():
@@ -344,8 +350,8 @@ def test_movement_system():
 
     # Verify initial positions
     positions = ecs.get_store(Position2D)
-    p1 = positions.get(1)
-    p2 = positions.get(2)
+    p1 = positions.get_1(1)
+    p2 = positions.get_1(2)
     assert (p1.x, p1.y) == pytest.approx((0.0, 0.0))
     assert (p2.x, p2.y) == pytest.approx((5.0, -3.0))
 
@@ -354,12 +360,12 @@ def test_movement_system():
     p_vec, v_vec = ecs.get_vectors(Position2D, Velocity2D, targets)
     p_vec['x'] -= v_vec['x'] * 0.5
     p_vec['y'] -= v_vec['y'] * 0.5
-    ecs.get_store(Position2D).set_vector(targets, **p_vec)
+    positions.set_vector(targets, x=p_vec['x'], y=p_vec['y'])
 
     # Check updated position for entity 2
-    p2_after = ecs.get_store(Position2D).get(2)
+    p2_after = positions.get_1(2)
     assert (p2_after.x, p2_after.y) == pytest.approx((5.0 + 0.5, -3.0 - 0.25))
-    p1_after = ecs.get_store(Position2D).get(1)
+    p1_after = positions.get_1(1)
     assert (p1_after.x, p1_after.y) == pytest.approx((0.0, 0.0))
 
     # test where exclude param
@@ -367,12 +373,13 @@ def test_movement_system():
     assert not 2 in untagged
 
     # test intFlag
-    tagVal = ecs.get_store(Tag).get(2).value
+    tags = ecs.get_store(Tag)
+    tagVal = tags.get_1(2).value
     assert tagVal & TagEnum.Enemy > 0
     assert tagVal & TagEnum.Flying == 0
 
     # test query
-    tagVal = ecs.get_store(Tag).query(lambda value: value&TagEnum.Enemy == 1)
+    tagVal = tags.query(lambda value: value&TagEnum.Enemy == 1)
     assert len(tagVal) == 1
     assert tagVal[0] == 2
 
@@ -395,7 +402,7 @@ def test_aabb_system_and_overlap():
 
     # Run systems
     update_world_aabb(ecs)
-    wa1 = ecs.get_store(AxisAlignedBoundingBox).get(e1)
+    wa1 = ecs.get_store(AxisAlignedBoundingBox).get_1(e1)
     # Compute expected rotated extents
     half_diag = np.sqrt(2)
     assert wa1.x_min == pytest.approx(5 - half_diag)
@@ -465,12 +472,12 @@ def test_ecs_multicomp_reassignment():
     assert len(proxies) == 3
     assert sorted( map(lambda p: p.val, proxies) ) == [5.5, 6.6, 7.7]
 
-    proxy = positions.get(e2)
+    proxy = positions.get_1(e2)
     assert proxy.x == 2 and proxy.y == 2
 
     ecs.delete_entity(e2)
     assert not store.get(e2)
-    assert not positions.get(e2)
+    assert not positions.get_1(e2)
     
     ecs.add_component(e, MultiComp(8.8))
     vec = store.get_full_vector([e,e2,8])
@@ -497,7 +504,7 @@ def test_ecs_multicomp_defragment():
 
     assert store._count == {0: np.uint16(1), 4: np.uint16(1), 8: np.uint16(1), 12: np.uint16(1)}
     assert np.unique(store._entities_contained).tolist() == [-1, 0, 4,  8, 12]
-    assert np.unique(store._dense['val'][:store._size+1][store._entities_contained != ComponentStorage.NONE]).tolist() == [0., 4., 8., 12.]
+    assert np.unique(store._dense['val'][:store._size+1][store._entities_contained != NONE]).tolist() == [0., 4., 8., 12.]
 
     for i in range(4):
         j = i * 4
@@ -505,7 +512,7 @@ def test_ecs_multicomp_defragment():
 
     assert store._count == {0: np.uint16(3), 4: np.uint16(3), 8: np.uint16(3), 12: np.uint16(3)}
     assert np.unique(store._entities_contained).tolist() == [-1, 0, 4,  8, 12]
-    assert np.unique(store._dense['val'][:store._size+1][store._entities_contained != ComponentStorage.NONE]).tolist() == [0.,1.,2., 4.,5.,6., 8.,9.,10., 12.,13.,14.]
+    assert np.unique(store._dense['val'][:store._size+1][store._entities_contained != NONE]).tolist() == [0.,1.,2., 4.,5.,6., 8.,9.,10., 12.,13.,14.]
 
     for i in range(4):
         j = i * 4

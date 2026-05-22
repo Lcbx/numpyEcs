@@ -51,6 +51,8 @@ else:
 	scene = args.scene or 'scenes/shadows.py'
 	if args.compile:
 		import subprocess
+		subprocess.run( f'py -m mypyc -m common')
+		subprocess.run( f'py -m mypyc -m ECS')
 		subprocess.run( f'py -m nuitka --output-dir=build --standalone {scene}'.split(' ') )
 	else:
 		import_module( to_module(scene) )

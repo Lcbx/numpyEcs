@@ -1,6 +1,4 @@
-
-
-
+from common import *
 import time, os, re, gc
 
 import wgpu
@@ -9,12 +7,10 @@ from wgpu.utils.glfw_present_info import get_glfw_present_info
 import numpy as np
 
 from glob import glob
-from typing import Any, Sequence, Iterable, List, Dict, Tuple, NamedTuple, Callable
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 getTime = time.perf_counter
 sleep = time.sleep
-
 
 class _RenderContext:
 	# simple window loop on top of glfw
@@ -361,8 +357,8 @@ def make_std430_dtype( original: List[Tuple[str, np.dtype]] ) -> np.dtype:
 		offset += dtype.itemsize
 
 		#print(dfields)
-		if (missing_offset := (nearest_pow2(offset) - offset) % 16) > 0:
-			print(f'adding new pads {missing_offset} before {name}')
+		if (missing_offset := (offset * 16 - offset) % 16) > 0:
+			#print(f'adding new pads {missing_offset} before {name}')
 			if (u4_count := missing_offset//4) > 0:
 				add_pad("u4", u4_count)
 				missing_offset -= u4_count * 4
@@ -535,10 +531,6 @@ class _Shader:
 			),
 		)
 
-def nearest_pow2(n: int) -> int:
-	# NOTE: bit shift alone is actually faster
-	#if n & (nm1:=n-1) == 0: return n
-	return 1<<(n-1).bit_length()
 
 # NOTE: permanent buffers need to mark dirty ranges and upload changes only
 # irl we have a lot to gain from storing the positions of moving geometry in different buffers
@@ -556,7 +548,7 @@ class GpuBuffer:
 
 	def resize(self, count:int):
 		#print('count', count, self.content.size)
-		size = nearest_pow2(count * self.content.itemsize)
+		size = higher_pow2(count * self.content.itemsize)
 		current = self.handle.size
 		if size > current:
 			#print('resize', size, current)

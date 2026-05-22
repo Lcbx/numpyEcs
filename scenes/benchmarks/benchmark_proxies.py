@@ -68,14 +68,14 @@ def draw():
             size[0], # x
             size[1], # y
             size[2], # z
-            meshes.get(e).color
+            meshes.get_1(e).color
         )
 
 def update(frameTime):
     pv = world.where(Position, Velocity)
     for e in pv:
-        pos = positions.get(e)
-        vel = velocities.get(e)
+        pos = positions.get_1(e)
+        vel = velocities.get_1(e)
         pos.x += vel.x * frameTime
         pos.y += vel.y * frameTime
         pos.z += vel.z * frameTime
