@@ -257,8 +257,8 @@ class _RenderPass:
 		self.camera = camera
 		self.clear_color : Tuple[float,float,float,float] = clear_color
 		#self.texture = texture
-		self.render_pass : wgpu.GPURenderCommandsMixin = None
-		self.commands : List[wgpu.CommandEncoder] = None
+		self.handle : wgpu.GPURenderCommandsMixin | None = None
+		self.commands : List[wgpu.CommandEncoder] | None = None
 
 	def __enter__(self):
 		# TODO: support drawing into a custom framebuffer (self.texture)
@@ -273,7 +273,7 @@ class _RenderPass:
 		#	if 'uProj' in self.shader._uniforms: self.shader['uProj'] = self.projection
 		#	if 'uViewProj' in self.shader._uniforms: self.shader['uViewProj'] = self.view @ self.projection
 		command = RenderContext.Command()
-		self.render_pass = command.begin_render_pass(
+		self.handle = command.begin_render_pass(
 			color_attachments=[
 				wgpu.RenderPassColorAttachment(
 					view=RenderContext.canvas.get_current_texture().create_view(),
@@ -294,7 +294,7 @@ class _RenderPass:
 		return self
 
 	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
-		self.render_pass.end()
+		self.handle.end()
 		RenderContext.device.queue.submit(
 			[ command.finish() for command in self.commands ]
 		)
@@ -338,10 +338,9 @@ def glsl_to_dtype(spec:str)-> np.dtype:
 	return info
 
 
-def make_std430_dtype( original: List[Tuple[str, np.dtype]] ) -> np.dtype:
-
+def make_std430_dtype( original: List[Tuple[str, np.dtype]]) -> np.dtype:
 	dfields: List[Tuple[str, np.dtype]] = []
-	offset = 0
+	offset = -1 # starting at -1 for offset calculation
 	pad_idx = 0
 
 	def add_pad(pad_type:str, pad_count:int):
@@ -357,7 +356,7 @@ def make_std430_dtype( original: List[Tuple[str, np.dtype]] ) -> np.dtype:
 		offset += dtype.itemsize
 
 		#print(dfields)
-		if (missing_offset := (offset * 16 - offset) % 16) > 0:
+		if (missing_offset := 15-offset%16) > 0:
 			#print(f'adding new pads {missing_offset} before {name}')
 			if (u4_count := missing_offset//4) > 0:
 				add_pad("u4", u4_count)
@@ -370,10 +369,8 @@ def make_std430_dtype( original: List[Tuple[str, np.dtype]] ) -> np.dtype:
 
 	#print(dfields)
 
-	#return np.dtype(dfields, align=False)
-	return np.dtype(dfields, align=True)
-
-
+	return np.dtype(dfields, align=False)
+	#return np.dtype(dfields, align=True)
 
 _VertexFormat : Dict[Any, Tuple[str, int]] = {
 	np.int8:	("sint8",   1),
@@ -532,36 +529,52 @@ class _Shader:
 		)
 
 
-# NOTE: permanent buffers need to mark dirty ranges and upload changes only
-# irl we have a lot to gain from storing the positions of moving geometry in different buffers
 class GpuBuffer:
-	#DEFAULT_SIZE = 512
 
-	# TODO: track dirty sectors for upload here
+	# NOTE: we don't actually need to keep references to content,
+	# we just need itemsize and count ; it does makes upload trivial though
 
-	def __init__(self, content : np.ndarray, usage:wgpu.BufferUsage):
-		self.content = content
-		#if content.shape[0] > 0:
-		self.handle = RenderContext.device.create_buffer_with_data(data=content, usage=usage)
-		#else:
-		#	self.handle = RenderContext.device.create_buffer(size=GpuBuffer.DEFAULT_SIZE, usage=usage)
+	def __init__(self, content: np.ndarray, usage: wgpu.BufferUsage, upload: bool = True):
+		self.content = content #np.ascontiguousarray(content)
+		self.usage = usage
 
-	def resize(self, count:int):
-		#print('count', count, self.content.size)
+		self.handle = RenderContext.device.create_buffer_with_data(
+				data=self.content,
+				usage=self.usage,
+			) if upload else RenderContext.device.create_buffer(
+				size=self.content.itemsize,
+				usage=self.usage,
+		)
+
+	def resize(self, count: int) -> bool:
 		size = higher_pow2(count * self.content.itemsize)
 		current = self.handle.size
-		if size > current:
-			#print('resize', size, current)
-			self.handle = RenderContext.device.create_buffer(size=size, usage=self.handle.usage)
+
+		if size <= current:
+			return False
+
+		self.handle = RenderContext.device.create_buffer(
+			size=size,
+			usage=self.usage,
+		)
+		return True
 
 	def upload(self) -> None:
 		RenderContext.device.queue.write_buffer(self.handle, 0, self.content)
 
-	def clear(self, rp:_RenderPass) -> None:
+	def upload_range(self, start: int, count: int) -> None:
+		if count <= 0: return
+		uploaded = self.content[start:start + count]
+		RenderContext.device.queue.write_buffer(
+			buffer=self.handle,
+			buffer_offset=start * self.content.itemsize,
+			data=uploaded
+		)
+
+	def clear(self, rp: _RenderPass) -> None:
 		command = RenderContext.Command()
 		command.clear_buffer(self.handle)
 		rp.commands.append(command)
-
 
 
 class _UniformBuffer(GpuBuffer):
@@ -589,45 +602,121 @@ class _UniformBuffer(GpuBuffer):
 		)
 
 
+class GpuBufferPool:
 
-# TODO: pool meshes with same vertex attributes
+	# TODO: track dirty sectors for upload
+
+	def __init__(
+		self,
+		dtype: np.dtype,
+		usage: wgpu.BufferUsage,
+		initial_count: int = 0,
+	):
+		self.dtype = np.dtype(dtype)
+		self.used = 0
+
+		self.buffer = GpuBuffer(
+			np.empty(initial_count, dtype=self.dtype),
+			usage | wgpu.BufferUsage.COPY_DST,
+			upload=False,
+		)
+
+	def alloc(self, data: np.ndarray) -> Tuple[int, int]:
+
+		start = self.used
+		count = data.size
+		end = start + count
+
+		self._ensure_capacity(end)
+
+		self.buffer.content[start:end] = data
+		self.buffer.upload_range(start, count)
+
+		self.used = end
+		return start, count
+
+	def _ensure_capacity(self, count: int) -> None:
+		old_content = self.buffer.content
+
+		if count <= old_content.size:
+			return
+
+		old_used  = self.used
+		self.used = old_used + count
+
+		new_content = np.empty(self.used, dtype=self.dtype)
+		new_content[:old_used] = old_content[:old_used]
+
+		if self.buffer.resize(self.used):
+			self.buffer.upload_range(0, old_used)
+
+		self.buffer.content = new_content
+
+
 class Mesh:
-
 	# caches to pull vertices with the same attributes
-	vertex_buffers   = {}
+	vertex_buffers: Dict[np.dtype, GpuBufferPool] = {}
+
 	# idem for instance
-	instance_buffers = {}
-	# split between uint16 and uint32 ?
-	index_buffers    = {}
+	instance_buffers: Dict[np.dtype, GpuBufferPool] = {}
 
-	def __init__(self, vertex_data:np.ndarray, indices:np.ndarray):
-		device = RenderContext.device
+	# split between uint16 and uint32
+	index_buffers: Dict[np.dtype, GpuBufferPool] = {}
 
+	index_formats = {
+		np.dtype(np.uint16): wgpu.IndexFormat.uint16,
+		np.dtype(np.uint32): wgpu.IndexFormat.uint32,
+	}
+
+	def __init__(self, vertex_data: np.ndarray, indices: np.ndarray):
 		self.index_count = indices.size
-		vertex_dtype = vertex_data.dtype
+
+		vertex_dtype = np.dtype(vertex_data.dtype)
+		index_dtype = np.dtype(indices.dtype)
+
+		if index_dtype not in self.index_formats:
+			raise TypeError(f"Unsupported index dtype: {index_dtype}")
 
 		vformat = dtype_to_vertex_format(vertex_dtype)
-		vertex_loc_count = len(vformat) 
-		#print("vertex", vformat, vertex_dtype.itemsize)
-		self.vertexAttributes = [ wgpu.VertexAttribute(
-				shader_location = i,
+
+		self.vertexAttributes = [
+			wgpu.VertexAttribute(
+				shader_location=i,
 				offset=offset,
-				format=vertexFormat
-			) for i, (vertexFormat, offset)
-			in enumerate(vformat)
+				format=vertexFormat,
+			)
+			for i, (vertexFormat, offset) in enumerate(vformat)
 		]
+
+		vertex_pool = self.vertex_buffers.get(vertex_dtype)
+		if vertex_pool is None:
+			vertex_pool = GpuBufferPool(vertex_dtype, wgpu.BufferUsage.VERTEX)
+			self.vertex_buffers[vertex_dtype] = vertex_pool
+
+		index_pool = self.index_buffers.get(index_dtype)
+		if index_pool is None:
+			index_pool = GpuBufferPool(index_dtype, wgpu.BufferUsage.INDEX)
+			self.index_buffers[index_dtype] = index_pool
+
+		self.vertex_buffer = vertex_pool.buffer
+		self.vertex_range = vertex_pool.alloc(vertex_data)
+
+		self.index_buffer = index_pool.buffer
+		self.index_range = index_pool.alloc(indices)
+		self.index_format = self.index_formats[index_dtype]
+
+		self.instance_buffer: GpuBuffer | None = None
 		
-		self.vertex_buffer = GpuBuffer(vertex_data, wgpu.BufferUsage.VERTEX)
-		self.index_buffer = GpuBuffer(indices, wgpu.BufferUsage.INDEX)
-		
-		self.instance_buffer : GpuBuffer|None = None
+		# in case someone uses 1 call -> 1 mesh draw
+		# with the transform in uniforms
+
 		self.instance_count = 1
 
 		self.buffers_spec = [
 			wgpu.VertexBufferLayout(
 				array_stride=vertex_dtype.itemsize,
 				step_mode=wgpu.VertexStepMode.vertex,
-				attributes=self.vertexAttributes
+				attributes=self.vertexAttributes,
 			)
 		]
 
@@ -666,15 +755,30 @@ class Mesh:
 				attributes=instanceAttributes
 			))
 
+	def draw(self, renderpass: _RenderPass, shader: "_Shader", uniforms: "_UniformBuffer") -> None:
+		render_pass = renderpass.handle
 
-	def draw(self, renderpass:_RenderPass, shader:'_Shader', uniforms:'_UniformBuffer') -> None:
-		render_pass = renderpass.render_pass
 		render_pass.set_pipeline(shader.create_render_pipeline(self.buffers_spec))
 		render_pass.set_bind_group(0, uniforms.bind_group)
-		render_pass.set_vertex_buffer(0, self.vertex_buffer.handle)
+
+		vertex_start, vertex_count = self.vertex_range
+		render_pass.set_vertex_buffer(
+			0,
+			self.vertex_buffer.handle,
+			vertex_start * self.vertex_buffer.content.itemsize,
+			vertex_count * self.vertex_buffer.content.itemsize,
+		)
+
 		if self.instance_buffer:
 			render_pass.set_vertex_buffer(1, self.instance_buffer.handle)
-		render_pass.set_index_buffer(self.index_buffer.handle, wgpu.IndexFormat.uint32)
+
+		index_start, index_count = self.index_range
+		render_pass.set_index_buffer(
+			self.index_buffer.handle,
+			self.index_format,
+			index_start * self.index_buffer.content.itemsize,
+			index_count * self.index_buffer.content.itemsize,
+		)
 
 		#index_count (int) – The number of indices to draw.
 		#instance_count (int) – The number of instances to draw. Default 1.

@@ -35,6 +35,7 @@ void vertex() {
     tint = iTint;
 }
 
+// TODO: move color utilities into a shader_include file
 
 float srgb_to_linear_channel(float c) {
     if( c <= 0.04045 ){

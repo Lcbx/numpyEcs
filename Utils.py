@@ -127,7 +127,7 @@ def load_gltf_first_mesh(glb_path: str) -> Tuple[np.ndarray,np.ndarray,np.ndarra
 	pos =   _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
 	pos_count = pos.shape[0]
 	idx =   _get_data_from_accessor(gltf, prim.indices).astype(
-		np.uint32 if pos_count.bit_length() > 32 else np.uint16
+		np.uint32 if pos_count.bit_length() > 16 else np.uint16
 	)
 	nor = ( _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32)
 		if prim.attributes.NORMAL is not None
@@ -242,7 +242,7 @@ CUBE_POSITIONS_24 = np.array((
 	(-0.5,+0.5,+0.5), (+0.5,+0.5,+0.5), (+0.5,+0.5,-0.5), (-0.5,+0.5,-0.5),
 	# -Y (bottom)
 	(-0.5,-0.5,-0.5), (+0.5,-0.5,-0.5), (+0.5,-0.5,+0.5), (-0.5,-0.5,+0.5),
-))
+), dtype=np.float32)
 
 CUBE_NORMALS_24 = np.array(
 	([ Vec3( ( 0.0, 0.0, 1.0) ) ] * 4) +   # +Z

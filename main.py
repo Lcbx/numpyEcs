@@ -9,9 +9,9 @@ parser = argparse.ArgumentParser(
 	prog='python game engine',
 	description='WIP python game engine with custom ecs',
 	epilog='link: https://github.com/Lcbx/numpyEcs')
+parser.add_argument('scene', help='set scene script (to run or compile)')
 parser.add_argument('-t', '--tests', action='store_true', help='launches unit tests')
 parser.add_argument('--test', help='launches specific test')
-parser.add_argument('-s', '--scene', help='set scene script (to run or compile)')
 parser.add_argument('-c', '--compile', action='store_true', help='compile scene into standalone executable')
 args = parser.parse_args()
 

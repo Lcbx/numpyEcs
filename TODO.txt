@@ -8,4 +8,5 @@
 * add a particle system
 * implement parallax texture mapping
 * implement triplanar mapping
-* support msaa
+* networking : use udp hole punching (users must exchange IP) or steamPeer 
+* support msaa (NOTE: wgpu-py Canvas does not per default)

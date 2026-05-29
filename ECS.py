@@ -75,7 +75,7 @@ class ComponentStorage:
 
 	def _grow_dense(self, needed: int = 0) -> None:
 		size = self._size
-		new_cap = max(self._capacity * 2, needed + 32)
+		new_cap = higher_pow2(needed)
 		for field_name, arr in self._dense.items():
 			new_arr = np.zeros(new_cap, dtype=arr.dtype)
 			new_arr[:size] = arr[:size]
