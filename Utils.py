@@ -278,6 +278,34 @@ instance_dtype = np.dtype([
 	("iTint",     Color_type)
 ])
 
+def make_instances(position, rotation, scale, tint):
+	n = len(position["x"])
+
+	out = np.empty(n, dtype=instance_dtype)
+
+	out["iPosition"] = np.column_stack([
+		position["x"],
+		position["y"],
+		position["z"],
+	]).astype(np.float32, copy=False)
+
+	out["iRotation"] = np.column_stack([
+		rotation["x"],
+		rotation["y"],
+		rotation["z"],
+		rotation["w"],
+	]).astype(np.float16, copy=False)
+
+	out["iScale"][:, :3] = np.column_stack([
+		scale["x"],
+		scale["y"],
+		scale["z"]
+	]).astype(np.float16, copy=False)
+
+	out["iTint"][:,0] = tint['value'].astype(np.uint32, copy=False)
+
+	return out
+
 
 def linear_to_srgb(x):
 	x = np.asarray(x, dtype=np.float32)
@@ -288,10 +316,9 @@ def linear_to_srgb(x):
 	)
 
 _RGBA_SHIFT = np.array([0, 8, 16, 24], dtype=np.uint32)
-def pack_rgba8_srgb(rgba:Vec4):
-	rgba = np.array([ *linear_to_srgb(rgba.xyz), rgba.w])
+def pack_rgba8_srgb(rgba):
+	rgba = np.array([ *linear_to_srgb(rgba[:3]), rgba[3]])
 	rgba8 = np.rint(rgba * 255).astype(np.uint32)
-	#print(rgba8)
 	return np.uint32(np.sum(rgba8 << _RGBA_SHIFT))
 
 

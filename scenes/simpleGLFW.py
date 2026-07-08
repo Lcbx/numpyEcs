@@ -1,6 +1,69 @@
 from RenderContext import *
 from Utils import *
+from ECS import *
 from math import cos, sin
+import random as rd
+
+
+@component
+class Position:
+	x: float; y: float; z: float
+
+@component
+class Velocity:
+	x: float; y: float; z: float
+
+@component
+class Rotation:
+	x: float; y: float; z: float; w:float
+
+@component
+class Scale:
+	x: float; y: float; z: float; w:float # w is not used
+
+@component
+class Tint:
+	value: np.uint32
+
+
+world = ECS()
+world.register(Position, Velocity, Rotation, Scale, Tint)
+
+positions = world.get_store(Position)
+velocities = world.get_store(Velocity)
+rotations = world.get_store(Rotation)
+scales = world.get_store(Scale)
+tints = world.get_store(Tint)
+
+SPACE_SIZE = 180
+CUBE_MAX_SIDE = 7
+
+for e in world.create_entities(200):
+	world.add_component(e,
+		Position(
+			rd.randrange(-SPACE_SIZE, SPACE_SIZE),
+			rd.randrange(0, 20),
+			rd.randrange(-SPACE_SIZE, SPACE_SIZE)
+		),
+		Velocity(
+			rd.randrange(-4, 4),
+			0,
+			rd.randrange(-4, 4)
+		),
+		Rotation(
+			*Quaternion()
+		),
+		Scale(
+			rd.randrange(1, CUBE_MAX_SIDE),
+			rd.randrange(1, CUBE_MAX_SIDE),
+			rd.randrange(1, CUBE_MAX_SIDE),
+			0),
+		Tint(
+			pack_rgba8_srgb([rd.random(), rd.random(), rd.random(), 1.0])
+		),
+	)
+
+
 
 WINDOW_W, WINDOW_H = 1200, 1200
 TITLE = "glfw + wgpu"
@@ -31,7 +94,12 @@ renderpass = RenderContext.RenderPass(camera = camera, clear_color = (0.02, 0.02
 shader = RenderContext.Shader(filepath='scenes/shaders/simple.shader')
 vertices, indices = load_gltf_first_mesh_interleaved('scenes/resources/rooftop_utility_pole.glb')
 scale = 10.0
-instance_data = np.zeros(10, instance_dtype)
+instance_data = make_instances(
+	positions.get_vector(),
+	rotations.get_vector(),
+	scales.get_vector(),
+	tints.get_vector()
+)
 instance_data[0]["iPosition"] = Vec3([15.0, 0.0, 15.0])
 instance_data[0]["iRotation"] = Quaternion()
 instance_data[0]["iScale"] = [scale] * 4 # only 3 are used
