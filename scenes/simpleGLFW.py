@@ -4,6 +4,8 @@ from ECS import *
 from math import cos, sin
 import random as rd
 
+# maybe collapse the whole thing into a movingMesh component ?
+# or just use instance_dtype directly in the ecs ?
 
 @component
 class Position:
@@ -38,6 +40,17 @@ tints = world.get_store(Tint)
 SPACE_SIZE = 180
 CUBE_MAX_SIDE = 7
 
+ground = world.create_entity(
+	Position(0,-0.51,0),
+	Rotation( *Quaternion() ),
+	Scale(
+		2*SPACE_SIZE, 1, 2*SPACE_SIZE,
+	0),
+	Tint(
+		pack_rgba8_srgb([0.5, 0.5, 0.5, 1.0])
+	),
+)
+
 for e in world.create_entities(200):
 	world.add_component(e,
 		Position(
@@ -50,9 +63,7 @@ for e in world.create_entities(200):
 			0,
 			rd.randrange(-4, 4)
 		),
-		Rotation(
-			*Quaternion()
-		),
+		Rotation( *Quaternion() ),
 		Scale(
 			rd.randrange(1, CUBE_MAX_SIDE),
 			rd.randrange(1, CUBE_MAX_SIDE),
@@ -71,11 +82,11 @@ TITLE = "glfw + wgpu"
 
 camera_dist = 30.0
 camera = Camera(
-    position=(-20.0, 70.0, 25.0),
-    target=(0.0, 10.0, 0.0),
-    up=(0.0, 1.0, 0.0),
-    fovy_deg=60.0,
-    near=0.1, far=1000.0
+	position=(-20.0, 70.0, 25.0),
+	target=(0.0, 10.0, 0.0),
+	up=(0.0, 1.0, 0.0),
+	fovy_deg=60.0,
+	near=0.1, far=1000.0
 )
 
 l = np.array([30.0, 30.0, 25.0]) - np.array([0.0, 0.0, -20.0])
@@ -94,34 +105,33 @@ renderpass = RenderContext.RenderPass(camera = camera, clear_color = (0.02, 0.02
 shader = RenderContext.Shader(filepath='scenes/shaders/simple.shader')
 vertices, indices = load_gltf_first_mesh_interleaved('scenes/resources/rooftop_utility_pole.glb')
 scale = 10.0
-instance_data = make_instances(
-	positions.get_vector(),
-	rotations.get_vector(),
-	scales.get_vector(),
-	tints.get_vector()
-)
-instance_data[0]["iPosition"] = Vec3([15.0, 0.0, 15.0])
-instance_data[0]["iRotation"] = Quaternion()
-instance_data[0]["iScale"] = [scale] * 4 # only 3 are used
-instance_data[0]["iTint"] = pack_rgba8_srgb(Vec4([0.3, 0.5, 0.7, 1.0]))
-mesh = Mesh(vertices, indices)
-mesh.set_instances(instance_data)
+model_mesh = Mesh(vertices, indices)
+model_instances = np.zeros(2, instance_dtype) 
+model_instances[0]["iPosition"] = Vec3([15.0, 0.0, 15.0])
+model_instances[0]["iRotation"] = Quaternion()
+model_instances[0]["iScale"] = [scale] * 4 # only 3 are used
+model_instances[0]["iTint"] = pack_rgba8_srgb(Vec4([0.3, 0.5, 0.7, 1.0]))
+model_mesh.set_instances(model_instances)
+
+cube_mesh = RenderContext.resources["cube"]
+
+
 uniformBuffer = shader.UniformBuffer()
 
 
 print('init done')
 
 def clamp(val, val_min, val_max):
-    return min(max(val, val_min), val_max)
+	return min(max(val, val_min), val_max)
 
 def scroll_callback(xoff, yoff):
-    global camera_dist, camera
-    camera_dist = clamp(camera_dist - 5.0 * yoff, 5.0, 100.0)
-    cp = camera.position
-    y_factor = 1.0 if cp.y < 15.0 else 3.0
-    #print(f'{y_factor=}')
-    camera.position = Vec3( (cp.x, cp.y - y_factor * yoff, cp.z) )
-    return True
+	global camera_dist, camera
+	camera_dist = clamp(camera_dist - 5.0 * yoff, 5.0, 100.0)
+	cp = camera.position
+	y_factor = 1.0 if cp.y < 15.0 else 3.0
+	#print(f'{y_factor=}')
+	camera.position = Vec3( (cp.x, cp.y - y_factor * yoff, cp.z) )
+	return True
 
 RenderContext.event_handlers['mouse_scroll'].append(scroll_callback)
 
@@ -133,53 +143,77 @@ fps_frames = 0
 start_t = getTime()
 fps_print_timestamp = start_t
 while RenderContext.WindowLoop():
-    now = RenderContext.frame_start
+	now = RenderContext.frame_start
 
-    # simple FPS to console
-    fps_frames += 1
-    if now - fps_print_timestamp >= 1.0:
-        print(f"fps {fps_frames}")
-        fps_frames = 0
-        fps_print_timestamp = now
-        
-        instance_data[1]["iPosition"] = Vec3([np.random.rand()*15.0, 0.0, np.random.rand()*15.0])
-        instance_data[1]["iRotation"] = Quaternion()
-        instance_data[1]["iScale"] = [scale] * 4 # only 3 are used
-        instance_data[1]["iTint"] = pack_rgba8_srgb(Vec4([0.6, 0.5, 0.4, 1.0]))
+	# simple FPS to console
+	fps_frames += 1
+	if now - fps_print_timestamp >= 1.0:
+		print(f"fps {fps_frames}")
+		fps_frames = 0
+		fps_print_timestamp = now
+		
+		model_instances[1]["iPosition"] = Vec3([np.random.rand()*15.0, 0.0, np.random.rand()*15.0])
+		model_instances[1]["iRotation"] = Quaternion()
+		model_instances[1]["iScale"] = [scale] * 4 # only 3 are used
+		model_instances[1]["iTint"] = pack_rgba8_srgb(Vec4([0.6, 0.5, 0.4, 1.0]))
 
-        mesh.instance_buffer.upload()
+		model_mesh.instance_buffer.upload()
 
-        camera.perspective = not camera.perspective
+		#camera.perspective = not camera.perspective
 
-        #print(WatchTimer.capture())
-        #print_memory()
-        #print("")
-
-
-    # orbit update (based on time wince start)
-    elapsed = now - start_t
-    cam_ang = elapsed * 0.5
-    camera.position = Vec3( (
-        cos(cam_ang) * camera_dist,
-        camera.position.y,
-        sin(cam_ang) * camera_dist
-    ) )
+		#print(WatchTimer.capture())
+		#print_memory()
+		#print("")
 
 
-    with WatchTimer("draw"):
-        with renderpass as rp:
-            with WatchTimer("draw_cube"):
-                draw_cube(  (3, 5, -3), (2,2,2), (0.5, 0.5, 0.5, 1.0), Quaternion.from_eulers([0.6,0.0,0.0]) )
-                draw_cube( (-3, 5, -3), (1,5,1), (0.5, 0.5, 0.5, 1.0))
+	# orbit update (based on time wince start)
+	elapsed = now - start_t
+	cam_ang = elapsed * 0.5
+	camera.position = Vec3( (
+		cos(cam_ang) * camera_dist,
+		camera.position.y,
+		sin(cam_ang) * camera_dist
+	) )
 
-            with WatchTimer("update_uniform"):
-                uniformBuffer.content['uView'] = renderpass.view
-                uniformBuffer.content['uProj'] = renderpass.projection
-                uniformBuffer.content['uLightDir'] = light_dir
-                uniformBuffer.upload()
 
-            with WatchTimer("draw_model"):
-                mesh.draw(rp, shader, uniformBuffer)
-            with WatchTimer("flush_cube"):
-                flush_cubes(rp, shader, uniformBuffer)
+	# cubes movement
+
+	pv = world.where(Position, Velocity)
+	p_vec, v_vec = (positions.get_full_vector(pv), velocities.get_full_vector(pv))
+	p_vec += v_vec * RenderContext.frame_time
+
+	# bounce when out of bounds
+	mask_x = np.abs(p_vec[:, 0]) > SPACE_SIZE
+	mask_z = np.abs(p_vec[:, 2]) > SPACE_SIZE
+	v_vec[mask_x, 0] *= -1
+	v_vec[mask_z, 2] *= -1
+	# if further than boundary, it would get stuck alternating direction each frame
+	p_vec[mask_x, 0] = np.sign(p_vec[mask_x, 0]) * 0.99 * SPACE_SIZE
+	p_vec[mask_z, 2] = np.sign(p_vec[mask_z, 2]) * 0.99 * SPACE_SIZE
+
+	positions.set_full_vector(pv, p_vec.transpose())
+	velocities.set_full_vector(pv, v_vec.transpose())
+
+	cube_mesh.set_instances( make_instances(
+		positions.get_vector(),
+		rotations.get_vector(),
+		scales.get_vector(),
+		tints.get_vector()
+	))
+	cube_mesh.instance_buffer.upload()
+
+	with WatchTimer("draw"):
+		with renderpass as rp:
+
+			with WatchTimer("update_uniform"):
+				uniformBuffer.content['uView'] = renderpass.view
+				uniformBuffer.content['uProj'] = renderpass.projection
+				uniformBuffer.content['uLightDir'] = light_dir
+				uniformBuffer.upload()
+
+			with WatchTimer("draw_model"):
+				model_mesh.draw(rp, shader, uniformBuffer)
+
+			with WatchTimer("draw_cubes"):
+				cube_mesh.draw(rp, shader, uniformBuffer)
 
