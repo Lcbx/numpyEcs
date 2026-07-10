@@ -27,189 +27,281 @@ component = dataclass
 class ComponentStorage:
 	"""
 	Stores one component type using:
-	  - structured numpy array (_dense) for all fields
-	  - numpy arrays for sparse (entity -> head index)
+	  - one structured NumPy array for dense component data
+	  - one NumPy sparse array mapping entity -> dense index
 	"""
 
-	def __init__(self,
-				 component_cls: TypeVar,
-				 capacity: int = 128):
+	def __init__(
+		self,
+		component_cls: TypeVar,
+		capacity: int = 128,
+	):
 		self.component_cls = component_cls
 		self.mult_comp = False
 
-		self._capacity	: int = capacity
-		self._size		: int = 0
-		self._dense 	: Dict[str,Array] = {}
+		self._size: int = 0
 
-		self._sparse : Array = np.full(self._capacity, NONE, dtype=int)
-		self._dense['entity']	= np.full(self._capacity, NONE, dtype=int)
-
-		# Inspect dataclass annotations to build structured dtype
 		ann = getattr(component_cls, "__annotations__", {})
 		self.fields = list(ann.keys())
 
-		for field, typ in ann.items():
-			dtype = (
-				np.float64 if typ is float else
-				# issubclass is for IntFlag
-				int if issubclass(typ, int) else
-				object
-			) if isinstance(typ, type) else object
-			#print(field, typ, dtype)
-			self._dense[field] = np.zeros(self._capacity, dtype=dtype)
+		dense_dtype = np.dtype(
+			[("entity", np.int64)] +
+			[
+				(field,
+					 np.float64 if typ is float
+				else np.bool_ if type is bool # I recommend IntFlag instead of bool
+				else (
+					int if issubclass(typ, int)
+					else typ if isinstance(typ, np.dtype)
+					else object
+				) if typ is type
+				else object
+				) for field, typ in ann.items()
+			]
+		)
+
+		self._dense: Array = np.zeros(capacity, dtype=dense_dtype)
+		self._dense["entity"] = NONE
+
+		self._sparse: Array = np.full(capacity, NONE, dtype=np.int64)
 
 	@property
 	def sparse_size(self) -> int:
 		return int(self._sparse.shape[0])
 
 	@property
+	def capacity(self) -> int:
+		return int(self._dense.shape[0])
+
+	@property
 	def _entities_contained(self) -> Array:
-		return self._dense['entity'][:self._size+1]
+		return self._dense["entity"][:self._size+1]
 
 	def _grow_sparse(self, entity: int) -> None:
-		size = self.sparse_size
-		new_cap = higher_pow2(entity)
-		sp = np.full(new_cap, NONE, dtype=int)
-		sp[:size] = self._sparse
-		self._sparse = sp
+		old_size = self.sparse_size
+		new_capacity = higher_pow2(entity + 1)
+
+		new_sparse = np.full(new_capacity, NONE, dtype=self._sparse.dtype)
+		new_sparse[:old_size] = self._sparse
+
+		self._sparse = new_sparse
 
 	def _grow_dense(self, needed: int = 0) -> None:
-		size = self._size
-		new_cap = higher_pow2(needed)
-		for field_name, arr in self._dense.items():
-			new_arr = np.zeros(new_cap, dtype=arr.dtype)
-			new_arr[:size] = arr[:size]
-			self._dense[field_name] = new_arr
-		self._entities_contained[size:] = NONE
-		self._capacity = new_cap
+		new_capacity = higher_pow2(needed)
 
-	def _set_entity(self, idx:int, entity:Entity) -> None:
-		# ensure sparse space
+		new_dense = np.zeros(new_capacity, dtype=self._dense.dtype)
+		new_dense["entity"] = NONE
+		new_dense[:self._size] = self._dense[:self._size]
+
+		self._dense = new_dense
+
+	def _set_entity(self, idx: int, entity: Entity) -> None:
 		if entity >= self.sparse_size:
 			self._grow_sparse(int(entity))
+
 		self._sparse[entity] = idx
 
-	def _simpleAdd(self, entity:Entity, component:Any) -> None:
+	def _simpleAdd(self, entity: Entity, component: Any) -> None:
 		idx = self._size
 		new_size = idx + 1
-		# ensure dense space
-		if new_size >= self._capacity:
+
+		if new_size > self.capacity:
 			self._grow_dense(new_size)
+
 		self._size = new_size
-		# write record at idx
 		self._set(idx, entity, component)
 
-	def _add(self, entity:Entity, component:Any) -> None:
+	def _add(self, entity: Entity, component: Any) -> None:
 		idx = self._size
 		self._simpleAdd(entity, component)
 		self._set_entity(idx, entity)
 
-	def _set(self, idx:int|np.int64, entity:Entity, component:Any) -> None:
-		self._entities_contained[idx] = entity
+	def _set(
+		self,
+		idx: int | np.integer,
+		entity: Entity,
+		component: Any,
+	) -> None:
+		self._dense["entity"][idx] = entity
+
 		for field in self.fields:
 			self._dense[field][idx] = getattr(component, field)
 
-	# NOTE: bool return tells ecs to update entity_masks for this entity
-	def _remove(self, proxy:ComponentProxy) -> bool:
-		entity = proxy._entity
-		deleted = proxy._idx
-		return self._remove_impl(entity, deleted)
+	# bool return tells ECS to update entity_masks for this entity.
+	def _remove(self, proxy: ComponentProxy) -> bool:
+		return self._remove_impl(proxy._entity, proxy._idx)
 
-	def _remove_impl(self, entity:Entity, deleted:int|np.int64) -> bool:
-		head = deleted
-		# swap-pop last into head
+	def _remove_impl(
+		self,
+		entity: Entity,
+		deleted: int | np.integer,
+	) -> bool:
 		last = self._size - 1
-		self._size = last # decrement size
-		if head != last:
-			for arr in self._dense.values(): 
-				arr[head] = arr[last]
-			moved = self._entities_contained[last]
-			self._sparse[moved] = head
-		self._entities_contained[last] = NONE
+		self._size = last
+
+		if deleted != last:
+			# Structured arrays allow moving the complete record at once.
+			self._dense[deleted] = self._dense[last]
+
+			moved_entity = self._dense["entity"][deleted]
+			self._sparse[moved_entity] = deleted
+
+		# Clear the unused record.
+		self._dense[last] = np.zeros((), dtype=self._dense.dtype)
+		self._dense["entity"][last] = NONE
 		self._sparse[entity] = NONE
+
 		return True
 
-	def _remove_entity(self, entity:Entity) -> None:
+	def _remove_entity(self, entity: Entity) -> None:
+		if entity >= self.sparse_size:
+			return
+
 		head = self._sparse[entity]
+
 		if head != NONE:
 			self._remove_impl(entity, head)
 
-	def get(self, entity: Entity) -> Tuple[ComponentProxy, ...]|None:
-		raise Exception(f"Called 'get' on ComponentStorage ({self.component_cls}, entity {entity})")
+	def get(self, entity: Entity) -> Tuple[ComponentProxy, ...] | None:
+		raise Exception(
+			f"Called 'get' on ComponentStorage "
+			f"({self.component_cls}, entity {entity})"
+		)
 
-	def get_1(self, entity: Entity) -> ComponentProxy|None:
+	def get_1(self, entity: Entity) -> ComponentProxy | None:
+		if entity >= self.sparse_size:
+			return None
+
 		head = self._sparse[entity]
-		if head == NONE: return None
+
+		if head == NONE:
+			return None
+
 		return ComponentProxy(self, entity, head)
 
-	def _get_rows(self, entities:Array|None=None) -> Array:
+	def _get_rows(self, entities: Array | None = None) -> Array:
 		if entities is None:
 			ent = self._entities_contained[:self._size]
-			idx = np.arange(ent.size)
-			# NOTE: this not seem a difference enough to make a MultiComponent version
-			if self.mult_comp: idx = idx[ent != NONE]
+			idx = np.arange(self._size)
+
+			if self.mult_comp:
+				idx = idx[ent != NONE]
+
 			return idx
-		else:
-			ent = np.atleast_1d(entities).astype(int)
-			# NOTE: we are exploiting the fact that both Entity and indices are ints here
-			if ent.size == 0: return ent
-			return self._get_rows_impl(ent)
 
-	def _get_rows_impl(self, ent:Array) -> Array:
-		idx = self._sparse[ent]
-		idx = idx[idx!=NONE]
-		return np.atleast_1d(idx).astype(int)
-	
-	def get_vector(self, entities:Array|None=None) -> LazyDict:
-		""" returns component fields for given entities """
-		return LazyDict( self._dense, self._get_rows(entities) )
-	
-	def get_full_vector(self, entities:Array|None=None) -> Array:
+		ent = np.atleast_1d(entities).astype(int, copy=False)
+
+		if ent.size == 0:
+			return ent
+
+		return self._get_rows_impl(ent)
+
+	def _get_rows_impl(self, ent: Array) -> Array:
+		# Avoid indexing sparse with entities outside its bounds.
+		valid = (ent >= 0) & (ent < self.sparse_size)
+
+		if not np.any(valid):
+			return np.empty(0, dtype=int)
+
+		idx = self._sparse[ent[valid]]
+		idx = idx[idx != NONE]
+
+		return np.atleast_1d(idx).astype(int, copy=False)
+
+	def get_vector(self, entities: Array | None = None) -> LazyDict:
+		"""
+		Return component fields for the selected entities.
+
+		A structured array supports field access through:
+		    self._dense["field"]
+		"""
+		return LazyDict(self._dense, self._get_rows(entities))
+
+	def get_full_vector(self, entities: Array | None = None) -> Array:
 		rows = self._get_rows(entities)
-		return np.stack( tuple(self._dense[f][rows] for f in self.fields), axis=1)
 
-	def set_vector(self, entities: Array, **value_arrays: dict_items[str,Array]) -> None:
-		"""
-		Overwrite the rows at `entities` for component fields in dict
-		(except the internal 'entity' column) with the columns of `vector`.
-		"""
+		return np.stack(
+			[self._dense[field][rows] for field in self.fields],
+			axis=1,
+		)
+
+	def set_vector(
+		self,
+		entities: Array,
+		**value_arrays: Array,
+	) -> None:
 		rows = self._get_rows(entities)
-		for field in value_arrays.keys():
-			self._dense[field][rows] = value_arrays[field]
-	
-	def set_full_vector(self, entities: Array, vector : Array) -> None:
-		self.set_vector(entities, **dict(zip(self.fields, vector)))
 
-	def query(self,
-			  condition: Callable[..., Array],
-			  entities: Array|None = None) -> Array:
+		for field, values in value_arrays.items():
+			if field == "entity":
+				continue
+
+			if field not in self.fields:
+				raise KeyError(
+					f"{field!r} is not a field of {self.component_cls}"
+				)
+
+			self._dense[field][rows] = values
+
+	def set_full_vector(
+		self,
+		entities: Array,
+		vector: Array,
+	) -> None:
+		vector = np.asarray(vector)
+
+		if vector.ndim != 2:
+			raise ValueError("vector must be a two-dimensional array")
+
+		if vector.shape[0] != len(self.fields):
+			raise ValueError(
+				f"Expected {len(self.fields)} columns, "
+				f"got {vector.shape[0]}"
+			)
+
+		self.set_vector(
+			entities,
+			**{
+				field: vector[column,:]
+				for column, field in enumerate(self.fields)
+			},
+		)
+
+	def query(
+		self,
+		condition: Callable[..., Array],
+		entities: Array | None = None,
+	) -> Array:
 		"""
-		Return entity ids for which `condition` holds.
+		Return entity IDs for which `condition` holds.
 
-		- `condition` is a vectorized predicate with keyword args: lambda x, y: ...
-		- `entities` is a susbset of entities we want apply the match on
-		- entity is optionally injected as a param named `entity`
-		  ex: pos.query(lambda x, entity: ...)
+		`condition` is a vectorized predicate receiving fields as keyword
+		arguments. The internal `entity` field may also be requested:
+
+		    position.query(lambda x, entity: x > entity)
 		"""
-
 		if self._size == 0:
 			return np.empty(0, dtype=int)
 
 		idx = self._get_rows(entities)
-		ent = self._entities_contained[idx]
 
 		if idx.size == 0:
 			return np.empty(0, dtype=int)
 
+		ent = self._dense["entity"][idx]
+
 		arguments = {
 			field: self._dense[field][idx]
-			for field in inspect_signature(condition).parameters.keys()
+			for field in inspect_signature(condition).parameters
 		}
 
 		mask = np.asarray(condition(**arguments), dtype=bool)
-		matched = ent[mask]
 
-		return np.atleast_1d(matched.astype(int))
+		if mask.ndim == 0:
+			mask = np.full(idx.size, mask, dtype=bool)
+
+		matched = ent[mask]
+		return np.atleast_1d(matched).astype(int, copy=False)
 
 
 class MultiComponentStorage(ComponentStorage):
@@ -231,16 +323,16 @@ class MultiComponentStorage(ComponentStorage):
 		new_cap = max(real_size * 2, needed + real_size - self._size + 32)
 		dense_idx = np.flatnonzero(self._entities_contained != NONE)
 		new_size = len(dense_idx)
-		for field_name, arr in self._dense.items():
-			new_arr = np.zeros(new_cap, dtype=arr.dtype)
-			new_arr[:new_size] = arr[dense_idx]
-			self._dense[field_name] = new_arr
+
+		new_arr = np.zeros(new_cap, dtype=self._dense.dtype)
+		new_arr[:new_size] = self._dense[dense_idx]
+		self._dense = new_arr
+		
 		self._entities_contained[new_size:] = NONE
 		valid = self._entities_contained != NONE
 		sparse_idx = np.flatnonzero(np.r_[True, self._entities_contained[1:] != self._entities_contained[:-1]] & valid)
 		self._sparse[self._entities_contained[sparse_idx]] = sparse_idx
 		self._size = new_size
-		self._capacity = new_cap
 
 	def _add(self, entity:Entity, component:Any) -> None:
 		idx = self._size
@@ -258,7 +350,7 @@ class MultiComponentStorage(ComponentStorage):
 		needed = idx + newCount
 		newLast = idx + count
 
-		if needed >= self._capacity:
+		if needed >= self.capacity:
 			real_size = sum( self._count.values() )
 
 			if real_size > needed * 0.5:
@@ -282,8 +374,7 @@ class MultiComponentStorage(ComponentStorage):
 		self._size = needed
 		new_block = slice(idx, newLast)
 		old_block = slice(head, last)
-		for arr in self._dense.values():
-	 			arr[new_block] = arr[old_block]
+		self._dense[new_block] = self._dense[old_block]
 		self._entities_contained[old_block] = NONE
 		self._set(newLast, entity, component)
 		self._set_entity(idx, entity)
@@ -323,7 +414,7 @@ class MultiComponentStorage(ComponentStorage):
 		idx = base_idx + offsets
 		return np.atleast_1d(idx).astype(int)
 
-	def _remove_impl(self, entity:Entity, deleted:int|np.int64) -> bool:
+	def _remove_impl(self, entity:Entity, deleted:int|np.integer) -> bool:
 		head = self._sparse[entity]
 		if head == NONE: return True
 		# update count, swap deleted with last
@@ -332,8 +423,7 @@ class MultiComponentStorage(ComponentStorage):
 		count = self._count[entity]-1
 		last = head + count
 		if deleted != last:
-			for arr in self._dense.values():
-				arr[deleted] = arr[last]
+			self._dense[deleted] = self._dense[last]
 		self._entities_contained[last] = NONE
 		if count > 0:
 			self._count[entity] = count
@@ -532,7 +622,7 @@ class LazyDict:
 	Returned by get_vector method from ComponentStorage.
 	"""
 
-	def __init__(self, dense:Dict[str,Array], rows:Array):
+	def __init__(self, dense:Array, rows:Array):
 		self._dense = dense
 		self._rows = rows
 		self._cache : Dict[str,Array]= {}
@@ -551,8 +641,8 @@ class LazyDict:
 	def __len__(self) -> int:
 		return len(self._dense)
 
-	def keys(self) -> dict_keys[str,Any]:
-		return self._dense.keys()
+	def keys(self) -> tuple[str, ...]:
+		return self._dense.dtype.names or tuple()
 
 	def items(self) -> Iterator[tuple[str, Any]]:
 		for field in self.keys(): yield (field, self.__getitem__(field))

@@ -105,7 +105,7 @@ def test_single_component_storage_sparse_dense_integrity():
     
     for eid, val in enumerate([10.0, 20.0, 30.0], start=5):
         s._add(eid, Foo(val, f"val{eid}"))
-    assert s._capacity >= 3
+    assert s.capacity >= 3
     
     for eid in (5,6,7):
         idx = s._sparse[eid]
