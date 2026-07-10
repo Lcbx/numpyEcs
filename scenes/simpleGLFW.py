@@ -106,7 +106,7 @@ shader = RenderContext.Shader(filepath='scenes/shaders/simple.shader')
 vertices, indices = load_gltf_first_mesh_interleaved('scenes/resources/rooftop_utility_pole.glb')
 scale = 10.0
 model_mesh = Mesh(vertices, indices)
-model_instances = np.zeros(2, instance_dtype) 
+model_instances = np.zeros(2, mesh_instance_dtype) 
 model_instances[0]["iPosition"] = Vec3([15.0, 0.0, 15.0])
 model_instances[0]["iRotation"] = Quaternion()
 model_instances[0]["iScale"] = [scale] * 4 # only 3 are used

@@ -270,7 +270,7 @@ RenderContext.resources["cube"] = lambda : (
 )
 
 
-instance_dtype = np.dtype([
+mesh_instance_dtype = np.dtype([
 	#("uModel", Mat4_type),
 	("iPosition", Vec3_f32_type),
 	("iRotation", Vec4_f16_type), # quaternion
@@ -281,7 +281,7 @@ instance_dtype = np.dtype([
 def make_instances(position, rotation, scale, tint):
 	n = len(position["x"])
 
-	out = np.empty(n, dtype=instance_dtype)
+	out = np.empty(n, dtype=mesh_instance_dtype)
 
 	out["iPosition"] = np.column_stack([
 		position["x"],
@@ -333,11 +333,11 @@ def flush_cubes(rp:"_RenderPass", shader:"_Shader", uniformBuffer:"_UniformBuffe
 	cube_mesh.instance_buffer.clear(rp)
 	# NOTE: we keep reallocating numpy arrays on cpu
 	# optimally we'd reuse them but that complicates implementation
-	cube_mesh.instance_buffer.content = np.empty(0,instance_dtype)
+	cube_mesh.instance_buffer.content = np.empty(0,mesh_instance_dtype)
 
 
 def draw_cube(position:Vec3, size:Vec3, color:Vec4, rotation:Quaternion = Quaternion()) -> None:
-	instance_data = np.empty(1, instance_dtype)
+	instance_data = np.empty(1, mesh_instance_dtype)
 	instance_data[0]["iPosition"] = position
 	instance_data[0]["iRotation"] = rotation
 	instance_data[0]["iScale"] = [*size, 0.0] # this is a vec3, shader expects a vec4 so we pad the numpy array
