@@ -16,8 +16,8 @@ args = parser.parse_args()
 normalize_path = lambda p: path(p).as_posix()
 to_module = lambda p: normalize_path(p).replace('/', '.').replace('.py', '')
 
-if not (args.scene or args.test):
-    parser.error("scene is required unless --test is used")
+if not (args.scene or args.test or args.compile):
+    parser.error("scene is required unless --test or --compile are used")
 
 # run test suite using pytest
 elif args.test:
@@ -46,11 +46,11 @@ elif args.test:
 
 # run or compile the scene
 else:
-	scene = args.scene or 'scenes/shadows.py'
+	scene = args.scene
 	if args.compile:
-		import subprocess
-		subprocess.run( f'py -m mypyc -m common')
-		subprocess.run( f'py -m mypyc -m ECS')
-		subprocess.run( f'py -m nuitka --output-dir=build --standalone {scene}'.split(' ') )
+		from subprocess import run
+		run( f'py -m mypyc -m common')
+		run( f'py -m mypyc -m ECS')
+		if scene: run( f'py -m nuitka --output-dir=build --standalone {scene}'.split(' ') )
 	else:
 		import_module( to_module(scene) )
