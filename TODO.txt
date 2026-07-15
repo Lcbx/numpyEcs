@@ -1,4 +1,9 @@
-* implement a gpu / shader api similar to pyglet / raylib
+* implement a simple gpu / shader api
+- refactoring needed, a bunch of pieline descriptors and such created at each frame
+- texture binding only works for depth for now
+- maybe use a common instance buffer for every mesh
+- try using a gpu compute shader for instance culling (on the instance buffer)
+
 * plug imGUI (see https://github.com/pygfx/wgpu-py/blob/main/wgpu/utils/imgui/imgui_renderer.py)
 * implement gpu animation using custom vertex attributes and animation texture atlas
 * add frustum culling in some form

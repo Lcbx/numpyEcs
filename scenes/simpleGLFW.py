@@ -23,6 +23,10 @@ class Rotation:
 class Scale:
 	x: float; y: float; z: float; w:float # w is not used
 
+#@component
+#class MeshInstance:
+#	data : mesh_instance_dtype
+
 @component
 class Tint:
 	value: np.uint32
@@ -89,9 +93,14 @@ camera = Camera(
 	near=0.1, far=1000.0
 )
 
-l = np.array([30.0, 30.0, 25.0]) - np.array([0.0, 0.0, -20.0])
-l = l / np.linalg.norm(l)
-light_dir = l.astype(np.float32)
+light_camera = Camera(
+	position=(-30.0, 30.0, 25.0),
+	target=(0.0, 0.0, -20.0),
+	up=(0.0, 1.0, 0.0),
+	fovy_deg=90.0,
+	near=1.0, far=300.0,
+	perspective = False
+)
 
 
 RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE
@@ -103,6 +112,7 @@ RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE
 # seems to use a weird color space
 renderpass = RenderContext.RenderPass(camera = camera, clear_color = (0.02, 0.02, 0.03, 1.0))
 shader = RenderContext.Shader(filepath='scenes/shaders/simple.shader')
+shadow_shader = RenderContext.Shader(filepath='scenes/shaders/prepass.shader')
 vertices, indices = load_gltf_first_mesh_interleaved('scenes/resources/rooftop_utility_pole.glb')
 scale = 10.0
 model_mesh = Mesh(vertices, indices)
@@ -117,6 +127,13 @@ cube_mesh = RenderContext.resources["cube"]
 
 
 uniformBuffer = shader.UniformBuffer()
+
+shadow_texture = create_depth_framebuffer(512, 512)
+shadow_view = shadow_texture.create_view()
+shadow_rp = RenderContext.RenderPass(camera = light_camera,
+	frame_buffers = (None, shadow_view)
+)
+shadow_sampler = create_depth_sampler()
 
 
 print('init done')
@@ -200,20 +217,31 @@ while RenderContext.WindowLoop():
 		scales.get_vector(),
 		tints.get_vector()
 	))
-	cube_mesh.instance_buffer.upload()
 
 	with WatchTimer("draw"):
+
 		with renderpass as rp:
 
-			with WatchTimer("update_uniform"):
-				uniformBuffer.content['uView'] = renderpass.view
-				uniformBuffer.content['uProj'] = renderpass.projection
-				uniformBuffer.content['uLightDir'] = light_dir
-				uniformBuffer.upload()
+			# shadows, from light viewpoint
+			with shadow_rp as rp2:
 
-			with WatchTimer("draw_model"):
-				model_mesh.draw(rp, shader, uniformBuffer)
+				with WatchTimer("upload_buffers"):
+					cube_mesh.instance_buffer.upload()
 
-			with WatchTimer("draw_cubes"):
-				cube_mesh.draw(rp, shader, uniformBuffer)
+					uniformBuffer.content['uView'] = renderpass.view
+					uniformBuffer.content['uProj'] = renderpass.projection
+					uniformBuffer.content['uInverseProj'] = np.linalg.inv(renderpass.projection)
+					uniformBuffer.content['uLightDir'] = light_camera.direction()
+					uniformBuffer.content['uLightViewProj'] = shadow_rp.view @ shadow_rp.projection
+					uniformBuffer.upload()
+
+				with WatchTimer("draw_model"):
+					model_mesh.draw(rp2, shadow_shader, uniformBuffer)
+					model_mesh.draw(rp, shader, uniformBuffer, textureSamplerGroups = [(shadow_view,shadow_sampler)])
+
+				with WatchTimer("draw_cubes"):
+					cube_mesh.draw(rp2, shadow_shader, uniformBuffer)
+					cube_mesh.draw(rp, shader, uniformBuffer, textureSamplerGroups = [(shadow_view,shadow_sampler)])
+
+			# TODO : use shadow map results in regular renderpass
 

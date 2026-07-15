@@ -28,6 +28,7 @@ void vertex(){
 	vec4 vertex = vec4(vertexPosition, 1.0);
 	vec4 pos = mvp*vertex;
 	gl_Position = pos;
+	
 	pos = invProj * pos;
 	fragDepth = pow(pos.z * -0.001, 0.3); // poor man's depth conversion (camera's far is 1000)
 	fragPos = pos.xyz; // / pos.w;

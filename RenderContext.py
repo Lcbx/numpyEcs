@@ -223,7 +223,7 @@ class _RenderContext:
 		now = getTime()
 		cls.frame_time = now - cls.frame_start
 		
-		# if we have a target frame time, wait until we m1atch it
+		# if we have a target frame time, wait until we match it
 		if cls.target_frame_time and cls.frame_time < cls.target_frame_time:
 			# margin is because scheduled sleep is not guaranteed to end on time
 			sleep_time = cls.target_frame_time - cls.frame_time - cls._FRAME_WAIT_MARGIN
@@ -248,47 +248,48 @@ RenderContext = _RenderContext()
 class _RenderPass:
 
 	def __init__(self,
-			#shader:BetterShader = None,
-			camera = None,
-			#texture:img.Framebuffer = None
-			clear_color:tuple=(0.0, 0.0, 0.0, 1.0)
+			camera:"Camera" = None,
+			frame_buffers:tuple[wgpu.GPUTextureView, wgpu.GPUTextureView] = None, # view, depth
+			clear_color:tuple[float,float,float,float]=(0.0, 0.0, 0.0, 1.0)
 		):
-		#self.shader = shader
 		self.camera = camera
 		self.clear_color : Tuple[float,float,float,float] = clear_color
-		#self.texture = texture
+		self.frame_buffers = frame_buffers
 		self.handle : wgpu.GPURenderCommandsMixin | None = None
 		self.commands : List[wgpu.CommandEncoder] | None = None
+		self.view : Matrix44                      | None = None
+		self.projection : Matrix44                | None = None
 
 	def __enter__(self):
-		# TODO: support drawing into a custom framebuffer (self.texture)
-		#if self.shader: self.shader.bind()
-		#if self.texture: self.texture.bind()
 		if self.camera:
 			self.view = self.camera.view()
 			# TODO: determine aspect from texture dimensions
 			aspect = RenderContext.aspect
 			self.projection = self.camera.projection(aspect)
-		#	if 'uView' in self.shader._uniforms: self.shader['uView'] = self.view
-		#	if 'uProj' in self.shader._uniforms: self.shader['uProj'] = self.projection
-		#	if 'uViewProj' in self.shader._uniforms: self.shader['uViewProj'] = self.view @ self.projection
+
 		command = RenderContext.Command()
+
+		view_TexView, depth_TexView = self.frame_buffers or (
+			RenderContext.canvas.get_current_texture().create_view(), RenderContext.depth
+		)
+
+		color_attachments = []
+		if view_TexView: color_attachments.append(
+			wgpu.RenderPassColorAttachment(
+				view= view_TexView,
+				clear_value=self.clear_color,
+				load_op="clear",
+				store_op="store",
+			))
+
 		self.handle = command.begin_render_pass(
-			color_attachments=[
-				wgpu.RenderPassColorAttachment(
-					view=RenderContext.canvas.get_current_texture().create_view(),
-					clear_value=self.clear_color,
-					load_op="clear",
-					store_op="store",
-				)
-			],
-			depth_stencil_attachment=
-				wgpu.RenderPassDepthStencilAttachment(
-					view = RenderContext.depth,
-					depth_clear_value = 1.0,
-					depth_load_op= "clear",
-					depth_store_op= "store",
-				)
+			color_attachments=color_attachments,
+			depth_stencil_attachment=wgpu.RenderPassDepthStencilAttachment(
+				view = depth_TexView,
+				depth_clear_value = 1.0,
+				depth_load_op= "clear",
+				depth_store_op= "store",
+		) if depth_TexView else None
 		)
 		self.commands = [command]
 		return self
@@ -297,6 +298,49 @@ class _RenderPass:
 		self.handle.end()
 		RenderContext.device.queue.submit(
 			[ command.finish() for command in self.commands ]
+		)
+
+	@cache
+	def make_pipeline(self, shader:_Shader, buffers_spec:List[wgpu.VertexBufferLayout] ) -> None:
+
+		write_targets = []
+
+		# default is write to main framebuffer, frame_buffers is user specified
+		if self.frame_buffers == None or self.frame_buffers[0] != None:
+			write_targets.append( wgpu.ColorTargetState(format=RenderContext.presentation_format) )
+
+		return RenderContext.device.create_render_pipeline(
+			layout=shader.pipeline_layout,
+			#multisample = wgpu.MultisampleState(
+				# needs render texture to have the same multisample count
+		   		#count = 4,  #u32
+				#mask # u64
+				#alpha_to_coverage_enabled # bool
+			#),
+			vertex=wgpu.VertexState(
+				module=shader.vert_module,
+				entry_point="main",
+				buffers=buffers_spec,
+			),
+			primitive=wgpu.PrimitiveState(
+				topology=wgpu.PrimitiveTopology.triangle_list,
+				cull_mode=wgpu.CullMode.back,
+				front_face=wgpu.FrontFace.ccw,
+			),
+			depth_stencil=wgpu.DepthStencilState(
+				format=RenderContext.depth_format,
+				depth_write_enabled=True,
+				depth_compare=wgpu.CompareFunction.less,
+				# bias, for shadows
+				#depth_bias = 2,
+				#depth_bias_slope_scale= 2.0,
+				#depth_bias_clamp= 0.0,
+			),
+			fragment=wgpu.FragmentState(
+				module=shader.frag_module,
+				entry_point="main",
+				targets=write_targets,
+			),
 		)
 
 
@@ -478,15 +522,36 @@ class _Shader:
 					buffer=wgpu.BufferBindingLayout(
 						type=wgpu.BufferBindingType.uniform,
 						has_dynamic_offset=False,
-						#min_binding_size=self.uniforms_dtype.itemsize,
 					),
 				)
 			]
-		)		
-
-		self.pipeline_layout = device.create_pipeline_layout(
-			bind_group_layouts=[self.bind_group_layout]
 		)
+
+		self.bind_group_layouts = [self.bind_group_layout]
+
+		for name in self.source.textures:
+			self.bind_group_layouts.append(device.create_bind_group_layout(
+				entries=[
+					wgpu.BindGroupLayoutEntry(
+						binding=0,
+						visibility=wgpu.ShaderStage.FRAGMENT,
+						texture=wgpu.TextureBindingLayout(
+							multisampled=False,
+							sample_type= #wgpu.enums.TextureSampleType.float,
+								wgpu.enums.TextureSampleType.depth,
+							view_dimension =wgpu.enums.TextureDimension.d2
+						)
+					),
+					wgpu.BindGroupLayoutEntry(
+						binding=1,
+						visibility=wgpu.ShaderStage.FRAGMENT,
+						sampler=wgpu.SamplerBindingLayout(
+							type=wgpu.enums.SamplerBindingType.comparison,
+						)
+					),
+			]))
+
+		self.pipeline_layout = device.create_pipeline_layout( bind_group_layouts= self.bind_group_layouts )
 
 	# NOTE: we pass the shader since the mesh needs it for setup
 	def UniformBuffer(self, *args, **kwargs) -> '_UniformBuffer':
@@ -495,44 +560,11 @@ class _Shader:
 	def ShaderSource(self, *args, **kwargs) -> 'ShaderSource':
 		return ShaderSource(*args, **kwargs)
 
-	def create_render_pipeline(self, buffers_spec:List[wgpu.VertexBufferLayout]) -> wgpu.GPURenderPipeline:
-		return RenderContext.device.create_render_pipeline(
-			layout=self.pipeline_layout,
-			#multisample = wgpu.MultisampleState(
-				# needs render texture to have the same multisample count
-		   		#count = 4,  #u32
-				#mask # u64
-				#alpha_to_coverage_enabled # bool
-			#),
-			vertex=wgpu.VertexState(
-				module=self.vert_module,
-				entry_point="main",
-				buffers=buffers_spec,
-			),
-			primitive=wgpu.PrimitiveState(
-				topology=wgpu.PrimitiveTopology.triangle_list,
-				cull_mode=wgpu.CullMode.back,
-				front_face=wgpu.FrontFace.ccw,
-			),
-			depth_stencil=wgpu.DepthStencilState(
-				format=RenderContext.depth_format,
-				depth_write_enabled=True,
-				depth_compare=wgpu.CompareFunction.less,
-			),
-			fragment=wgpu.FragmentState(
-				module=self.frag_module,
-				entry_point="main",
-				targets=[
-					wgpu.ColorTargetState(format=RenderContext.presentation_format)
-				],
-			),
-		)
-
 
 class GpuBuffer:
 
 	# NOTE: we don't actually need to keep references to content,
-	# we just need itemsize and count ; it does makes upload trivial though
+	# we just need itemsize and count ; it does make upload trivial though
 
 	def __init__(self, content: np.ndarray, usage: wgpu.BufferUsage, upload: bool = True):
 		self.content = content #np.ascontiguousarray(content)
@@ -653,12 +685,10 @@ class GpuBufferPool:
 		self.buffer.content = new_content
 
 
+# we might want to let people pass a gpuBuffer for instance data instead of keeping only one per mesh 
 class Mesh:
 	# caches to pull vertices with the same attributes
 	vertex_buffers: Dict[np.dtype, GpuBufferPool] = {}
-
-	# idem for instance
-	instance_buffers: Dict[np.dtype, GpuBufferPool] = {}
 
 	# split between uint16 and uint32
 	index_buffers: Dict[np.dtype, GpuBufferPool] = {}
@@ -755,11 +785,22 @@ class Mesh:
 				attributes=instanceAttributes
 			))
 
-	def draw(self, renderpass: _RenderPass, shader: "_Shader", uniforms: "_UniformBuffer") -> None:
+	def draw(self, renderpass: _RenderPass, shader: "_Shader", uniforms: "_UniformBuffer", textureSamplerGroups = None) -> None:
 		render_pass = renderpass.handle
 
-		render_pass.set_pipeline(shader.create_render_pipeline(self.buffers_spec))
+		render_pass.set_pipeline( renderpass.make_pipeline( shader, self.buffers_spec ) )
+
 		render_pass.set_bind_group(0, uniforms.bind_group)
+
+		if textureSamplerGroups:
+			bindsN = 1
+			for t, s in textureSamplerGroups:
+				render_pass.set_bind_group(bindsN, RenderContext.device.create_bind_group(
+					layout = shader.bind_group_layouts[bindsN],
+					entries=[
+						wgpu.BindGroupEntry(binding=0, resource=t),
+						wgpu.BindGroupEntry(binding=1, resource=s)
+				])) ; bindsN += 1
 
 		vertex_start, vertex_count = self.vertex_range
 		render_pass.set_vertex_buffer(
@@ -788,7 +829,25 @@ class Mesh:
 		render_pass.draw_indexed(self.index_count, self.instance_count, 0, 0, 0)
 
 
-def build_shader_program(shaderPath : str, **kwargs) -> Tuple['ShaderSource', _Shader]:
+def create_depth_framebuffer(width, height, format = wgpu.TextureFormat.depth24plus):
+	return RenderContext.device.create_texture(
+		size = (width, height, 1),
+		format = format,
+		usage = wgpu.TextureUsage.RENDER_ATTACHMENT | wgpu.TextureUsage.TEXTURE_BINDING,
+	)
+
+def create_depth_sampler():
+	return RenderContext.device.create_sampler(
+		address_mode_u = wgpu.enums.AddressMode.clamp_to_edge,
+		address_mode_v = wgpu.enums.AddressMode.clamp_to_edge,
+		address_mode_w = wgpu.enums.AddressMode.clamp_to_edge,
+		compare = wgpu.CompareFunction.less_equal,
+		min_filter=wgpu.FilterMode.linear,
+		mag_filter=wgpu.FilterMode.linear,
+	)
+
+
+def build_shader_program(shaderPath:str, **kwargs) -> Tuple['ShaderSource', _Shader]:
 	sh = RenderContext.Shader(filepath=shaderPath, **kwargs)
 	return sh.source, sh
 
@@ -864,6 +923,7 @@ class ShaderSource:
 		self.outs          = [] # list[(loc, type, name)]
 		self.consts        = [] # list[(type, name)]
 		self.functions     = [] # list[str]
+		self.textures      = [] # list[str]
 		self.vertex_glsl   = '' # rendered vertex GLSL
 		self.fragment_glsl = '' # rendered fragment GLSL
 
@@ -903,6 +963,9 @@ class ShaderSource:
 		# Declarations
 		for loc, qual, typ, name in self._decl_pattern.findall(text):
 			if qual   == 'uniform':
+				if typ == "texture2D":
+					self.textures.append(name)
+					continue
 				self.uniforms.append((typ, name))
 			elif qual == 'varying':
 				self.varyings.append((loc, typ, name, False))
@@ -949,6 +1012,12 @@ class ShaderSource:
 				"".join(f"\t{typ} {name};\n" for typ, name in self.uniforms)
 			)} }} _U;'
 
+		textures_definition = '\n'.join( (
+			f'layout(set = {setN+1}, binding = 0) uniform texture2D {name};\n' +
+			f'layout(set = {setN+1}, binding = 1) uniform texture2D {name}Sampler;\n'
+			for setN, name in enumerate(self.textures)
+		) )
+
 		# replace uniform references by alias
 		for i, f in enumerate(self.functions):
 			for _, name  in self.uniforms:
@@ -959,6 +1028,7 @@ class ShaderSource:
 			self._glsl_version, '',
 			*map(inStr, enumerate(self.ins)), '',
 			uniforms_definition, '',
+			textures_definition, '',
 			*map(outStr, enumerate(self.varyings)), '',
 			*map(lambda kv: f'const {kv[0]} {kv[1]};', self.consts), '',
 			*self.functions[:self._vertex_body], '',
@@ -978,12 +1048,15 @@ class ShaderSource:
 			self._glsl_version, '',
 			*map(inStr, enumerate(self.varyings)), '',
 			uniforms_definition, '',
+			textures_definition, '',
 			*map(outStr, enumerate(self.outs)), '',
 			*map(lambda kv: f'const {kv[0]} {kv[1]};', self.consts), '',
 			*functions_after_vertex_but_not_fragment, '',
 			self.functions[self._fragment_body].replace(self._fragment_start, self._main_start)
 		]
 		self.fragment_glsl = '\n'.join(f_lines)
+
+		#print(self.vertex_glsl, self.fragment_glsl)
 
 
 

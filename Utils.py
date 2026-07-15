@@ -35,6 +35,10 @@ class Camera:
 		left = -right
 		bottom = -top
 		return Camera.orthogonal_projection(left, right, bottom, top, self.near, self.far)
+
+	def direction(self):
+		l = self.position - self.target
+		return l / np.linalg.norm(l)
 	
 	# can't use pyrr projections since it follows opengl convetions
 	# opengl has ndc -1->1, wgpu is 0->1
