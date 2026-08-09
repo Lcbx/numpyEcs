@@ -1,12 +1,13 @@
 from typing import Any, Type, Sequence, Iterator, Iterable, List, Dict, Tuple, Callable
 from collections import deque
+import numpy as np
 
 # useful for buffer resizing
 # 0->0, 1->2, 2->4, 3->4, 4->8, 5->8
-def higher_pow2(n: int) -> int:
-	return 1 << n.bit_length()
+def higher_pow2(n: int|np.uint32|np.uint64) -> int:
+	return 1 << int(n).bit_length()
 
-def is_pow2(n:int) -> int:
+def is_pow2(n:int|np.uint32|np.uint64) -> int:
 	return  n & (n-1) == 0
 
 
