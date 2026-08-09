@@ -27,8 +27,10 @@ elif args.test:
 	test_paths = glob('./tests/*.py')
 	pytest_args = test_paths
 
+
 	# run particular test
-	if type(args.test) is str and (test_name := args.test).startswith('test'):
+	if type(args.test) is str and (
+		test_name := args.test.split('::')[-1] ).startswith('test'):
 		module_path = [ tp for tp in test_paths
 			if hasattr((mod := import_module( to_module(tp) )), test_name)
 		]
@@ -36,7 +38,7 @@ elif args.test:
 		if not module_path:
 			print(f'could not find "{args.test}" test. candidates:')
 			from pprint import pp 
-			pp( list(f for m in modules for f in m.__dict__ ))
+			pp( list(f for m in module_path for f in m.__dict__ ))
 			exit(1)
 
 		pytest_args = [ f'{module_path[0]}::{test_name}']

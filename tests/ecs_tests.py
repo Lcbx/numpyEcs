@@ -12,17 +12,17 @@ def test_higher_pow2():
 def test_no_free_entities():
     ecs = ECS()
     ids = ecs.create_entities(3)
-    assert isinstance(ids, list) or isinstance(ids, np.ndarray)
+    assert isinstance(ids, List)
     assert list(ids) == [0, 1, 2]
     assert ecs._next_entity_id == 3
     assert ecs._free_entities == []
 
 def test_single_free_entity_exact():
     ecs = ECS()
-    ecs._free_entities = [10]
+    ecs._free_entities = [Entity(10)]
     [eid] = ecs.create_entities(1)
     assert isinstance(eid, Entity)
-    assert eid == 10
+    assert entity_index(eid) == 10
     assert ecs._next_entity_id == 0
     assert ecs._free_entities == []
 
@@ -40,14 +40,14 @@ def test_multiple_delete_entity_twice():
     ecs.delete_entity(7)
     assert ecs._free_entities == [7, 8, 9, 10]
     out = ecs.create_entities(2)
-    assert out == [9,10]
+    assert list(map(entity_index, out)) == [9,10]
 
 def test_multiple_free_entities_exact_n():
     ecs = ECS()
     ecs._free_entities = [20, 30]
     ecs._next_entity_id = 5
     out = ecs.create_entities(2)
-    assert out == [20, 30]
+    assert list(map(entity_index, out)) == [20, 30]
     assert ecs._free_entities == []
     assert ecs._next_entity_id == 5
 
@@ -56,7 +56,7 @@ def test_multiple_free_entities_more_than_n():
     ecs._free_entities = [100, 101, 102, 103]
     ecs._next_entity_id = 0
     out = ecs.create_entities(3)
-    assert out == [101, 102, 103]
+    assert list(map(entity_index, out)) == [101, 102, 103]
     assert ecs._free_entities[0] == 100
     assert ecs._next_entity_id == 0
 
@@ -69,7 +69,7 @@ def test_single_component_storage_basic():
     s = ComponentStorage(Foo, capacity=2)
     assert s.get_1(1) is None
     
-    s._add(1, Foo(1.23, "first"))
+    s._add(Entity(1), Foo(1.23, "first"))
     proxy = s.get_1(1)
     assert proxy is not None
     assert pytest.approx(proxy.a) == 1.23
@@ -99,6 +99,12 @@ def test_single_component_storage_basic():
 
     s._remove(s.get_1(2))
     assert s.get_1(2) is None
+
+    # next generation
+    s._add(3 + GENERATION_INCREMENT, Foo(0.5, "fifth"))
+    proxy = s.get_1(3)
+    assert pytest.approx(proxy.a) == 0.5
+    assert proxy.b == "fifth"
 
 def test_single_component_storage_sparse_dense_integrity():
     s = ComponentStorage(Foo, capacity=1)
@@ -231,8 +237,7 @@ def make_pos2d_store(vals):
 def make_multitag_store(blocks_per_entity):
     store = MultiComponentStorage(Tag, capacity=64)
     for eid, values in blocks_per_entity.items():
-        for v in values:
-            store._add(eid, Tag(v))
+        for v in values: store._add(Entity(eid), Tag(v))
     return store
 
 def test_get_whole_vector():
@@ -259,7 +264,7 @@ def test_query_simple_vectorized():
     pos = make_pos2d_store([(0, 0), (1, 2), (5, -3), (-1, 1), (4, 10)])
     # x > 0 and |y| < 3  -> entities 1 only (1,2) fails second cond; entity 2 has |y|=3 -> false
     out = pos.query(lambda x, y: (x > 0) & (np.abs(y) < 3))
-    assert out.dtype == int
+    assert out.dtype == Entity
     assert out.tolist() == [1]
 
 def test_query_annotated_types():
@@ -267,7 +272,7 @@ def test_query_annotated_types():
     def condition(x:float, y:float)->bool:
         return (x > 0) & (np.abs(y) < 3)
     out = pos.query(condition)
-    assert out.dtype == int
+    assert out.dtype == Entity
     assert out.tolist() == [1]
 
 def test_query_subset_filtering():
@@ -301,10 +306,25 @@ def test_query_mult_comp_any_row_matches_once_stable_order():
     mt = make_multitag_store({
         0: [1, 0],
         1: [0, 0],
-        2: [2, 1],
+        2: [2, 0],
     })
     out = mt.query(lambda value: value == 1)
-    assert out.tolist() == [0, 2]
+    assert out.tolist() == [0]
+
+def test_query_mult_comp_get_after_delete():
+    mt = make_multitag_store({
+        0: [1, 0],
+        1: [0, 0],
+        2: [2, 1],
+        3: [2, 3],
+    })
+    mt._remove_entity(0)
+    mt._remove_entity(1)
+    new_1 = Entity(1 + GENERATION_INCREMENT)
+    mt._add(new_1, Tag(1))
+    mt._add(new_1, Tag(2))
+    out = mt._get_rows(np.asarray([Entity(0), new_1, Entity(2)], dtype=Entity))
+    assert set(map(entity_index, mt._entities_contained[out])) == {1, 2}
 
 def test_query_mult_comp_subset_filtering():
     mt = make_multitag_store({
@@ -424,7 +444,7 @@ class MultiComp:
 def test_storage_multicomp_add_get_remove():
     # Create a storage that allows multiple MultiComp per entity
     store = MultiComponentStorage(MultiComp, capacity=4)
-    entity_id = 42
+    entity_id = Entity(42)
 
     store._add(entity_id, MultiComp(1.))
     store._add(entity_id, MultiComp(2.))
@@ -496,26 +516,27 @@ def test_ecs_multicomp_defragment():
 
     ecs.create_entities(16)
     for i in range(4):
-        j = i * 4
+        j = Entity(i * 4)
         ecs.add_component(j, MultiComp(j), MultiComp(j+1), MultiComp(j+2))
         comps = store.get(j)
         ecs.remove_component(comps[1])
         ecs.remove_component(comps[1])
 
     assert store._count == {0: np.uint16(1), 4: np.uint16(1), 8: np.uint16(1), 12: np.uint16(1)}
-    assert np.unique(store._entities_contained).tolist() == [-1, 0, 4,  8, 12]
-    assert np.unique(store._dense['val'][:store._size+1][store._entities_contained != NONE]).tolist() == [0., 4., 8., 12.]
+    assert np.unique(store._entities_contained_capped).tolist() == [ 0, 4,  8, 12, NONE ]
+    assert np.unique(store._dense['val'][:store._size][store._entities_contained_capped != NONE]).tolist() == [0., 4., 8., 12.]
 
     for i in range(4):
-        j = i * 4
+        j = Entity(i * 4)
         ecs.add_component(j,MultiComp(j+1), MultiComp(j+2))
 
     assert store._count == {0: np.uint16(3), 4: np.uint16(3), 8: np.uint16(3), 12: np.uint16(3)}
-    assert np.unique(store._entities_contained).tolist() == [-1, 0, 4,  8, 12]
-    assert np.unique(store._dense['val'][:store._size+1][store._entities_contained != NONE]).tolist() == [0.,1.,2., 4.,5.,6., 8.,9.,10., 12.,13.,14.]
+    assert np.unique(store._entities_contained_capped).tolist() == [0, 4,  8, 12 ]
+    assert np.unique(store._dense['val'][:store._size][store._entities_contained_capped != NONE]).tolist() == [0.,1.,2., 4.,5.,6., 8.,9.,10., 12.,13.,14.]
+
 
     for i in range(4):
-        j = i * 4
-        assert np.unique([ p.val for p in store.get(j) ]).tolist() == [j, j+1, j+2]
+        j = Entity(i * 4)
+        assert np.unique([ p.val for p in store.get(j) ]).tolist() == [float(j), float(j+1), float(j+2)]
 
 
