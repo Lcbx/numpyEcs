@@ -6,12 +6,7 @@ from numpy.typing import NDArray
 from common import higher_pow2, Any, Type, Sequence, Iterator, Iterable, List, Dict, Tuple, Callable
 from enum import IntFlag, auto
 
-# NOTES:
-# * if we wanted to support a really big number of entities, we could use a paged array for the sparse
-# it would add an additional indirection but avoid allocating a lot of empty memory
 
-
-# useful when we'll instanciate scenes, so we can translate entity ids stored in components
 #class Entity(int): pass # sadly mypyc disallows inheriting builtins
 #class Entity(np.uint64): pass # compiles but segfaults
 Entity = np.uint64
@@ -27,7 +22,7 @@ Array = NDArray[Any]
 component = dataclass
 
 def entity_index(entity: Array) -> Array:
-	return (np.asarray(entity) & INDEX_MAX).astype(Index) 
+	return (entity & INDEX_MAX).astype(Index) 
 
 def entity_index_1(entity: Entity) -> Index:
 	return Index(entity & INDEX_MAX) 
@@ -376,9 +371,11 @@ class ECS:
 	  - preallocated component storage to avoid frequent reallocation
 	  - per-entity bitmask for fast component queries
 	  - entity ID recycling via free list
+	  - generational IDs
 
-	NOTE: if you need to tag entities, just use a Set of entity ids
-	(don't use an empty component, component types are costly/limited)
+	NOTE: if you need to tag entities, use
+	- a Set of entity ids for small lists
+	- a tag component containing an IntFlag 
 	"""
 	def __init__(self:ECS):
 		self._stores: Dict[TypeVar, ComponentStorage] = {}
