@@ -8,7 +8,9 @@ from enum import IntFlag, auto
 
 # NOTES:
 # * if we wanted to support a really big number of entities, we could use a paged array for the sparse
-# it would add an additional indirection but avoid allocating a lot of empty memory
+#  - adds an additional indirection but avoids allocating a lot of empty memory
+#  - allows pivoting away from entity recycling & generational ids :
+#    -> just allocate until you wrap around then check if empty when you need a new id
 
 
 # useful when we'll instanciate scenes, so we can translate entity ids stored in components
@@ -17,23 +19,26 @@ from enum import IntFlag, auto
 Entity = np.uint64
 Index = np.uint32
 Generation = np.uint32
-NONE = np.iinfo(Index).max
+NONE = Index(np.iinfo(Index).max)
 INDEX_MAX = np.iinfo(Index).max
 INDEX_BITS = int(INDEX_MAX).bit_count()
 GENERATION_INCREMENT = 1 << INDEX_BITS
+
+SPARSE_PAGE_BITS = 10
+SPARSE_PAGE_SIZE = 1 << SPARSE_PAGE_BITS
 
 TypeVar = Type[Any]
 Array = NDArray[Any]
 component = dataclass
 
 def entity_index(entity: Array) -> Array:
-	return (np.asarray(entity) & INDEX_MAX).astype(Index) 
+	return (np.asarray(entity) & INDEX_MAX).astype(Index)
 
 def entity_index_1(entity: Entity) -> Index:
-	return Index(entity & INDEX_MAX) 
+	return Index(entity & INDEX_MAX)
 
 def entity_generation(entity: Entity | Array) -> Generation | Array:
-	return (np.asarray(entity) >> INDEX_BITS).astype(Generation)
+	return (np.asarray(entity) >> INDEX_BITS).astype(Generation) 
 
 
 class ComponentStorage:
@@ -53,7 +58,7 @@ class ComponentStorage:
 		self._size		: Index = Index(0)
 		self._dense 	: Dict[str,Array] = {}
 
-		self._sparse : Array  = np.full(self._capacity, NONE, dtype=Index)
+		self._sparse : Dict[Index, Array] = {} # array of indices
 		self._dense['entity'] = np.full(self._capacity, NONE, dtype=Entity)
 
 		# Inspect dataclass annotations to build structured dtype
@@ -72,10 +77,6 @@ class ComponentStorage:
 			self._dense[field] = np.zeros(self._capacity, dtype=dtype)
 
 	@property
-	def sparse_size(self) -> Index:
-		return Index(len(self._sparse))
-
-	@property
 	def _entities_contained(self) -> Array:
 		return self._dense['entity']
 
@@ -83,12 +84,8 @@ class ComponentStorage:
 	def _entities_contained_capped(self) -> Array:
 		return self._entities_contained[:self._size]
 
-	def _grow_sparse(self, ent_index: Index) -> None:
-		size = self.sparse_size
-		new_cap = Index(higher_pow2(ent_index))
-		sp = np.full(new_cap, NONE, dtype=Index)
-		sp[:size] = self._sparse
-		self._sparse = sp
+	def _sparse_location(self, ent_index: Index):
+		return divmod(ent_index, SPARSE_PAGE_SIZE)
 
 	def _grow_dense(self, needed: Index = Index(0)) -> None:
 		size = self._size
@@ -100,10 +97,18 @@ class ComponentStorage:
 		self._entities_contained[size:] = NONE
 		self._capacity = new_cap
 
-	def _set_dense_index(self, dense_idx:Index, ent_index:Index) -> None:
-		# ensure sparse space
-		if ent_index >= self.sparse_size: self._grow_sparse(ent_index)
-		self._sparse[ent_index] = dense_idx
+	def _get_dense_index(self, ent_index: Index) -> Index:
+		page_idx, offset = self._sparse_location(ent_index)
+		page = self._sparse.get(page_idx)
+		return Index(NONE if page is None else page[offset])
+
+	def _set_dense_index_in_sparse(self, dense_idx:Index, ent_index:Index) -> None:
+		page_idx, offset = self._sparse_location(ent_index)
+		page = self._sparse.get(page_idx)
+		if page is None:
+			page = np.full(SPARSE_PAGE_SIZE, NONE, dtype=Index)
+			self._sparse[page_idx] = page
+		page[offset] = dense_idx
 
 	def _add_at_dense_end(self, entity:Entity, component:Any) -> None:
 		idx = self._size
@@ -117,7 +122,7 @@ class ComponentStorage:
 	def _add(self, entity:Entity, component:Any) -> None:
 		idx = self._size
 		self._add_at_dense_end(entity, component)
-		self._set_dense_index(idx, entity_index_1(entity))
+		self._set_dense_index_in_sparse(idx, entity_index_1(entity))
 
 	def _set_at_index(self, idx:Index, entity:Entity, component:Any) -> None:
 		self._entities_contained[idx] = entity
@@ -130,47 +135,51 @@ class ComponentStorage:
 		deleted = proxy._idx
 		return self._remove_impl(entity, deleted)
 
-	def _remove_impl(self, entity:Entity, deleted:Index) -> bool:
+	def _remove_impl(self, entity: Entity, deleted: Index) -> bool:
 		head = deleted
-		# swap-pop last into head
 		last = self._size - 1
+
 		if head != last:
-			for arr in self._dense.values(): 
-				arr[head] = arr[last]
+			for arr in self._dense.values(): arr[head] = arr[last]
 			moved = self._entities_contained[last]
-			self._sparse[moved] = head
+			self._set_dense_index_in_sparse(head, entity_index_1(moved))
+
 		self._entities_contained[last] = NONE
-		self._sparse[entity] = NONE
-		self._size = last # decrement size
+		self._set_dense_index_in_sparse(NONE, entity_index_1(entity))
+		self._size = last
 		return True
 
 	def _remove_entity(self, entity:Entity) -> None:
-		head = self._sparse[entity]
-		if head != NONE:
-			self._remove_impl(entity, head)
+		head = self._get_dense_index(entity_index_1(entity))
+		if head != NONE: self._remove_impl(entity, head)
 
 	def get(self, entity: Entity) -> Tuple[ComponentProxy, ...]|None:
 		raise Exception(f"Called 'get' on ComponentStorage ({self.component_cls}, entity {entity})")
 
-	def get_1(self, entity: Entity) -> ComponentProxy|None:
-		head = self._sparse[entity]
+	def get_1(self, entity: Entity) -> ComponentProxy | None:
+		head = self._get_dense_index(entity_index_1(entity))
 		if head == NONE: return None
 		return ComponentProxy(self, entity, head)
 
-	def _get_rows(self, entities:Array|None=None) -> Array:
+	def _get_rows(self, entities: Array | None = None) -> Array:
 		if entities is None:
-			ent = self._entities_contained[:self._size]
-			idx = np.arange(ent.size)
-			return idx
-		else:
-			ent = np.atleast_1d(entities).astype(Entity)
-			# NOTE: we are exploiting the fact that both Entity and indices are ints here
-			if ent.size == 0: return ent
-			return self._get_rows_impl(ent)
+			return np.arange(self._size, dtype=Index)
+
+		ent = np.atleast_1d(entities).astype(Entity)
+		return self._get_rows_impl(ent)
 
 	def _get_rows_impl(self, ent: Array) -> Array:
 		ent_idx = entity_index(ent)
-		idx = self._sparse[ent_idx]
+		page_idx = ent_idx >> SPARSE_PAGE_BITS
+		offset = ent_idx % SPARSE_PAGE_SIZE
+
+		idx = np.full(ent.size, NONE, dtype=Index)
+
+		for page_id in np.unique(page_idx):
+			page = self._sparse.get(page_id)
+			if page is not None:
+				mask = page_idx == page_id
+				idx[mask] = page[offset[mask]]
 
 		not_none = idx != NONE
 		idx = idx[not_none]
@@ -244,36 +253,58 @@ class MultiComponentStorage(ComponentStorage):
 		self.mult_comp = True
 		self._count : Dict[Entity, int] = {}
 
-	# conequence of the policy used to support multiple components per entity
+	def _get_dense_indices(self, ent_idx:Array) -> Array:
+		page_idx = ent_idx // SPARSE_PAGE_SIZE
+		offset = ent_idx % SPARSE_PAGE_SIZE
+		out = np.full(ent_idx.size, NONE, dtype=Index)
+
+		for page_id in np.unique(page_idx):
+			page = self._sparse.get(page_id)
+			if page is not None:
+				mask = page_idx == page_id
+				out[mask] = page[offset[mask]]
+
+		return out
+
 	def _defragment(self, needed:Index) -> None:
-		new_cap = Index( higher_pow2(needed) )
+		new_cap = Index(higher_pow2(needed))
 		dense_idx = np.flatnonzero(self._entities_contained != NONE)
 		new_size = Index(len(dense_idx))
+
 		for field_name, arr in self._dense.items():
 			new_arr = np.zeros(new_cap, dtype=arr.dtype)
 			new_arr[:new_size] = arr[dense_idx]
 			self._dense[field_name] = new_arr
+
 		self._entities_contained[new_size:] = NONE
-		valid = self._entities_contained != NONE
-		sparse_idx = np.flatnonzero(np.r_[True, self._entities_contained[1:] != self._entities_contained[:-1]] & valid)
-		self._sparse[self._entities_contained[sparse_idx]] = sparse_idx
+
+		valid = self._entities_contained[:new_size]
+		sparse_idx = np.flatnonzero(
+			np.r_[True, valid[1:] != valid[:-1]]
+		)
+
+		self._sparse.clear()
+		for idx in sparse_idx:
+			self._set_dense_index_in_sparse( Index(idx), entity_index_1(valid[idx]) )
+
 		self._size = new_size
 		self._capacity = new_cap
+
 
 	def _add(self, entity:Entity, component:Any) -> None:
 		idx = self._size
 		count = self._count.get(entity, 0)
-
 		ent_index = entity_index_1(entity)
+
 		if count == 0:
 			self._add_at_dense_end(entity, component)
-			self._set_dense_index(idx, ent_index)
+			self._set_dense_index_in_sparse(idx, ent_index)
 			self._count[entity] = 1
 			return
 
-		head = self._sparse[ent_index]
-		last = head+count
-		newCount = count+1
+		head = self._get_dense_index(ent_index)
+		last = head + count
+		newCount = count + 1
 
 		self._count[entity] = newCount
 
@@ -287,46 +318,47 @@ class MultiComponentStorage(ComponentStorage):
 
 		needed = idx + newCount
 		newLast = idx + count
+
 		if needed > self._capacity:
-			real_size = Index( sum( self._count.values() ) )
+			real_size = Index(sum(self._count.values()))
 
 			if real_size > needed * 0.5:
 				self._grow_dense(needed)
-
 			else:
 				self._defragment(needed)
 				self._add(entity, component)
 				return
 
-		# move to end
 		self._size = needed
 		new_block = slice(idx, newLast)
 		old_block = slice(head, last)
+
 		for arr in self._dense.values():
- 			arr[new_block] = arr[old_block]
+			arr[new_block] = arr[old_block]
+
 		self._entities_contained[old_block] = NONE
 		self._set_at_index(newLast, entity, component)
-		self._set_dense_index(idx, ent_index)
+		self._set_dense_index_in_sparse(idx, ent_index)
+
 
 	def _remove_entity(self, entity:Entity) -> None:
 		rows = self._get_rows(np.array([entity]))
-		if rows.size != 0:
-			self._sparse[entity] = NONE
+		if rows.size:
+			self._set_dense_index_in_sparse(NONE, entity_index_1(entity))
 			self._entities_contained[rows] = NONE
 			del self._count[entity]
 
-	def get_1(self, entity: Entity) -> ComponentProxy|None:
-		raise Exception(f"Called 'get_1' on MultiStorage ({self.component_cls}, entity {entity})")
 
-	def get(self, entity: Entity) -> Tuple[ComponentProxy, ...]|None:
-		head = Index( self._sparse[entity] )
+	def get(self, entity:Entity) -> Tuple[ComponentProxy, ...] | None:
+		head = self._get_dense_index(entity_index_1(entity))
 		if head == NONE: return None
 		count = self._count[entity]
 		return tuple( ComponentProxy(self, entity, idx) for idx in np.arange(head, head + count, dtype=Index) )
 
-	def _get_rows_impl(self, ent: Array) -> Array:
+
+	def _get_rows_impl(self, ent:Array) -> Array:
 		ent = np.unique(ent)
-		startIdx = self._sparse[entity_index(ent)]
+		startIdx = self._get_dense_indices(entity_index(ent))
 
 		not_none = startIdx != NONE
 		ent, startIdx = ent[not_none], startIdx[not_none]
@@ -334,36 +366,49 @@ class MultiComponentStorage(ComponentStorage):
 		generation_mask = self._entities_contained[startIdx] == ent
 		ent, startIdx = ent[generation_mask], startIdx[generation_mask]
 
-		counts = np.vectorize(self._count.get, otypes=(np.uint16,))(ent, 0)
+		counts = np.fromiter(
+			(self._count[e] for e in ent),
+			dtype=np.uint16,
+			count=ent.size,
+		)
 
 		if ent.size == 1:
-			return np.arange(startIdx[0], startIdx[0] + counts[0], dtype=Index)
-		
+			return np.arange(
+				startIdx[0],
+				startIdx[0] + counts[0],
+				dtype=Index,
+			)
+
 		total = counts.sum()
-		base_idx = np.repeat(startIdx, counts) # [start0, start0, start1, start1, ...] size total 
-		single_offsets = np.arange(total) # [0, 1, 2, 3, ...] size total
-		cum_counts = np.r_[0, np.cumsum(counts)[:-1]] # [0, c0, c0+c1, ...] size counts
-		large_offsets = np.repeat(cum_counts, counts) # [[0] * c0, [c0] * c1, [c0+c1] * c2, ...] size total
-		offsets = single_offsets - large_offsets
-		
+		base_idx = np.repeat(startIdx, counts)
+		offsets = np.arange(total) - np.repeat(
+			np.r_[0, np.cumsum(counts)[:-1]],
+			counts,
+		)
+
 		return base_idx + offsets.astype(Index)
 
+
 	def _remove_impl(self, entity:Entity, deleted:Index) -> bool:
-		head = self._sparse[entity]
+		ent_index = entity_index_1(entity)
+		head = self._get_dense_index(ent_index)
+
 		if head == NONE: return True
-		# update count, swap deleted with last
-		# NOTE: this is simple and fine BUT I don't like that the components relative position are not kept
-		# alternative is displace all the components on the right of the deleted one
-		count = self._count[entity]-1
+
+		count = self._count[entity] - 1
 		last = head + count
+
 		if deleted != last:
 			for arr in self._dense.values():
 				arr[deleted] = arr[last]
+
 		self._entities_contained[last] = NONE
-		if count > 0:
+
+		if count:
 			self._count[entity] = count
 			return False
-		self._sparse[entity] = NONE
+
+		self._set_dense_index_in_sparse(NONE, ent_index)
 		del self._count[entity]
 		return True
 

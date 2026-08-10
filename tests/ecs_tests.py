@@ -114,7 +114,7 @@ def test_single_component_storage_sparse_dense_integrity():
     assert s._capacity >= 3
     
     for eid in (5,6,7):
-        idx = s._sparse[eid]
+        idx = s._get_dense_index(eid)
         assert 0 <= idx < s._size
     
     foo6 = s.get_1(6)
@@ -457,7 +457,7 @@ def test_storage_multicomp_add_get_remove():
     assert comps[1].val == pytest.approx(2.)
     assert comps[2].val == pytest.approx(3.)
 
-    idx = store._sparse[entity_id]
+    idx = store._get_dense_indices(entity_id)
     block = store._dense['val'][:3]
     assert np.allclose(block, [1., 2., 3.])
 
