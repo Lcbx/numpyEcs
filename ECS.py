@@ -6,23 +6,15 @@ from numpy.typing import NDArray
 from common import higher_pow2, Any, Type, Sequence, Iterator, Iterable, List, Dict, Tuple, Callable
 from enum import IntFlag, auto
 
-# NOTES:
-# * if we wanted to support a really big number of entities, we could use a paged array for the sparse
-#  - adds an additional indirection but avoids allocating a lot of empty memory
-#  - allows pivoting away from entity recycling & generational ids :
-#    -> just allocate until you wrap around then check if empty when you need a new id
-
 
 # useful when we'll instanciate scenes, so we can translate entity ids stored in components
 #class Entity(int): pass # sadly mypyc disallows inheriting builtins
 #class Entity(np.uint64): pass # compiles but segfaults
 Entity = np.uint64
-Index = np.uint32
-Generation = np.uint32
+Index =  np.uint32
 NONE = Index(np.iinfo(Index).max)
 INDEX_MAX = np.iinfo(Index).max
 INDEX_BITS = int(INDEX_MAX).bit_count()
-GENERATION_INCREMENT = 1 << INDEX_BITS
 
 SPARSE_PAGE_BITS = 10
 SPARSE_PAGE_SIZE = 1 << SPARSE_PAGE_BITS
@@ -30,15 +22,6 @@ SPARSE_PAGE_SIZE = 1 << SPARSE_PAGE_BITS
 TypeVar = Type[Any]
 Array = NDArray[Any]
 component = dataclass
-
-def entity_index(entity: Array) -> Array:
-	return (np.asarray(entity) & INDEX_MAX).astype(Index)
-
-def entity_index_1(entity: Entity) -> Index:
-	return Index(entity & INDEX_MAX)
-
-def entity_generation(entity: Entity | Array) -> Generation | Array:
-	return (np.asarray(entity) >> INDEX_BITS).astype(Generation) 
 
 
 class ComponentStorage:
@@ -56,9 +39,10 @@ class ComponentStorage:
 
 		self._capacity	: Index = Index(capacity)
 		self._size		: Index = Index(0)
-		self._dense 	: Dict[str,Array] = {}
+		self._dense 	: Dict[str,Array]    = {}
 
-		self._sparse : Dict[Index, Array] = {} # array of indices
+		self._sparse : Dict[Entity, Array]    = {} # array of indices
+		self._sparse_count: Dict[Entity, int] = {} # array of used slots
 		self._dense['entity'] = np.full(self._capacity, NONE, dtype=Entity)
 
 		# Inspect dataclass annotations to build structured dtype
@@ -84,8 +68,8 @@ class ComponentStorage:
 	def _entities_contained_capped(self) -> Array:
 		return self._entities_contained[:self._size]
 
-	def _sparse_location(self, ent_index: Index):
-		return divmod(ent_index, SPARSE_PAGE_SIZE)
+	def _sparse_location(self, entity: Entity):
+		return divmod(entity, SPARSE_PAGE_SIZE)
 
 	def _grow_dense(self, needed: Index = Index(0)) -> None:
 		size = self._size
@@ -97,18 +81,40 @@ class ComponentStorage:
 		self._entities_contained[size:] = NONE
 		self._capacity = new_cap
 
-	def _get_dense_index(self, ent_index: Index) -> Index:
-		page_idx, offset = self._sparse_location(ent_index)
+	def _get_dense_index(self, entity: Entity) -> Index:
+		page_idx, offset = self._sparse_location(entity)
 		page = self._sparse.get(page_idx)
 		return Index(NONE if page is None else page[offset])
 
-	def _set_dense_index_in_sparse(self, dense_idx:Index, ent_index:Index) -> None:
-		page_idx, offset = self._sparse_location(ent_index)
+	def _set_dense_index_in_sparse(self, dense_idx:Index, entity:Entity) -> None:
+		page_idx, offset = self._sparse_location(entity)
 		page = self._sparse.get(page_idx)
+
 		if page is None:
 			page = np.full(SPARSE_PAGE_SIZE, NONE, dtype=Index)
 			self._sparse[page_idx] = page
+			self._sparse_count[page_idx] = 0
+
+		if page[offset] == NONE:
+			self._sparse_count[page_idx] += 1
+
 		page[offset] = dense_idx
+
+	def _clear_dense_index_in_sparse(self, entity:Entity) -> None:
+		page_idx, offset = self._sparse_location(entity)
+		page = self._sparse.get(page_idx)
+
+		if page is None or page[offset] == NONE:
+			return
+
+		page[offset] = NONE
+		count = self._sparse_count[page_idx] - 1
+
+		if count:
+			self._sparse_count[page_idx] = count
+		else:
+			del self._sparse[page_idx]
+			del self._sparse_count[page_idx]
 
 	def _add_at_dense_end(self, entity:Entity, component:Any) -> None:
 		idx = self._size
@@ -122,7 +128,7 @@ class ComponentStorage:
 	def _add(self, entity:Entity, component:Any) -> None:
 		idx = self._size
 		self._add_at_dense_end(entity, component)
-		self._set_dense_index_in_sparse(idx, entity_index_1(entity))
+		self._set_dense_index_in_sparse(idx, entity)
 
 	def _set_at_index(self, idx:Index, entity:Entity, component:Any) -> None:
 		self._entities_contained[idx] = entity
@@ -142,22 +148,22 @@ class ComponentStorage:
 		if head != last:
 			for arr in self._dense.values(): arr[head] = arr[last]
 			moved = self._entities_contained[last]
-			self._set_dense_index_in_sparse(head, entity_index_1(moved))
+			self._set_dense_index_in_sparse(head, moved)
 
 		self._entities_contained[last] = NONE
-		self._set_dense_index_in_sparse(NONE, entity_index_1(entity))
+		self._clear_dense_index_in_sparse(entity)
 		self._size = last
 		return True
 
 	def _remove_entity(self, entity:Entity) -> None:
-		head = self._get_dense_index(entity_index_1(entity))
+		head = self._get_dense_index(entity)
 		if head != NONE: self._remove_impl(entity, head)
 
 	def get(self, entity: Entity) -> Tuple[ComponentProxy, ...]|None:
 		raise Exception(f"Called 'get' on ComponentStorage ({self.component_cls}, entity {entity})")
 
 	def get_1(self, entity: Entity) -> ComponentProxy | None:
-		head = self._get_dense_index(entity_index_1(entity))
+		head = self._get_dense_index(entity)
 		if head == NONE: return None
 		return ComponentProxy(self, entity, head)
 
@@ -169,9 +175,8 @@ class ComponentStorage:
 		return self._get_rows_impl(ent)
 
 	def _get_rows_impl(self, ent: Array) -> Array:
-		ent_idx = entity_index(ent)
-		page_idx = ent_idx >> SPARSE_PAGE_BITS
-		offset = ent_idx % SPARSE_PAGE_SIZE
+		page_idx = ent >> SPARSE_PAGE_BITS
+		offset = ent % SPARSE_PAGE_SIZE
 
 		idx = np.full(ent.size, NONE, dtype=Index)
 
@@ -253,10 +258,10 @@ class MultiComponentStorage(ComponentStorage):
 		self.mult_comp = True
 		self._count : Dict[Entity, int] = {}
 
-	def _get_dense_indices(self, ent_idx:Array) -> Array:
-		page_idx = ent_idx // SPARSE_PAGE_SIZE
-		offset = ent_idx % SPARSE_PAGE_SIZE
-		out = np.full(ent_idx.size, NONE, dtype=Index)
+	def _get_dense_indices(self, entities:Array) -> Array:
+		page_idx = entities // SPARSE_PAGE_SIZE
+		offset = entities % SPARSE_PAGE_SIZE
+		out = np.full(entities.size, NONE, dtype=Entity)
 
 		for page_id in np.unique(page_idx):
 			page = self._sparse.get(page_id)
@@ -284,8 +289,9 @@ class MultiComponentStorage(ComponentStorage):
 		)
 
 		self._sparse.clear()
+		self._sparse_count.clear()
 		for idx in sparse_idx:
-			self._set_dense_index_in_sparse( Index(idx), entity_index_1(valid[idx]) )
+			self._set_dense_index_in_sparse( Index(idx), valid[idx] )
 
 		self._size = new_size
 		self._capacity = new_cap
@@ -294,15 +300,14 @@ class MultiComponentStorage(ComponentStorage):
 	def _add(self, entity:Entity, component:Any) -> None:
 		idx = self._size
 		count = self._count.get(entity, 0)
-		ent_index = entity_index_1(entity)
 
 		if count == 0:
 			self._add_at_dense_end(entity, component)
-			self._set_dense_index_in_sparse(idx, ent_index)
+			self._set_dense_index_in_sparse(idx, entity)
 			self._count[entity] = 1
 			return
 
-		head = self._get_dense_index(ent_index)
+		head = self._get_dense_index(entity)
 		last = head + count
 		newCount = count + 1
 
@@ -338,19 +343,19 @@ class MultiComponentStorage(ComponentStorage):
 
 		self._entities_contained[old_block] = NONE
 		self._set_at_index(newLast, entity, component)
-		self._set_dense_index_in_sparse(idx, ent_index)
+		self._set_dense_index_in_sparse(idx, entity)
 
 
 	def _remove_entity(self, entity:Entity) -> None:
 		rows = self._get_rows(np.array([entity]))
 		if rows.size:
-			self._set_dense_index_in_sparse(NONE, entity_index_1(entity))
+			self._set_dense_index_in_sparse(NONE, entity)
 			self._entities_contained[rows] = NONE
 			del self._count[entity]
 
 
 	def get(self, entity:Entity) -> Tuple[ComponentProxy, ...] | None:
-		head = self._get_dense_index(entity_index_1(entity))
+		head = self._get_dense_index(entity)
 		if head == NONE: return None
 		count = self._count[entity]
 		return tuple( ComponentProxy(self, entity, idx) for idx in np.arange(head, head + count, dtype=Index) )
@@ -358,7 +363,7 @@ class MultiComponentStorage(ComponentStorage):
 
 	def _get_rows_impl(self, ent:Array) -> Array:
 		ent = np.unique(ent)
-		startIdx = self._get_dense_indices(entity_index(ent))
+		startIdx = self._get_dense_indices(ent)
 
 		not_none = startIdx != NONE
 		ent, startIdx = ent[not_none], startIdx[not_none]
@@ -390,8 +395,7 @@ class MultiComponentStorage(ComponentStorage):
 
 
 	def _remove_impl(self, entity:Entity, deleted:Index) -> bool:
-		ent_index = entity_index_1(entity)
-		head = self._get_dense_index(ent_index)
+		head = self._get_dense_index(entity)
 
 		if head == NONE: return True
 
@@ -408,7 +412,7 @@ class MultiComponentStorage(ComponentStorage):
 			self._count[entity] = count
 			return False
 
-		self._set_dense_index_in_sparse(NONE, ent_index)
+		self._clear_dense_index_in_sparse(entity)
 		del self._count[entity]
 		return True
 
@@ -417,104 +421,146 @@ class MultiComponentStorage(ComponentStorage):
 class ECS:
 	"""
 	ECS with:
-	  - compact component arrays for vectorized ops
-	  - preallocated component storage to avoid frequent reallocation
-	  - per-entity bitmask for fast component queries
-	  - entity ID recycling via free list
+	- compact component arrays for vectorized ops
+	- preallocated component storage
+	- paged per-entity bitmasks for fast component queries
+	- monotonically increasing 64-bit entity IDs
 
-	NOTE: if you need to tag entities, just use a Set of entity ids
-	(don't use an empty component, component types are costly/limited)
+	NOTE: if you need to tag entities, consider using a Set of entity ids.
 	"""
+
 	def __init__(self:ECS):
 		self._stores: Dict[TypeVar, ComponentStorage] = {}
 		self._comp_bits: Dict[TypeVar, int] = {}
-		self._next_bit = 0
-		self.entity_masks = np.zeros((0,), dtype=int)
-		self._free_entities: List[Entity] = []
-		self._next_entity_id : Entity = Entity(0)
+
+		# bit 0 means that the entity exists
+		self._next_bit = 1
+
+		self.entity_masks: Dict[Index, Array] = {}
+		self._entity_page_count: Dict[Index, int] = {}
+
+		self._next_entity_id: Entity = Entity(0)
+		self._entity_count: Index = Index(0)
 
 	@property
 	def count(self) -> Index:
-		return Index( self._next_entity_id - len(self._free_entities) )
-	
-	@property
-	def entity_masks_size(self) -> Index:
-		return Index(len(self.entity_masks))
-	
-	def _grow_entity_mask(self, entity:Entity) -> None:
-		masks_size = self.entity_masks_size
-		new_cap = higher_pow2(entity+1)
-		new_entity_masks = np.zeros(new_cap, dtype=Index)
-		new_entity_masks[:masks_size] = self.entity_masks[:masks_size]
-		self.entity_masks = new_entity_masks
-	
-	def create_entities(self, quantity: int) -> List[Entity]:
-		"""
-		Create `quantity` new entity IDs
-		NOTE: re-issuing dead entity ids to keep sparse array sizes low
-			  however potential bug : a re-issued entity may be mistaken for the previous dead entity
-		"""
-		len_free = len(self._free_entities)
-		if len_free <= quantity:
-			res = np.asarray(self._free_entities, dtype=Entity)
-			self._free_entities = []
-			quantity -= len_free
+		return self._entity_count
+
+	def _entity_mask_location(self, entity:Entity) -> tuple[Index, Index]:
+		page, offset = divmod(int(entity), SPARSE_PAGE_SIZE)
+		return Index(page), Index(offset)
+
+	def _get_entity_mask(self, entity:Entity) -> int:
+		page_idx, offset = self._entity_mask_location(entity)
+		page = self.entity_masks.get(page_idx)
+		return 0 if page is None else int(page[offset])
+
+	def _set_entity_mask(self, entity:Entity, mask:int) -> None:
+		page_idx, offset = self._entity_mask_location(entity)
+		page = self.entity_masks.get(page_idx)
+
+		if page is None:
+			page = np.zeros(SPARSE_PAGE_SIZE, dtype=np.uint64)
+			self.entity_masks[page_idx] = page
+			self._entity_page_count[page_idx] = 0
+
+		if page[offset] == 0:
+			self._entity_page_count[page_idx] += 1
+
+		page[offset] = mask
+
+	def _clear_entity_mask(self, entity:Entity) -> None:
+		page_idx, offset = self._entity_mask_location(entity)
+		page = self.entity_masks.get(page_idx)
+
+		if page is None or page[offset] == 0:
+			return
+
+		page[offset] = 0
+		count = self._entity_page_count[page_idx] - 1
+
+		if count:
+			self._entity_page_count[page_idx] = count
 		else:
-			res = np.asarray(self._free_entities[-quantity:], dtype=Entity)
-			self._free_entities = self._free_entities[:-quantity]
-			res = res + GENERATION_INCREMENT
-			return list(res)
-		
-		current_id = self._next_entity_id
-		self._next_entity_id += quantity
-		if self.entity_masks_size <= self._next_entity_id:
-			self._grow_entity_mask(self._next_entity_id)
-		#if quantity == 1: return [ current_id ]
-		res = np.append(res, np.arange(current_id, self._next_entity_id, dtype=Entity) )
-		return list(res)
-		
+			del self.entity_masks[page_idx]
+			del self._entity_page_count[page_idx]
+
+	def create_entities(self, quantity:int) -> List[Entity]:
+		start = self._next_entity_id
+		end = Entity(int(start) + quantity)
+
+		entities = np.arange(start, end, dtype=Entity)
+		self._next_entity_id = end
+		self._entity_count = Index(int(self._entity_count) + quantity)
+
+		for entity in entities:
+			self._set_entity_mask(entity, 1) # alive bit is (1 << 0) = 1
+
+		return list(entities)
+
 	def create_entity(self, *components:Any) -> Entity:
 		[entity] = self.create_entities(1)
 		self.add_component(entity, *components)
 		return entity
-	
-	def delete_entity(self, entity: Entity) -> None:
-		if entity in self._free_entities: return
-		entity_bits = self.entity_masks[entity]
-		if entity_bits:
-			for comp_cls, comp_bit in self._comp_bits.items():
-				if comp_bit & entity_bits:
-					store = self._stores[comp_cls]
-					store._remove_entity(entity)
-		self.entity_masks[entity] = 0
-		self._free_entities.append(entity)
-	
-	def register(self, *component_types:TypeVar, allow_same_type_components_per_entity:bool= False, capacity:Index=Index(128)) -> None:
+
+	def delete_entity(self, entity:Entity) -> None:
+		entity_bits = self._get_entity_mask(entity)
+		if not entity_bits:
+			return
+
+		for comp_cls, comp_bit in self._comp_bits.items():
+			if comp_bit & entity_bits:
+				self._stores[comp_cls]._remove_entity(entity)
+
+		self._clear_entity_mask(entity)
+		self._entity_count -= 1
+
+	def register(
+		self,
+		*component_types:TypeVar,
+		allow_same_type_components_per_entity:bool=False,
+		capacity:Index=Index(128),
+	) -> None:
 		for cls in component_types:
 			if cls not in self._comp_bits:
 				self._comp_bits[cls] = 1 << self._next_bit
 				self._next_bit += 1
+
 			if cls not in self._stores:
-				storage = MultiComponentStorage if allow_same_type_components_per_entity else ComponentStorage
+				storage = (
+					MultiComponentStorage
+					if allow_same_type_components_per_entity
+					else ComponentStorage
+				)
 				self._stores[cls] = storage(cls, capacity=capacity)
-	
+
 	def add_component(self, entity:Entity, *components:Any) -> None:
-		bits = self.entity_masks[entity]
+		bits = self._get_entity_mask(entity)
+		if not bits:
+			return
+
 		for comp in components:
-			cls : TypeVar = type(comp)
-			# if this throws you pbbly did not register the component class
+			cls: TypeVar = type(comp)
 			bit = self._comp_bits[cls]
 			bits |= bit
 			self._stores[cls]._add(entity, comp)
-		self.entity_masks[entity] = bits
 
-	def remove_component(self, component: ComponentProxy) -> None:
+		self._set_entity_mask(entity, bits)
+
+	def remove_component(self, component:ComponentProxy) -> None:
 		entity = component._entity
 		store = component._store
-		if entity >= self.entity_masks_size: return
-		# _remove returns True if there are no components of that type left in entity
-		if store and store._remove(component) and (bit := self._comp_bits.get(store.component_cls, 0))!=0:
-			self.entity_masks[entity] &= ~bit
+
+		bits = self._get_entity_mask(entity)
+		if not bits:
+			return
+
+		if (
+			store
+			and store._remove(component)
+			and (bit := self._comp_bits.get(store.component_cls, 0))
+		):
+			self._set_entity_mask(entity, bits & ~bit)
 
 	def get_store(self, comp_cls: TypeVar) -> ComponentStorage|MultiComponentStorage|None:
 		return self._stores.get(comp_cls)
@@ -533,27 +579,31 @@ class ECS:
 		es = np.atleast_1d(entities).astype(int)
 		return [self._stores[cls].get_vector(es) for cls in comp_clss if cls in self._stores]
 
-	def where(self, *comp_clss:TypeVar, exclude:List[TypeVar]|None=None) -> Array:
+	def _entities_matching_mask(self, mask:int, exc_mask:int=0) -> Array:
+		found = []
+
+		for page_idx, page in self.entity_masks.items():
+			criteria = ((page & mask) == mask) & ((page & exc_mask) == 0)
+			idx = np.flatnonzero(criteria)
+
+			if idx.size: found.append(page_idx * SPARSE_PAGE_SIZE + idx)
+
+		return ( np.concatenate(found).astype(Entity) if found else np.empty(0, dtype=Entity) )
+
+	
+	def where(self, *comp_clss:TypeVar, exclude=()) -> Array:
 		"""
 		Usage: ecs.where(C1, C2, ...) # → all entities with those comps
 		"""
-		
-		mask = 0
+		mask = 1
 		for cls in comp_clss:
-			mask |= self._comp_bits.get(cls, 0)
-		if mask == 0: return np.array([])
+			mask |= self._comp_bits[cls]
 
-		criteria = self.entity_masks & mask == mask
-		
-		if exclude:
-			exc_mask = 0
-			for cls in exclude:
-				exc_mask |= self._comp_bits.get(cls, 0)
-			criteria &= self.entity_masks & exc_mask == 0
+		exc_mask = 0
+		for cls in exclude:
+			exc_mask |= self._comp_bits.get(cls, 0)
 
-		ents = np.nonzero(criteria)[0]
-
-		return ents
+		return self._entities_matching_mask(mask, exc_mask)
 
 
 class ComponentProxy:

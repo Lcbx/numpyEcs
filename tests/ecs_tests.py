@@ -9,56 +9,13 @@ def test_higher_pow2():
         #print(res)
         assert(i<res)
 
-def test_no_free_entities():
+def test_create_entities():
     ecs = ECS()
     ids = ecs.create_entities(3)
     assert isinstance(ids, List)
     assert list(ids) == [0, 1, 2]
     assert ecs._next_entity_id == 3
-    assert ecs._free_entities == []
 
-def test_single_free_entity_exact():
-    ecs = ECS()
-    ecs._free_entities = [Entity(10)]
-    [eid] = ecs.create_entities(1)
-    assert isinstance(eid, Entity)
-    assert entity_index(eid) == 10
-    assert ecs._next_entity_id == 0
-    assert ecs._free_entities == []
-
-def test_single_free_entity_more_than_one():
-    ecs = ECS()
-    ecs._free_entities = [5]
-    out = ecs.create_entities(3)
-    assert out == [5, 0, 1]
-    assert ecs._next_entity_id == 2
-    assert ecs._free_entities == []
-
-def test_multiple_delete_entity_twice():
-    ecs = ECS()
-    ecs._free_entities = [7, 8, 9, 10]
-    ecs.delete_entity(7)
-    assert ecs._free_entities == [7, 8, 9, 10]
-    out = ecs.create_entities(2)
-    assert list(map(entity_index, out)) == [9,10]
-
-def test_multiple_free_entities_exact_n():
-    ecs = ECS()
-    ecs._free_entities = [20, 30]
-    ecs._next_entity_id = 5
-    out = ecs.create_entities(2)
-    assert list(map(entity_index, out)) == [20, 30]
-    assert ecs._free_entities == []
-    assert ecs._next_entity_id == 5
-
-def test_multiple_free_entities_more_than_n():
-    ecs = ECS()
-    ecs._free_entities = [100, 101, 102, 103]
-    ecs._next_entity_id = 0
-    out = ecs.create_entities(3)
-    assert list(map(entity_index, out)) == [101, 102, 103]
-    assert ecs._free_entities[0] == 100
-    assert ecs._next_entity_id == 0
 
 @component
 class Foo:
@@ -100,9 +57,9 @@ def test_single_component_storage_basic():
     s._remove(s.get_1(2))
     assert s.get_1(2) is None
 
-    # next generation
-    s._add(3 + GENERATION_INCREMENT, Foo(0.5, "fifth"))
-    proxy = s.get_1(3)
+    # out of sparse range
+    s._add(10_000, Foo(0.5, "fifth"))
+    proxy = s.get_1(10_000)
     assert pytest.approx(proxy.a) == 0.5
     assert proxy.b == "fifth"
 
@@ -188,8 +145,7 @@ def detect_aabb_overlaps(ecs):
 
     i,j = np.triu_indices(ents.size, k=1)
     hits = overlap[i,j]
-    return [(int(ents[ii]), int(ents[jj]))
-            for ii,jj,h in zip(i,j,hits) if h]
+    return [(int(ents[ii]), int(ents[jj])) for ii,jj,h in zip(i,j,hits) if h]
 
 # Component definitions
 @component
@@ -320,11 +276,11 @@ def test_query_mult_comp_get_after_delete():
     })
     mt._remove_entity(0)
     mt._remove_entity(1)
-    new_1 = Entity(1 + GENERATION_INCREMENT)
+    new_1 = Entity(1)
     mt._add(new_1, Tag(1))
     mt._add(new_1, Tag(2))
     out = mt._get_rows(np.asarray([Entity(0), new_1, Entity(2)], dtype=Entity))
-    assert set(map(entity_index, mt._entities_contained[out])) == {1, 2}
+    assert set(map(int, mt._entities_contained[out])) == {1, 2}
 
 def test_query_mult_comp_subset_filtering():
     mt = make_multitag_store({
@@ -415,10 +371,12 @@ def test_aabb_system_and_overlap():
         Orientation(0,0,np.sin(np.pi/8), np.cos(np.pi/8))
     )
     # Entity 2 without rotation
+    ecs.create_entities(5)
     ecs.add_component(2,
         LocalAABB(-2,-2,-2, 2,2,2),
         Position(5,0,0),
-        AxisAlignedBoundingBox(0,0,0,0,0,0))
+        AxisAlignedBoundingBox(0,0,0,0,0,0)
+    )
 
     # Run systems
     update_world_aabb(ecs)
