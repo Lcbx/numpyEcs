@@ -1,20 +1,44 @@
+from __future__ import annotations
+
+from enum import IntFlag, auto
+from typing import Any
+
+import numpy as np
 import pytest
 
-from common import *
 from ECS import *
 
-def test_higher_pow2():
-    for i in range(0,512):
-        res = higher_pow2(i)
-        #print(res)
-        assert(i<res)
 
-def test_create_entities():
+def entities(values: Any) -> EntityArray:
+    arr = np.asarray(values, dtype=Entity)
+    return arr.reshape(1) if arr.ndim == 0 else arr
+
+
+def rows(values: Any) -> IndexArray:
+    arr = np.asarray(values, dtype=Index)
+    return arr.reshape(1) if arr.ndim == 0 else arr
+
+
+def owner_ids(accessor: ComponentAccessor[Any], component_rows: IndexArray) -> EntityArray:
+    return accessor._store._dense["entity"][component_rows].astype(Entity, copy=False)
+
+
+def test_higher_pow2() -> None:
+    for i in range(0, 512):
+        res = higher_pow2(i)
+        assert res >= max(1, i)
+        assert res & (res - 1) == 0
+
+
+def test_create_entities() -> None:
     ecs = ECS()
-    ids = ecs.create_entities(3)
-    assert isinstance(ids, List)
-    assert list(ids) == [0, 1, 2]
+    ids = ecs.create(3)
+
+    assert isinstance(ids, np.ndarray)
+    assert ids.dtype == Entity
+    assert ids.tolist() == [0, 1, 2]
     assert ecs._next_entity_id == 3
+    assert len(ecs) == 3
 
 
 @component
@@ -22,479 +46,623 @@ class Foo:
     a: float
     b: str
 
-def test_single_component_storage_basic():
-    s = ComponentStorage(Foo, capacity=2)
-    assert s.get_1(1) is None
-    
-    s._add(Entity(1), Foo(1.23, "first"))
-    proxy = s.get_1(1)
-    assert proxy is not None
-    assert pytest.approx(proxy.a) == 1.23
-    assert proxy.b == "first"
-    
-    s._remove(proxy)
-    assert s.get_1(1) is None
-    s._add(1, Foo(4.56, "second"))
-    proxy = s.get_1(1)
-    assert pytest.approx(proxy.a) == 4.56
-    assert proxy.b == "second"
-    
-    s._add(2, Foo(7.89, "third"))
-    s._add(3, Foo(0.12, "fourth"))  # forces _grow_dense
-    proxy = s.get_1(3)
-    assert pytest.approx(proxy.a) == 0.12
-    assert proxy.b == "fourth"
 
-    # rebuild component (not useful, JIC)
-    obj = proxy.build()
-    assert pytest.approx(obj.a) == 0.12
-    assert obj.b == "fourth"
+def test_single_component_storage_basic() -> None:
+    store = ComponentStorage(Foo, capacity=2)
 
-    # check __setattr__ modifies the store 
-    proxy.a = 0.69
-    assert pytest.approx(s.get_1(3).a) == 0.69
+    store._add_range(entities([1]), Foo(1.23, "first"))
+    selection = ComponentSelection(store, store._get_rows(entities([1])))
+    assert selection.a.tolist() == pytest.approx([1.23])
+    assert selection.b.tolist() == ["first"]
 
-    s._remove(s.get_1(2))
-    assert s.get_1(2) is None
+    emptied = store._remove_entities(entities([1]))
+    assert emptied.tolist() == [1]
+    with pytest.raises(KeyError):
+        store._get_rows(entities([1]))
 
-    # out of sparse range
-    s._add(10_000, Foo(0.5, "fifth"))
-    proxy = s.get_1(10_000)
-    assert pytest.approx(proxy.a) == 0.5
-    assert proxy.b == "fifth"
+    store._add_range(entities([1]), Foo(4.56, "second"))
+    store._add_range(
+        entities([2, 3]),
+        (np.array([7.89, 0.12]), np.array(["third", "fourth"])),
+    )
 
-def test_single_component_storage_sparse_dense_integrity():
-    s = ComponentStorage(Foo, capacity=1)
-    
-    for eid, val in enumerate([10.0, 20.0, 30.0], start=5):
-        s._add(eid, Foo(val, f"val{eid}"))
-    assert s._capacity >= 3
-    
-    for eid in (5,6,7):
-        idx = s._get_dense_index(eid)
-        assert 0 <= idx < s._size
-    
-    foo6 = s.get_1(6)
-    assert foo6 is not None
-    
-    s._remove(foo6)
-    assert s.get_1(6) is None
-    assert s.get_1(5) is not None and s.get_1(5).a == pytest.approx(10.0)
-    assert s.get_1(7) is not None and s.get_1(7).a == pytest.approx(30.0)
+    # forces dense growth from initial capacity 2
+    assert store._capacity >= 3
+
+    selection = ComponentSelection(store, store._get_rows(entities([3])))
+    assert selection.a.tolist() == pytest.approx([0.12])
+    assert selection.b.tolist() == ["fourth"]
+
+    selection.a = 0.69
+    assert store._dense["a"][store._get_rows(entities([3]))][0] == pytest.approx(0.69)
+
+    store._remove_entities(entities([2]))
+    with pytest.raises(KeyError):
+        store._get_rows(entities([2]))
+
+    # another sparse page
+    store._add_range(entities([10_000]), Foo(0.5, "fifth"))
+    row = store._get_rows(entities([10_000]))
+    assert store._dense["a"][row][0] == pytest.approx(0.5)
+    assert store._dense["b"][row][0] == "fifth"
 
 
+def test_single_component_storage_sparse_dense_integrity() -> None:
+    store = ComponentStorage(Foo, capacity=1)
+    ids = entities([5, 6, 7])
+    store._add_range(
+        ids,
+        (
+            np.array([10.0, 20.0, 30.0]),
+            np.array(["val5", "val6", "val7"]),
+        ),
+    )
 
-def rotate_vectors_by_quaternions(q: np.ndarray, v: np.ndarray) -> np.ndarray:
-    """
-    q: shape (N,4)  as [qx,qy,qz,qw]
-    v: shape (N,M,3) -- M vectors per entity
-    returns: rotated vectors, same shape
-    """
-    q_vec = q[:, None, :3]             # (N,1,3)
-    qw    = q[:, None, 3:4]            # (N,1,1)
-    t = 2.0 * np.cross(q_vec, v, axis=2)  # (N,M,3)
-    return v + qw * t + np.cross(q_vec, t, axis=2)
+    assert store._capacity >= 3
+    dense_rows = store._get_dense_indices(ids)
+    assert np.all(dense_rows != np.iinfo(Index).max)
+    assert np.all(dense_rows < store._size)
 
+    store._remove_entities(entities([6]))
 
-def update_world_aabb(ecs):
-    
-    # Non‐rotated boxes
-    nr_ents = ecs.where(LocalAABB, Position)
-    la, pos = ecs.get_vectors(LocalAABB, Position, nr_ents)
-    pos = vectorized(pos, 'x', 'y', 'z')
-    # just translate
-    wa_min = vectorized(la, 'x_min', 'y_min', 'z_min') + pos
-    wa_max = vectorized(la, 'x_max', 'y_max', 'z_max') + pos
-    aabbs = ecs.get_store(AxisAlignedBoundingBox)
-    wa = np.append(wa_min, wa_max, axis=1).transpose()
-    aabbs.set_full_vector(nr_ents, wa)
-    
-    # Rotated boxes
-    rot_ents = ecs.where(LocalAABB, Position, Orientation)
-    la, pos, ori = ecs.get_vectors(LocalAABB, Position, Orientation, rot_ents)
-    pos = vectorized(pos, 'x', 'y', 'z')
-    ori = vectorized(ori, 'qx', 'qy', 'qz', 'qw')
-    #bb = ecs.get_store(LocalAABB).get_full_vector(rot_ents)
-    #mins = la[:, :3]
-    #maxs = la[:, 3:]
-    mins = vectorized(la, 'x_min', 'y_min', 'z_min')
-    maxs = vectorized(la, 'x_max', 'y_max', 'z_max')
-    # build 8 corners
-    corners = np.array([[x,y,z] for x in (0,1)
-                                 for y in (0,1)
-                                 for z in (0,1)], int)
-    offs = mins[:,None,:]*(1-corners)[None,:,:] + \
-          maxs[:,None,:]*corners[None,:,:]
-    # rotate & translate
-    pts = rotate_vectors_by_quaternions(ori, offs) + pos[:,None,:]
-    wa_min = pts.min(axis=1)
-    wa_max = pts.max(axis=1)
-    wa = np.append(wa_min, wa_max, axis=1).transpose()
-    aabbs.set_full_vector(nr_ents,wa)
+    with pytest.raises(KeyError):
+        store._get_rows(entities([6]))
+    for eid, expected in ((5, 10.0), (7, 30.0)):
+        row = store._get_rows(entities([eid]))
+        assert store._dense["a"][row][0] == pytest.approx(expected)
 
 
-def detect_aabb_overlaps(ecs):
-    ents = ecs.where(AxisAlignedBoundingBox)
-    blk = ecs.get_store(AxisAlignedBoundingBox).get_vector(ents)
-    mins = vectorized(blk, 'x_min', 'y_min', 'z_min')
-    maxs = vectorized(blk, 'x_max', 'y_max', 'z_max')
-
-    ok1 = mins[:,None,:] <= maxs[None,:,:]
-    ok2 = maxs[:,None,:] >= mins[None,:,:]
-    overlap = np.logical_and(ok1, ok2).all(axis=2)
-
-    i,j = np.triu_indices(ents.size, k=1)
-    hits = overlap[i,j]
-    return [(int(ents[ii]), int(ents[jj])) for ii,jj,h in zip(i,j,hits) if h]
-
-# Component definitions
 @component
 class Position2D:
-    x: float; y: float
+    x: float
+    y: float
+
 
 @component
 class Velocity2D:
-    x: float; y: float
+    x: float
+    y: float
+
 
 class TagEnum(IntFlag):
-    Enemy=auto()
-    Flying=auto()
-    Dazed=auto()
+    Enemy = auto()
+    Flying = auto()
+    Dazed = auto()
+
 
 @component
 class Tag:
-    value:TagEnum
+    value: TagEnum
+
 
 @component
 class Position:
-    x: float; y: float; z: float
+    x: float
+    y: float
+    z: float
+
 
 @component
 class Orientation:
-    qx: float; qy: float; qz: float; qw: float
+    qx: float
+    qy: float
+    qz: float
+    qw: float
+
 
 @component
 class LocalAABB:
-    x_min: float; y_min: float; z_min: float
-    x_max: float; y_max: float; z_max: float
+    x_min: float
+    y_min: float
+    z_min: float
+    x_max: float
+    y_max: float
+    z_max: float
+
 
 @component
 class AxisAlignedBoundingBox:
-    x_min: float; y_min: float; z_min: float
-    x_max: float; y_max: float; z_max: float
-
-
-def make_pos2d_store(vals):
-    store = ComponentStorage(Position2D, capacity=max(32, len(vals)))
-    for eid, (x, y) in enumerate(vals):
-        store._add(eid, Position2D(x, y))
-    return store
-
-def make_multitag_store(blocks_per_entity):
-    store = MultiComponentStorage(Tag, capacity=64)
-    for eid, values in blocks_per_entity.items():
-        for v in values: store._add(Entity(eid), Tag(v))
-    return store
-
-def test_get_whole_vector():
-    pos = make_pos2d_store([(0, 0), (1, 1), (2, 2)])
-    vec = pos.get_vector()
-    vec = vectorized(vec, *pos.fields)
-    for i, v in enumerate(vec):
-        assert np.allclose((i, i), v)
-
-def test_get_rows():
-    pos = make_pos2d_store([(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)])
-    pos._remove(pos.get_1(3))
-    pos._remove(pos.get_1(0))
-    pos._add(5, Position2D(-1,-1))
-    # remember : rows are the indices in the dense array
-    rows = pos._get_rows(range(4))
-    assert rows.tolist() == [1,2]
-    rows = pos._get_rows()
-    assert sorted(rows.tolist()) == [0,1,2,3]
-    rows = pos._get_rows([])
-    assert rows.shape == (0,)
-
-def test_query_simple_vectorized():
-    pos = make_pos2d_store([(0, 0), (1, 2), (5, -3), (-1, 1), (4, 10)])
-    # x > 0 and |y| < 3  -> entities 1 only (1,2) fails second cond; entity 2 has |y|=3 -> false
-    out = pos.query(lambda x, y: (x > 0) & (np.abs(y) < 3))
-    assert out.dtype == Entity
-    assert out.tolist() == [1]
-
-def test_query_annotated_types():
-    pos = make_pos2d_store([(0, 0), (1, 2), (5, -3), (-1, 1), (4, 10)])
-    def condition(x:float, y:float)->bool:
-        return (x > 0) & (np.abs(y) < 3)
-    out = pos.query(condition)
-    assert out.dtype == Entity
-    assert out.tolist() == [1]
-
-def test_query_subset_filtering():
-    pos = make_pos2d_store([(10, 0), (9, 0), (11, 0), (8, 0)])
-    subset = np.array([0, 1, 3], dtype=int)  # exclude entity 2 even though it matches
-    out = pos.query(lambda x, y: x >= 10, entities=subset)
-    assert out.tolist() == [0]
-
-def test_query_returns_empty_when_no_match():
-    pos = make_pos2d_store([(0, 0), (1, 1)])
-    out = pos.query(lambda x, y: (x < 0))
-    assert isinstance(out, np.ndarray)
-    assert out.size == 0
-
-def test_query_can_use_entity_id_in_predicate():
-    pos = make_pos2d_store([(5, 0), (5, 0), (5, 0)])
-    out = pos.query( lambda x, y, entity: (x == 5) & (entity != 1))
-    assert out.tolist() == [0, 2]
-
-def test_query_raises_on_length_mismatch():
-    pos = make_pos2d_store([(0, 0), (1, 1), (2, 2)])
-    with pytest.raises(IndexError):
-        pos.query(lambda x, y: np.array([True, False]))
-
-def test_query_on_empty_storage():
-    pos = ComponentStorage(Position2D, capacity=8)
-    out = pos.query(lambda x: x > 0)
-    assert out.size == 0
-
-def test_query_mult_comp_any_row_matches_once_stable_order():
-    mt = make_multitag_store({
-        0: [1, 0],
-        1: [0, 0],
-        2: [2, 0],
-    })
-    out = mt.query(lambda value: value == 1)
-    assert out.tolist() == [0]
-
-def test_query_mult_comp_get_after_delete():
-    mt = make_multitag_store({
-        0: [1, 0],
-        1: [0, 0],
-        2: [2, 1],
-        3: [2, 3],
-    })
-    mt._remove_entity(0)
-    mt._remove_entity(1)
-    new_1 = Entity(1)
-    mt._add(new_1, Tag(1))
-    mt._add(new_1, Tag(2))
-    out = mt._get_rows(np.asarray([Entity(0), new_1, Entity(2)], dtype=Entity))
-    assert set(map(int, mt._entities_contained[out])) == {1, 2}
-
-def test_query_mult_comp_subset_filtering():
-    mt = make_multitag_store({
-        2: [4, 5],
-        5: [3, 3],
-        7: [1, 2],
-        9: [1],
-    })
-    subset = np.array([5, 7, 9], dtype=int)
-    out = mt.query(lambda value: value == 1, entities=subset)
-    assert out.tolist() == [7, 9]
-
-def test_query_mult_comp_no_match_returns_empty():
-    mt = make_multitag_store({0: [0, 0], 1: [2], 3: [4, 5]})
-    out = mt.query(lambda value: value == 9)
-    assert out.size == 0
-
-def test_query_mult_comp_get_vector_returns_all_comp():
-    mt = make_multitag_store({0: [0, 0], 1: [2], 3: [4, 5], 4: [6, 6]})
-    out = mt.get_vector( [0,3] )
-    assert out['value'].tolist() == [ 0,0, 4,5]
-
-def test_query_intflag_predicate():
-    tags = ComponentStorage(Tag, capacity=8)
-    tags._add(1, Tag(TagEnum.Enemy | TagEnum.Dazed))
-    tags._add(2, Tag(TagEnum.Flying))
-    tags._add(3, Tag(TagEnum.Enemy))
-    out = tags.query(lambda value: (value & TagEnum.Enemy) != 0)
-    assert out.tolist() == [1, 3]
-
-def test_movement_system():
-    ecs = ECS()
-    ecs.register(Position2D, Velocity2D, Tag)
-    # Setup entities
-    ecs.create_entity()
-    ecs.create_entity(
-        Position2D(0.0, 0.0),
-        Velocity2D(1.0, 2.0))
-    ecs.create_entity(
-        Position2D(5.0, -3.0),
-        Velocity2D(-1.0, 0.5),
-        Tag(TagEnum.Enemy | TagEnum.Dazed))
-
-    # Verify initial positions
-    positions = ecs.get_store(Position2D)
-    p1 = positions.get_1(1)
-    p2 = positions.get_1(2)
-    assert (p1.x, p1.y) == pytest.approx((0.0, 0.0))
-    assert (p2.x, p2.y) == pytest.approx((5.0, -3.0))
-
-    # Apply movement only for Tag
-    targets = ecs.where(Tag, Position2D, Velocity2D)
-    p_vec, v_vec = ecs.get_vectors(Position2D, Velocity2D, targets)
-    p_vec['x'] -= v_vec['x'] * 0.5
-    p_vec['y'] -= v_vec['y'] * 0.5
-    positions.set_vector(targets, x=p_vec['x'], y=p_vec['y'])
-
-    # Check updated position for entity 2
-    p2_after = positions.get_1(2)
-    assert (p2_after.x, p2_after.y) == pytest.approx((5.0 + 0.5, -3.0 - 0.25))
-    p1_after = positions.get_1(1)
-    assert (p1_after.x, p1_after.y) == pytest.approx((0.0, 0.0))
-
-    # test where exclude param
-    untagged = ecs.where(Position2D, Velocity2D, exclude=[Tag])
-    assert not 2 in untagged
-
-    # test intFlag
-    tags = ecs.get_store(Tag)
-    tagVal = tags.get_1(2).value
-    assert tagVal & TagEnum.Enemy > 0
-    assert tagVal & TagEnum.Flying == 0
-
-    # test query
-    tagVal = tags.query(lambda value: value&TagEnum.Enemy == 1)
-    assert len(tagVal) == 1
-    assert tagVal[0] == 2
-
-
-def test_aabb_system_and_overlap():
-    ecs = ECS()
-    ecs.register(LocalAABB, Position, AxisAlignedBoundingBox, Orientation)
-    # Entity 1 with rotated AABB
-    e1 = ecs.create_entity(
-        LocalAABB(-1,-1,-1, 1,1,1),
-        Position(5,0,0),
-        AxisAlignedBoundingBox(0,0,0,0,0,0),
-        Orientation(0,0,np.sin(np.pi/8), np.cos(np.pi/8))
-    )
-    # Entity 2 without rotation
-    ecs.create_entities(5)
-    ecs.add_component(2,
-        LocalAABB(-2,-2,-2, 2,2,2),
-        Position(5,0,0),
-        AxisAlignedBoundingBox(0,0,0,0,0,0)
-    )
-
-    # Run systems
-    update_world_aabb(ecs)
-    wa1 = ecs.get_store(AxisAlignedBoundingBox).get_1(e1)
-    # Compute expected rotated extents
-    half_diag = np.sqrt(2)
-    assert wa1.x_min == pytest.approx(5 - half_diag)
-    assert wa1.x_max == pytest.approx(5 + half_diag)
-    assert wa1.y_min == pytest.approx(-half_diag)
-    assert wa1.y_max == pytest.approx(half_diag)
-    assert wa1.z_min == pytest.approx(-1)
-    assert wa1.z_max == pytest.approx(1)
-
-    # Overlap detection
-    hits = detect_aabb_overlaps(ecs)
-    assert hits == [(e1, 2)]
+    x_min: float
+    y_min: float
+    z_min: float
+    x_max: float
+    y_max: float
+    z_max: float
 
 
 @component
 class MultiComp:
     val: float
 
-def test_storage_multicomp_add_get_remove():
-    # Create a storage that allows multiple MultiComp per entity
-    store = MultiComponentStorage(MultiComp, capacity=4)
+
+def make_pos2d_ecs(vals: list[tuple[float, float]]) -> tuple[ECS, EntityArray, ComponentAccessor[Position2D]]:
+    ecs = ECS()
+    ecs.register(Position2D, capacity=Index(max(32, len(vals))))
+    ids = ecs.create(len(vals))
+    ecs.add(ids, Position2D, np.asarray(vals, dtype=float))
+    return ecs, ids, ecs.get(Position2D)
+
+
+def make_multitag_ecs(
+    blocks_per_entity: dict[int, list[TagEnum | int]],
+) -> tuple[ECS, EntityArray, ComponentAccessor[Tag]]:
+    ecs = ECS()
+    ecs.register(Tag, allow_same_type_components_per_entity=True, capacity=Index(64))
+
+    max_id = max(blocks_per_entity, default=-1)
+    ids = ecs.create(max_id + 1)
+
+    owners: list[int] = []
+    values: list[TagEnum | int] = []
+    for eid, tags in blocks_per_entity.items():
+        owners.extend([eid] * len(tags))
+        values.extend(tags)
+
+    if owners:
+        ecs.add(entities(owners), Tag, np.asarray(values, dtype=object))
+
+    return ecs, ids, ecs.get(Tag)
+
+
+def test_add_payload_forms() -> None:
+    ecs = ECS()
+    ecs.register(Position2D, Velocity2D)
+
+    a = ecs.create(3)
+    positions = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+    vx = np.array([10.0, 20.0, 30.0])
+    vy = np.array([-1.0, -2.0, -3.0])
+
+    ecs.add(a, Position2D, positions, Velocity2D, (vx, vy))
+
+    pos = ecs.get(Position2D)[a]
+    vel = ecs.get(Velocity2D)[a]
+    assert np.allclose(pos.x, positions[:, 0])
+    assert np.allclose(pos.y, positions[:, 1])
+    assert np.allclose(vel.x, vx)
+    assert np.allclose(vel.y, vy)
+
+    b = ecs.create(2)
+    ecs.add(b, Position2D(7.0, 8.0))
+    assert np.allclose(ecs.get(Position2D)[b].x, [7.0, 7.0])
+    assert np.allclose(ecs.get(Position2D)[b].y, [8.0, 8.0])
+
+
+def test_get_and_modify_component_range() -> None:
+    ecs, ids, pos = make_pos2d_ecs([(0, 0), (1, 1), (2, 2)])
+
+    pos[ids].x += 10
+    pos[ids[1:]].y = np.array([20.0, 30.0])
+
+    assert pos[ids].x.tolist() == pytest.approx([10.0, 11.0, 12.0])
+    assert pos[ids].y.tolist() == pytest.approx([0.0, 20.0, 30.0])
+
+
+def test_component_rows_follow_dense_compaction() -> None:
+    ecs, ids, pos = make_pos2d_ecs([(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)])
+
+    ecs.remove(ids[[3, 0]], Position2D)
+    new_id = ecs.create()
+    ecs.add(new_id, Position2D(-1, -1))
+
+    remaining = ecs.where(Position2D)
+    assert sorted(remaining.tolist()) == [1, 2, 4, 5]
+
+    active_rows = pos.rows
+    assert sorted(active_rows.tolist()) == [0, 1, 2, 3]
+    assert sorted(owner_ids(pos, active_rows).tolist()) == [1, 2, 4, 5]
+
+
+def test_query_simple_vectorized() -> None:
+    ecs, _, pos = make_pos2d_ecs([(0, 0), (1, 2), (5, -3), (-1, 1), (4, 10)])
+    out = pos.query(lambda x, y: (x > 0) & (np.abs(y) < 3))
+
+    assert out.dtype == Index
+    assert owner_ids(pos, out).tolist() == [1]
+
+
+def test_query_annotated_types() -> None:
+    _, _, pos = make_pos2d_ecs([(0, 0), (1, 2), (5, -3), (-1, 1), (4, 10)])
+
+    def condition(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        return (x > 0) & (np.abs(y) < 3)
+
+    out = pos.query(condition)
+    assert out.dtype == Index
+    assert owner_ids(pos, out).tolist() == [1]
+
+
+def test_query_subset_filtering() -> None:
+    _, ids, pos = make_pos2d_ecs([(10, 0), (9, 0), (11, 0), (8, 0)])
+    subset = ids[[0, 1, 3]]
+
+    out = pos.query(lambda x, y: x >= 10, subset)
+    assert owner_ids(pos, out).tolist() == [0]
+
+
+def test_query_returns_empty_when_no_match() -> None:
+    _, _, pos = make_pos2d_ecs([(0, 0), (1, 1)])
+    out = pos.query(lambda x, y: x < 0)
+    assert isinstance(out, np.ndarray)
+    assert out.dtype == Index
+    assert out.size == 0
+
+
+def test_query_can_use_entity_id_in_predicate() -> None:
+    _, _, pos = make_pos2d_ecs([(5, 0), (5, 0), (5, 0)])
+    out = pos.query(lambda x, y, entity: (x == 5) & (entity != 1))
+    assert owner_ids(pos, out).tolist() == [0, 2]
+
+
+def test_query_raises_on_length_mismatch() -> None:
+    _, _, pos = make_pos2d_ecs([(0, 0), (1, 1), (2, 2)])
+    with pytest.raises(ValueError):
+        pos.query(lambda x, y: np.array([True, False]))
+
+
+def test_query_on_empty_storage() -> None:
+    ecs = ECS()
+    ecs.register(Position2D)
+    out = ecs.get(Position2D).query(lambda x: x > 0)
+    assert out.dtype == Index
+    assert out.size == 0
+
+
+def test_query_mult_comp_returns_matching_rows() -> None:
+    _, _, tags = make_multitag_ecs(
+        {
+            0: [1, 0],
+            1: [0, 0],
+            2: [2, 1],
+        }
+    )
+
+    out = tags.query(lambda value: value == 1)
+    assert out.dtype == Index
+    assert owner_ids(tags, out).tolist() == [0, 2]
+    assert tags._store._dense["value"][out].tolist() == [1, 1]
+
+
+def test_query_mult_comp_subset_filtering() -> None:
+    _, ids, tags = make_multitag_ecs(
+        {
+            2: [4, 5],
+            5: [3, 3],
+            7: [1, 2],
+            9: [1],
+        }
+    )
+
+    out = tags.query(lambda value: value == 1, ids[[5, 7, 9]])
+    assert owner_ids(tags, out).tolist() == [7, 9]
+
+
+def test_query_mult_comp_no_match_returns_empty() -> None:
+    _, _, tags = make_multitag_ecs({0: [0, 0], 1: [2], 3: [4, 5]})
+    out = tags.query(lambda value: value == 9)
+    assert out.size == 0
+
+
+def test_mult_comp_get_returns_all_components_for_entities() -> None:
+    _, ids, tags = make_multitag_ecs({0: [0, 0], 1: [2], 3: [4, 5], 4: [6, 6]})
+    selection = tags[ids[[0, 3]]]
+    assert selection.value.tolist() == [0, 0, 4, 5]
+
+
+def test_query_intflag_predicate() -> None:
+    ecs = ECS()
+    ecs.register(Tag)
+    ids = ecs.create(3)
+    ecs.add(
+        ids,
+        Tag,
+        np.asarray(
+            [
+                TagEnum.Enemy | TagEnum.Dazed,
+                TagEnum.Flying,
+                TagEnum.Enemy,
+            ],
+            dtype=object,
+        ),
+    )
+
+    tags = ecs.get(Tag)
+    out = tags.query(lambda value: (value & TagEnum.Enemy) != 0)
+    assert owner_ids(tags, out).tolist() == [0, 2]
+
+
+def test_movement_system() -> None:
+    ecs = ECS()
+    ecs.register(Position2D, Velocity2D, Tag)
+
+    entities_ = ecs.create(3)
+    ecs.add(entities_[1:], Position2D, np.array([[0.0, 0.0], [5.0, -3.0]]))
+    ecs.add(entities_[1:], Velocity2D, (np.array([1.0, -1.0]), np.array([2.0, 0.5])))
+    ecs.add(entities_[2], Tag(TagEnum.Enemy | TagEnum.Dazed))
+
+    positions = ecs.get(Position2D)
+    velocities = ecs.get(Velocity2D)
+
+    assert positions[entities_[1]].x[0] == pytest.approx(0.0)
+    assert positions[entities_[1]].y[0] == pytest.approx(0.0)
+    assert positions[entities_[2]].x[0] == pytest.approx(5.0)
+    assert positions[entities_[2]].y[0] == pytest.approx(-3.0)
+
+    targets = ecs.where(Tag, Position2D, Velocity2D)
+    positions[targets].x -= velocities[targets].x * 0.5
+    positions[targets].y -= velocities[targets].y * 0.5
+
+    assert positions[entities_[2]].x[0] == pytest.approx(5.5)
+    assert positions[entities_[2]].y[0] == pytest.approx(-3.25)
+    assert positions[entities_[1]].x[0] == pytest.approx(0.0)
+    assert positions[entities_[1]].y[0] == pytest.approx(0.0)
+
+    untagged = ecs.where(Position2D, Velocity2D, exclude=[Tag])
+    assert entities_[2] not in untagged
+    assert entities_[1] in untagged
+
+    tag_value = ecs.get(Tag)[entities_[2]].value[0]
+    assert tag_value & TagEnum.Enemy
+    assert not (tag_value & TagEnum.Flying)
+
+    tag_rows = ecs.get(Tag).query(lambda value: (value & TagEnum.Enemy) != 0)
+    assert owner_ids(ecs.get(Tag), tag_rows).tolist() == [2]
+
+
+def rotate_vectors_by_quaternions(q: np.ndarray, v: np.ndarray) -> np.ndarray:
+    q_vec = q[:, None, :3]
+    qw = q[:, None, 3:4]
+    t = 2.0 * np.cross(q_vec, v, axis=2)
+    return v + qw * t + np.cross(q_vec, t, axis=2)
+
+
+def update_world_aabb(ecs: ECS) -> None:
+    nr_ents = ecs.where(LocalAABB, Position)
+    la = ecs.get(LocalAABB)[nr_ents]
+    pos = ecs.get(Position)[nr_ents]
+
+    positions = np.column_stack((pos.x, pos.y, pos.z))
+    mins = np.column_stack((la.x_min, la.y_min, la.z_min))
+    maxs = np.column_stack((la.x_max, la.y_max, la.z_max))
+
+    wa_min = mins + positions
+    wa_max = maxs + positions
+
+    aabbs = ecs.get(AxisAlignedBoundingBox)[nr_ents]
+    aabbs.x_min = wa_min[:, 0]
+    aabbs.y_min = wa_min[:, 1]
+    aabbs.z_min = wa_min[:, 2]
+    aabbs.x_max = wa_max[:, 0]
+    aabbs.y_max = wa_max[:, 1]
+    aabbs.z_max = wa_max[:, 2]
+
+    rot_ents = ecs.where(LocalAABB, Position, Orientation)
+    if rot_ents.size == 0:
+        return
+
+    la = ecs.get(LocalAABB)[rot_ents]
+    pos = ecs.get(Position)[rot_ents]
+    ori = ecs.get(Orientation)[rot_ents]
+
+    positions = np.column_stack((pos.x, pos.y, pos.z))
+    orientations = np.column_stack((ori.qx, ori.qy, ori.qz, ori.qw))
+    mins = np.column_stack((la.x_min, la.y_min, la.z_min))
+    maxs = np.column_stack((la.x_max, la.y_max, la.z_max))
+
+    corners = np.array(
+        [[x, y, z] for x in (0, 1) for y in (0, 1) for z in (0, 1)],
+        dtype=int,
+    )
+    offsets = (
+        mins[:, None, :] * (1 - corners)[None, :, :]
+        + maxs[:, None, :] * corners[None, :, :]
+    )
+    points = rotate_vectors_by_quaternions(orientations, offsets) + positions[:, None, :]
+    wa_min = points.min(axis=1)
+    wa_max = points.max(axis=1)
+
+    aabbs = ecs.get(AxisAlignedBoundingBox)[rot_ents]
+    aabbs.x_min = wa_min[:, 0]
+    aabbs.y_min = wa_min[:, 1]
+    aabbs.z_min = wa_min[:, 2]
+    aabbs.x_max = wa_max[:, 0]
+    aabbs.y_max = wa_max[:, 1]
+    aabbs.z_max = wa_max[:, 2]
+
+
+def detect_aabb_overlaps(ecs: ECS) -> list[tuple[int, int]]:
+    ents = ecs.where(AxisAlignedBoundingBox)
+    boxes = ecs.get(AxisAlignedBoundingBox)[ents]
+    mins = np.column_stack((boxes.x_min, boxes.y_min, boxes.z_min))
+    maxs = np.column_stack((boxes.x_max, boxes.y_max, boxes.z_max))
+
+    ok1 = mins[:, None, :] <= maxs[None, :, :]
+    ok2 = maxs[:, None, :] >= mins[None, :, :]
+    overlap = np.logical_and(ok1, ok2).all(axis=2)
+
+    i, j = np.triu_indices(ents.size, k=1)
+    hits = overlap[i, j]
+    return [
+        (int(ents[ii]), int(ents[jj]))
+        for ii, jj, hit in zip(i, j, hits)
+        if hit
+    ]
+
+
+def test_aabb_system_and_overlap() -> None:
+    ecs = ECS()
+    ecs.register(LocalAABB, Position, AxisAlignedBoundingBox, Orientation)
+
+    all_entities = ecs.create(6)
+    e1 = all_entities[0:1]
+    e2 = all_entities[2:3]
+
+    ecs.add(
+        e1,
+        LocalAABB(-1, -1, -1, 1, 1, 1),
+        Position(5, 0, 0),
+        AxisAlignedBoundingBox(0, 0, 0, 0, 0, 0),
+        Orientation(0, 0, np.sin(np.pi / 8), np.cos(np.pi / 8)),
+    )
+    ecs.add(
+        e2,
+        LocalAABB(-2, -2, -2, 2, 2, 2),
+        Position(5, 0, 0),
+        AxisAlignedBoundingBox(0, 0, 0, 0, 0, 0),
+    )
+
+    update_world_aabb(ecs)
+    wa1 = ecs.get(AxisAlignedBoundingBox)[e1]
+
+    half_diag = np.sqrt(2)
+    assert wa1.x_min[0] == pytest.approx(5 - half_diag)
+    assert wa1.x_max[0] == pytest.approx(5 + half_diag)
+    assert wa1.y_min[0] == pytest.approx(-half_diag)
+    assert wa1.y_max[0] == pytest.approx(half_diag)
+    assert wa1.z_min[0] == pytest.approx(-1)
+    assert wa1.z_max[0] == pytest.approx(1)
+
+    hits = detect_aabb_overlaps(ecs)
+    assert hits == [(int(e1[0]), int(e2[0]))]
+
+
+def test_storage_multicomp_add_get_remove() -> None:
+    store = MultiComponentStorage(MultiComp, capacity=Index(4))
     entity_id = Entity(42)
 
-    store._add(entity_id, MultiComp(1.))
-    store._add(entity_id, MultiComp(2.))
-    store._add(entity_id, MultiComp(3.))
+    store._add_range(
+        entities([entity_id, entity_id, entity_id]),
+        np.array([1.0, 2.0, 3.0]),
+    )
 
-    comps = store.get(entity_id)
-    assert isinstance(comps, Sequence)
-    assert len(comps) == 3
-    assert comps[0].val == pytest.approx(1.)
-    assert comps[1].val == pytest.approx(2.)
-    assert comps[2].val == pytest.approx(3.)
+    component_rows = store._get_rows(entities([entity_id]))
+    assert store._dense["val"][component_rows].tolist() == pytest.approx([1.0, 2.0, 3.0])
 
-    idx = store._get_dense_indices(entity_id)
-    block = store._dense['val'][:3]
-    assert np.allclose(block, [1., 2., 3.])
+    store._remove_rows(component_rows[1:2])
+    component_rows = store._get_rows(entities([entity_id]))
+    assert store._dense["val"][component_rows].tolist() == pytest.approx([1.0, 3.0])
 
-    store._remove(store.get(entity_id)[1])
-    comps = store.get(entity_id)
-    assert isinstance(comps, Sequence)
-    assert len(comps) == 2
-    assert comps[0].val == pytest.approx(1.0)
-    assert comps[1].val == pytest.approx(3.)
 
-def test_ecs_multicomp_reassignment():
+def test_ecs_multicomp_reassignment() -> None:
     ecs = ECS()
-    ecs.register(MultiComp, allow_same_type_components_per_entity=True, capacity=5)
-    ecs.register(Position2D, capacity=5)
-    store = ecs.get_store(MultiComp)
-    positions = ecs.get_store(Position2D)
+    ecs.register(MultiComp, allow_same_type_components_per_entity=True, capacity=Index(5))
+    ecs.register(Position2D, capacity=Index(5))
 
-    ecs.create_entities(12)
-    e = ecs.create_entity(MultiComp(1.1), MultiComp(2.2), MultiComp(3.3), Position2D(1,1))
-    e2 = ecs.create_entity(MultiComp(5.5), MultiComp(6.6), MultiComp(7.7), Position2D(2,2))
-    ecs.add_component(e, MultiComp(4.4))
-    proxies = store.get(e)
-    assert len(proxies) == 4
-    assert sorted( map(lambda p: p.val, proxies) ) == [1.1, 2.2, 3.3, 4.4]
-    store._remove(next(filter(lambda p: p.val==2.2, proxies)))
-    store._remove(next(filter(lambda p: p.val==3.3, proxies)))
-    proxies = store.get(e)
-    assert len(proxies) == 2
-    assert sorted( map(lambda p: p.val, proxies) ) == [1.1, 4.4]
+    ecs.create(12)
+    e = ecs.create()
+    e2 = ecs.create()
 
-    proxies = store.get(e2)
-    assert len(proxies) == 3
-    assert sorted( map(lambda p: p.val, proxies) ) == [5.5, 6.6, 7.7]
+    ecs.add(np.repeat(e, 3), MultiComp, np.array([1.1, 2.2, 3.3]))
+    ecs.add(e, Position2D(1, 1))
+    ecs.add(np.repeat(e2, 3), MultiComp, np.array([5.5, 6.6, 7.7]))
+    ecs.add(e2, Position2D(2, 2))
+    ecs.add(e, MultiComp, 4.4)
 
-    proxy = positions.get_1(e2)
-    assert proxy.x == 2 and proxy.y == 2
+    comps = ecs.get(MultiComp)
+    assert sorted(comps[e].val.tolist()) == pytest.approx([1.1, 2.2, 3.3, 4.4])
 
-    ecs.delete_entity(e2)
-    assert not store.get(e2)
-    assert not positions.get_1(e2)
-    
-    ecs.add_component(e, MultiComp(8.8))
-    vec = store.get_full_vector([e,e2,8])
-    assert vec.shape == (3, 1)
-    assert sorted( vec.flatten().tolist() ) == [1.1, 4.4, 8.8]
-    
-    ecs.add_component(e, MultiComp(9.9))
-    proxies = store.get(e)
-    assert len(proxies) == 4
-    assert sorted( map(lambda p: p.val, proxies) ) == [1.1, 4.4, 8.8, 9.9]
+    to_remove = comps.query(lambda val: (val == 2.2) | (val == 3.3), e)
+    comps.remove(to_remove)
+    assert sorted(comps[e].val.tolist()) == pytest.approx([1.1, 4.4])
+    assert sorted(comps[e2].val.tolist()) == pytest.approx([5.5, 6.6, 7.7])
 
-def test_ecs_multicomp_defragment():
+    positions = ecs.get(Position2D)
+    assert positions[e2].x[0] == 2
+    assert positions[e2].y[0] == 2
+
+    ecs.delete(e2)
+    assert e2[0] not in ecs.where(MultiComp)
+    assert e2[0] not in ecs.where(Position2D)
+
+    ecs.add(e, MultiComp, 8.8)
+    assert sorted(comps[e].val.tolist()) == pytest.approx([1.1, 4.4, 8.8])
+
+    ecs.add(e, MultiComp, 9.9)
+    assert sorted(comps[e].val.tolist()) == pytest.approx([1.1, 4.4, 8.8, 9.9])
+
+
+def test_multicomp_accessor_remove_clears_entity_mask_only_when_empty() -> None:
     ecs = ECS()
-    ecs.register(MultiComp, allow_same_type_components_per_entity=True, capacity=12)
+    ecs.register(MultiComp, allow_same_type_components_per_entity=True)
+    ids = ecs.create(2)
+
+    owners = np.array([ids[0], ids[0], ids[1]], dtype=Entity)
+    ecs.add(owners, MultiComp, np.array([1.0, 2.0, 3.0]))
+
+    comps = ecs.get(MultiComp)
+    first = comps.query(lambda val: val == 1.0)
+    comps.remove(first)
+    assert ids.tolist() == ecs.where(MultiComp).tolist()
+
+    second = comps.query(lambda val: val == 2.0)
+    comps.remove(second)
+    assert ecs.where(MultiComp).tolist() == [int(ids[1])]
+
+
+def test_ecs_multicomp_defragment() -> None:
+    ecs = ECS()
+    ecs.register(MultiComp, allow_same_type_components_per_entity=True, capacity=Index(12))
+    ids = ecs.create(16)
+    comps = ecs.get(MultiComp)
+
+    owners = ids[[0, 4, 8, 12]]
+    for owner in owners:
+        owner_array = entities([owner])
+        ecs.add(np.repeat(owner_array, 3), MultiComp, np.array([owner, owner + 1, owner + 2], dtype=float))
+        remove_rows = comps.query(lambda val: val != float(owner), owner_array)
+        comps.remove(remove_rows)
+
     store = ecs.get_store(MultiComp)
+    assert store._count == {
+        Entity(0): 1,
+        Entity(4): 1,
+        Entity(8): 1,
+        Entity(12): 1,
+    }
+    assert sorted(store._dense["entity"][: store._size][store._dense["entity"][: store._size] != NO_ENTITY].tolist()) == [0, 4, 8, 12]
 
-    ecs.create_entities(16)
-    for i in range(4):
-        j = Entity(i * 4)
-        ecs.add_component(j, MultiComp(j), MultiComp(j+1), MultiComp(j+2))
-        comps = store.get(j)
-        ecs.remove_component(comps[1])
-        ecs.remove_component(comps[1])
+    # Adding 8 rows with a capacity of 12 forces defragmentation of the holes.
+    for owner in owners:
+        owner_array = entities([owner])
+        ecs.add(
+            np.repeat(owner_array, 2),
+            MultiComp,
+            np.array([owner + 1, owner + 2], dtype=float),
+        )
 
-    assert store._count == {0: np.uint16(1), 4: np.uint16(1), 8: np.uint16(1), 12: np.uint16(1)}
-    assert np.unique(store._entities_contained_capped).tolist() == [ 0, 4,  8, 12, NONE ]
-    assert np.unique(store._dense['val'][:store._size][store._entities_contained_capped != NONE]).tolist() == [0., 4., 8., 12.]
+    assert store._count == {
+        Entity(0): 3,
+        Entity(4): 3,
+        Entity(8): 3,
+        Entity(12): 3,
+    }
+    assert store._live_count == 12
+    assert store._size == 12
+    assert np.all(store._dense["entity"][: store._size] != NO_ENTITY)
 
-    for i in range(4):
-        j = Entity(i * 4)
-        ecs.add_component(j,MultiComp(j+1), MultiComp(j+2))
-
-    assert store._count == {0: np.uint16(3), 4: np.uint16(3), 8: np.uint16(3), 12: np.uint16(3)}
-    assert np.unique(store._entities_contained_capped).tolist() == [0, 4,  8, 12 ]
-    assert np.unique(store._dense['val'][:store._size][store._entities_contained_capped != NONE]).tolist() == [0.,1.,2., 4.,5.,6., 8.,9.,10., 12.,13.,14.]
+    for owner in owners:
+        vals = np.sort(comps[entities([owner])].val)
+        assert vals.tolist() == pytest.approx(
+            [float(owner), float(owner + 1), float(owner + 2)]
+        )
 
 
-    for i in range(4):
-        j = Entity(i * 4)
-        assert np.unique([ p.val for p in store.get(j) ]).tolist() == [float(j), float(j+1), float(j+2)]
+def test_batched_remove_and_delete() -> None:
+    ecs = ECS()
+    ecs.register(Position2D, Velocity2D)
+    ids = ecs.create(8)
 
+    ecs.add(ids, Position2D, np.column_stack((ids, ids)).astype(float))
+    ecs.add(ids, Velocity2D, (np.ones(8), np.ones(8)))
 
+    ecs.remove(ids[[1, 3, 5]], Velocity2D)
+    assert ecs.where(Velocity2D).tolist() == [0, 2, 4, 6, 7]
+    assert ecs.where(Position2D, Velocity2D).tolist() == [0, 2, 4, 6, 7]
+
+    ecs.delete(ids[[0, 2, 7]])
+    assert len(ecs) == 5
+    assert ecs.where(Position2D).tolist() == [1, 3, 4, 5, 6]
+    assert ecs.where(Position2D, Velocity2D).tolist() == [4, 6]
+
+    with pytest.raises(KeyError):
+        ecs.get(Position2D)[ids[0]]

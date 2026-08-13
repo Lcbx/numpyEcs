@@ -1,90 +1,147 @@
 from scenes.benchmarks.benchmark_loop import *
 import scenes.benchmarks.benchmark_loop as loop
+
+import numpy as np
 from pyray import *
+
 from ECS import *
+
 
 @component
 class Position:
-    x: float; y: float; z: float
+    x: float
+    y: float
+    z: float
+
 
 @component
 class Velocity:
-    x: float; y: float; z: float
+    x: float
+    y: float
+    z: float
+
 
 @component
 class Mesh:
-    color : Color
-    
+    color: Color
+
+
 @component
 class BoundingBox:
-    x_min: float; y_min: float; z_min: float
-    x_max: float; y_max: float; z_max: float
+    x_min: float
+    y_min: float
+    z_min: float
+    x_max: float
+    y_max: float
+    z_max: float
+
 
 world = ECS()
 world.register(Position, Velocity, Mesh, BoundingBox)
 
-ground = world.create_entity(
-    Position(0,-0.51,0),
+ground = world.create()
+world.add(
+    ground,
+    Position(0, -0.51, 0),
     Mesh(LIGHTGRAY),
     BoundingBox(
-        -25,0,-25,
-        25,1,25
-    )
+        -25, 0, -25,
+        25, 1, 25,
+    ),
 )
 
-def add_cubes():
-    for e in world.create_entities(250):
-        world.add_component(e,
-            Position(
-                get_random_value(-SPACE_SIZE, SPACE_SIZE),
-                get_random_value(0, 25),
-                get_random_value(-SPACE_SIZE, SPACE_SIZE) ),
-            Velocity(
-                get_random_value(-4, 4),
-                0,
-                get_random_value(-4, 4) ),
-            BoundingBox(
-                get_random_value(-CUBE_MAX, 0), get_random_value(-CUBE_MAX, 0), get_random_value(-CUBE_MAX, 0),
-                get_random_value(1, CUBE_MAX), get_random_value(1, CUBE_MAX), get_random_value(1, CUBE_MAX) ),
-            Mesh(rnd_color()),
-        )
+positions = world.get(Position)
+velocities = world.get(Velocity)
+meshes = world.get(Mesh)
+bboxes = world.get(BoundingBox)
 
-positions = world.get_store(Position)
-velocities = world.get_store(Velocity)
-meshes = world.get_store(Mesh)
-bboxes = world.get_store(BoundingBox)
 
-def draw():
+def random_values(low: int, high: int, count: int) -> np.ndarray:
+    return np.fromiter(
+        (get_random_value(low, high) for _ in range(count)),
+        dtype=np.float64,
+        count=count,
+    )
+
+
+def add_cubes() -> None:
+    count = 250
+    ents = world.create(count)
+
+    pos = np.column_stack((
+        random_values(-SPACE_SIZE, SPACE_SIZE, count),
+        random_values(0, 25, count),
+        random_values(-SPACE_SIZE, SPACE_SIZE, count),
+    ))
+
+    velocity = (
+        random_values(-4, 4, count),
+        np.zeros(count),
+        random_values(-4, 4, count),
+    )
+
+    bbox = (
+        random_values(-CUBE_MAX, 0, count),
+        random_values(-CUBE_MAX, 0, count),
+        random_values(-CUBE_MAX, 0, count),
+        random_values(1, CUBE_MAX, count),
+        random_values(1, CUBE_MAX, count),
+        random_values(1, CUBE_MAX, count),
+    )
+
+    colors = np.empty(count, dtype=object)
+    colors[:] = [rnd_color() for _ in range(count)]
+
+    world.add(
+        ents,
+        Position, pos,
+        Velocity, velocity,
+        BoundingBox, bbox,
+        Mesh, colors,
+    )
+
+
+def draw() -> None:
     ents = world.where(Position, Mesh, BoundingBox)
-    pos_vec, mesh_vec, bb_vec, = (positions.get_vector(ents), meshes.get_vector(ents), bboxes.get_vector(ents))
-    pos_vec = vectorized( pos_vec, *positions.fields )
-    bmins = vectorized( bb_vec, 'x_min', 'y_min', 'z_min')
-    bmaxs = vectorized( bb_vec, 'x_max', 'y_max', 'z_max')
+
+    pos = positions[ents]
+    mesh = meshes[ents]
+    bbox = bboxes[ents]
+
+    pos_vec = np.column_stack((pos.x, pos.y, pos.z))
+    bmins = np.column_stack((bbox.x_min, bbox.y_min, bbox.z_min))
+    bmaxs = np.column_stack((bbox.x_max, bbox.y_max, bbox.z_max))
+
     sizes = bmaxs - bmins
     centers = pos_vec + (bmaxs + bmins) * 0.5
-    for center, size, color in zip(centers, sizes, mesh_vec['color']):
+
+    for center, size, color in zip(centers, sizes, mesh.color):
         draw_cube(
             tuple(center),
-            size[0], # x
-            size[1], # y
-            size[2], # z
-            color
+            size[0],
+            size[1],
+            size[2],
+            color,
         )
 
-def update(frameTime):
-    pv = world.where(Position, Velocity)
-    p_vec, v_vec = (positions.get_vector(pv), velocities.get_vector(pv))
-    p_vec = vectorized( p_vec, *positions.fields )
-    v_vec = vectorized( v_vec, *velocities.fields )
-    p_vec += v_vec * frameTime
-    positions.set_vector(pv, x=p_vec[:,0], y=p_vec[:,1], z=p_vec[:,2] )
 
-def cubes_len():
-    return world.count
+def update(frameTime: float) -> None:
+    ents = world.where(Position, Velocity)
+
+    pos = positions[ents]
+    vel = velocities[ents]
+
+    pos.x += vel.x * frameTime
+    pos.y += vel.y * frameTime
+    pos.z += vel.z * frameTime
+
+
+def cubes_len() -> int:
+    return len(world)
+
 
 loop.add_cubes = add_cubes
 loop.draw = draw
 loop.update = update
 loop.cubes_len = cubes_len
 loop.run()
-
