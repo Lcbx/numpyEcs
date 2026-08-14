@@ -131,9 +131,7 @@ def update(frameTime: float) -> None:
     pos = positions[ents]
     vel = velocities[ents]
 
-    pos.x += vel.x * frameTime
-    pos.y += vel.y * frameTime
-    pos.z += vel.z * frameTime
+    pos.set_vector(pos.vector() + vel.vector() * frameTime)
 
 
 def cubes_len() -> int:

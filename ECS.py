@@ -135,6 +135,11 @@ class ComponentSelection:
 		field_names = field_names or self._store.fields
 		return np.column_stack( tuple(self[field] for field in field_names) )
 
+	def set_vector(self, value : FieldArray, *field_names: str) -> None:
+		field_names = field_names or self._store.fields
+		for i, field in enumerate(field_names):
+			self._store._dense[field][self._rows] = value[:, i]
+
 	def __len__(self) -> int:
 		return int(self._rows.size)
 
@@ -155,10 +160,12 @@ class ComponentSelection:
 		if name.startswith("_"):
 			object.__setattr__(self, name, value)
 			return
+
 		try:
 			array = self._store._dense[name]
 		except KeyError:
 			raise AttributeError(name) from None
+
 		array[self._rows] = value
 
 
