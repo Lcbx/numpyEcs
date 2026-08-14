@@ -74,23 +74,6 @@ def _as_rows(rows: IndexLike) -> IndexArray:
 	return array
 
 
-def _block_rows(heads: IndexArray, counts: CountArray) -> IndexArray:
-	"""Concatenate arange(head, head + count) for each block, without Python loops."""
-	if heads.size == 0: return np.empty(0, dtype=Index)
-
-	counts64 = counts.astype(np.int64, copy=False)
-	total = int(counts64.sum())
-	if total == 0:
-		return np.empty(0, dtype=Index)
-
-	offsets = np.cumsum(counts64) - counts64
-	rows = (
-		np.repeat(heads.astype(np.int64, copy=False) - offsets, counts64)
-		+ np.arange(total, dtype=np.int64)
-	)
-	return rows.astype(Index, copy=False)
-
-
 def _component_fields(component_cls: type[Any]) -> tuple[tuple[str, Any], ...]:
 	hints = get_type_hints(component_cls)
 	if is_dataclass(component_cls):
@@ -285,6 +268,8 @@ class ComponentStorage:
 			new[: self._capacity] = old
 			if name == "entity":
 				new[self._capacity :] = NO_ENTITY
+			if name == "_count":
+				new[self._capacity :] = 0
 			elif old.dtype == np.dtype(object):
 				new[self._capacity :] = None
 			self._dense[name] = new
@@ -502,58 +487,94 @@ class MultiComponentStorage(ComponentStorage):
 		capacity: int = INITIAL_CAPACITY,
 	) -> None:
 		super().__init__(component_cls, capacity)
-		self._count = np.zeros(self._sparse.size, dtype=ComponentPerEntityCount)
+		self._dense["_count"] = np.zeros( self._capacity, dtype=ComponentPerEntityCount )
 		self._live_count = 0
 
-	def _grow_sparse(self, minimum_size: int) -> None:
-		old_size = self._sparse.size
-		super()._grow_sparse(minimum_size)
-		if self._sparse.size == old_size:
-			return
-		count = np.zeros(self._sparse.size, dtype=ComponentPerEntityCount)
-		count[: self._count.size] = self._count
-		self._count = count
+	def _clear_rows(self, rows: IndexArray) -> None:
+		super()._clear_rows(rows)
+		self._dense["_count"][rows] = 0
 
 	def _active_rows(self) -> IndexArray:
 		return np.flatnonzero(
-			self._dense["entity"][: self._size] != NO_ENTITY
+			self._dense["entity"][:self._size] != NO_ENTITY
 		).astype(Index, copy=False)
+
+	def _block_rows(
+		self,
+		heads: IndexArray,
+		counts: CountArray | None = None,
+	) -> IndexArray:
+		"""Concatenate arange(head, head + count) for each block."""
+		if heads.size == 0:
+			return np.empty(0, dtype=Index)
+
+		if counts is None:
+			counts = self._dense["_count"][heads]
+
+		counts64 = counts.astype(np.int64, copy=False)
+		total = int(counts64.sum())
+
+		if total == 0:
+			return np.empty(0, dtype=Index)
+
+		offsets = np.cumsum(counts64) - counts64
+
+		rows = (
+			np.repeat(
+				heads.astype(np.int64, copy=False) - offsets,
+				counts64,
+			)
+			+ np.arange(total, dtype=np.int64)
+		)
+
+		return rows.astype(Index, copy=False)
 
 	def _get_rows(self, indices: IndexArray) -> IndexArray:
 		heads = self._get_dense_indices(indices)
-		present = heads != NONE
-		return _block_rows(heads[present], self._count[indices[present]])
+		heads = heads[heads != NONE]
+		return self._block_rows(heads)
 
 	def _trim_tail(self) -> None:
 		if self._live_count == 0:
 			self._size = 0
 			return
-		if self._size == 0 or self._dense["entity"][self._size - 1] != NO_ENTITY:
+
+		if self._dense["entity"][self._size - 1] != NO_ENTITY:
 			return
-		reverse_live = self._dense["entity"][: self._size][::-1] != NO_ENTITY
+
+		reverse_live = (
+			self._dense["entity"][:self._size][::-1] != NO_ENTITY
+		)
 		self._size -= int(np.argmax(reverse_live))
 
 	def _defragment(self, required_capacity: int) -> None:
 		rows = self._active_rows()
 		live = int(rows.size)
 
-		new_arrays = required_capacity > self._capacity
+		grow = required_capacity > self._capacity
 		new_capacity = (
-			higher_pow2(required_capacity) if new_arrays
+			higher_pow2(required_capacity)
+			if grow
 			else self._capacity
 		)
 
-		if live == self._size and new_capacity == self._capacity:
+		if live == self._size and not grow:
 			return
 
 		for name in self._dense:
 			old = self._dense[name]
-			new = np.empty(new_capacity, dtype=old.dtype) if new_arrays else old
+
+			if grow:
+				new = np.empty(new_capacity, dtype=old.dtype)
+			else:
+				new = old
 
 			new[:live] = old[rows]
 
 			if name == "entity":
 				new[live:] = NO_ENTITY
+			elif name == "_count":
+				new[live:] = 0
 			elif old.dtype == np.dtype(object):
 				new[live:] = None
 
@@ -569,7 +590,10 @@ class MultiComponentStorage(ComponentStorage):
 			np.diff(owners, prepend=NO_ENTITY)
 		).astype(Index, copy=False)
 
-		self._set_dense_indices(_entity_indices(owners[starts]), starts)
+		self._set_dense_indices(
+			_entity_indices(owners[starts]),
+			starts,
+		)
 
 	def _ensure_append_capacity(self, quantity: int) -> None:
 		if self._size + quantity > self._capacity:
@@ -583,17 +607,14 @@ class MultiComponentStorage(ComponentStorage):
 		if entities.size == 0:
 			return
 
-		# Group new components by owner.
+		# Group incoming components by owner.
 		order = np.argsort(entities, kind="stable")
 		entities = entities[order]
-		field_values = {
-			field: values[order]
-			for field, values in field_values.items()
-		}
 
 		starts = np.flatnonzero(
 			np.r_[True, entities[1:] != entities[:-1]]
 		)
+
 		add_counts = np.diff(
 			np.r_[starts, entities.size]
 		).astype(ComponentPerEntityCount, copy=False)
@@ -607,99 +628,122 @@ class MultiComponentStorage(ComponentStorage):
 		existing = old_heads != NONE
 
 		old_counts = np.zeros_like(add_counts)
-		old_counts[existing] = self._count[owner_indices[existing]]
+		old_counts[existing] = self._dense["_count"][ old_heads[existing] ]
+
 		final_counts = old_counts + add_counts
 
-		# Save old values from affected existing blocks.
-		old_rows = _block_rows(
-			old_heads[existing],
-			old_counts[existing],
-		)
+		# Save existing blocks before removing them.
+		old_rows = self._block_rows( old_heads[existing], old_counts[existing] )
 
 		old_values = {
 			field: self._dense[field][old_rows].copy()
 			for field in self.fields
 		}
 
-		# Remove affected old blocks.
-		self._clear_rows(old_rows)
-		self._sparse[owner_indices[existing]] = NONE
+		if old_rows.size:
+			self._clear_rows(old_rows)
+			self._sparse[owner_indices[existing]] = NONE
 
-		self._live_count -= old_rows.size
-		self._trim_tail()
+			self._live_count -= int(old_rows.size)
+			self._trim_tail()
 
-		# Append rebuilt blocks for all affected owners.
+		# Rebuild all affected blocks contiguously at the end.
 		append_count = int(final_counts.sum())
 		self._ensure_append_capacity(append_count)
 
 		start = self._size
-		offsets = np.cumsum(final_counts, dtype=np.uint64) - final_counts
-		new_heads = (start + offsets).astype(Index, copy=False)
 
-		self._dense["entity"][start:start + append_count] = np.repeat(
-			owners,
-			final_counts,
+		offsets = (
+			np.cumsum(final_counts, dtype=np.uint64)
+			- final_counts
 		)
 
-		old_destinations = _block_rows(
-			new_heads,
-			old_counts,
-		)
+		new_heads = (
+			start + offsets
+		).astype(Index, copy=False)
 
-		add_destinations = _block_rows(
-			(new_heads + old_counts.astype(Index, copy=False)),
-			add_counts,
-		)
+		stop = start + append_count
+
+		self._dense["entity"][start:stop] = np.repeat( owners, final_counts )
+
+		# Count metadata exists only at block heads.
+		self._dense["_count"][start:stop] = 0
+		self._dense["_count"][new_heads] = final_counts
+
+		old_destinations = self._block_rows( new_heads, old_counts )
+
+		add_heads = new_heads.astype(Index) + old_counts.astype(Index)
+		add_destinations = self._block_rows( add_heads, add_counts )
+
+		if old_rows.size:
+			for field in self.fields:
+				self._dense[field][old_destinations] = old_values[field]
 
 		for field in self.fields:
-			self._dense[field][old_destinations] = old_values[field]
-			self._dense[field][add_destinations] = field_values[field]
+			self._dense[field][add_destinations] = field_values[field][order]
 
 		self._sparse[owner_indices] = new_heads
-		self._count[owner_indices] = final_counts
 
-		self._size += append_count
+		self._size = stop
 		self._live_count += append_count
 
 	def _remove_entities(self, indices: IndexArray) -> EntityArray:
-		return self._remove_rows(np.sort(self._get_rows(indices)))
+		return self._remove_rows(
+			np.sort(self._get_rows(indices))
+		)
 
 	def _remove_rows(self, rows: IndexArray) -> EntityArray:
 		removed_owners = self._dense["entity"][rows]
 
-		owners, _removed_counts = np.unique(removed_owners, return_counts=True)
+		owners, removed_counts_ = np.unique(
+			removed_owners,
+			return_counts=True,
+		)
+
 		owner_indices = _entity_indices(owners)
-
 		heads = self._sparse[owner_indices]
-		old_counts = self._count[owner_indices]
-		removed_counts = _removed_counts.astype(ComponentPerEntityCount, copy=False)
-		new_counts = (old_counts - removed_counts).astype(ComponentPerEntityCount, copy=False)
 
-		block_rows = _block_rows(heads, old_counts)
+		old_counts = self._dense["_count"][heads]
 
-		# rows is sorted, so find which rows of the affected blocks are removed
+		removed_counts = removed_counts_.astype(ComponentPerEntityCount, copy=False )
+
+		new_counts = ( old_counts - removed_counts
+		).astype(ComponentPerEntityCount, copy=False)
+
+		block_rows = self._block_rows(heads, old_counts)
+
+		# Determine which rows in the affected blocks survive.
 		positions = np.searchsorted(rows, block_rows)
-		removed = positions < rows.size
-		removed[removed] &= rows[positions[removed]] == block_rows[removed]
-		kept_rows = block_rows[~removed]
-		destinations = _block_rows(heads, new_counts)
 
-		# Advanced indexing materializes the RHS, so overlapping moves are safe.
+		removed = positions < rows.size
+		removed[removed] &= (rows[positions[removed]] == block_rows[removed])
+
+		kept_rows = block_rows[~removed]
+
+		destinations = self._block_rows(heads, new_counts)
+
+		# Advanced indexing materializes RHS, so overlap is safe.
 		for field in self.fields:
 			self._dense[field][destinations] = self._dense[field][kept_rows]
-		self._dense["entity"][destinations] = np.repeat(owners, new_counts)
 
-		# Clear what remains at the end of each compacted block.
-		tail_heads = heads + new_counts.astype(Index, copy=False)
-		tails = _block_rows(tail_heads, removed_counts)
+		self._dense["entity"][destinations] = np.repeat(
+			owners,
+			new_counts,
+		)
+
+		# Clear the removed tails of each affected block.
+		tail_heads = heads.astype(Index) + new_counts.astype(Index)
+		tails = self._block_rows( tail_heads, removed_counts )
+
 		self._clear_rows(tails)
 
-		self._count[owner_indices] = new_counts
+		nonempty = new_counts != 0
+		self._dense["_count"][heads[nonempty]] =  new_counts[nonempty]
 
-		emptied = new_counts == 0
+		emptied = ~nonempty
 		self._sparse[owner_indices[emptied]] = NONE
 
-		self._live_count -= rows.size
+		self._live_count -= int(rows.size)
 		self._trim_tail()
 
 		return owners[emptied]
@@ -780,6 +824,10 @@ class ECS:
 	) -> Iterator[tuple[type[Any], ComponentStorage, Mask, object]]:
 		i = 0
 
+		# ex:
+		# add([entity1, entity2], Velocity2D, [0,1], [0,1])
+		# or add([entity1, entity2], Velocity(0,1) )
+
 		while i < len(params):
 			item = params[i]
 
@@ -787,12 +835,10 @@ class ECS:
 				component_cls = item
 				store, bit = self._component_info(component_cls)
 
-				if i + 1 >= len(params):
-					raise TypeError(f"missing components for {component_cls.__name__}")
-
-				components = params[i + 1]
-
-				if isinstance(components, type) and components in self._stores:
+				# component instance / values should come next 
+				if i + 1 >= len(params) or (
+					isinstance(components := params[i + 1], type) and components in self._stores
+				):
 					raise TypeError(f"missing components for {component_cls.__name__}")
 				i += 2
 

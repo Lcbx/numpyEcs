@@ -614,8 +614,8 @@ def test_ecs_multicomp_defragment() -> None:
 		comps.remove(remove_rows)
 
 	store = ecs.get_store(MultiComp)
-	owner_indices = np.asarray(entity_index(owners), dtype=Index)
-	assert store._count[owner_indices].tolist() == [1, 1, 1, 1]
+	owner_indices = store._get_dense_indices( entity_index(owners) )
+	assert store._dense["_count"][owner_indices].tolist() == [1, 1, 1, 1]
 	assert sorted(store._dense["entity"][: store._size][store._dense["entity"][: store._size] != NO_ENTITY].tolist()) == [0, 4, 8, 12]
 
 	# Adding 8 rows with a capacity of 12 forces defragmentation of the holes.
@@ -627,7 +627,8 @@ def test_ecs_multicomp_defragment() -> None:
 			np.array([owner + 1, owner + 2], dtype=float),
 		)
 
-	assert store._count[owner_indices].tolist() == [3, 3, 3, 3]
+	owner_indices = store._get_dense_indices( entity_index(owners) )
+	assert store._dense["_count"][owner_indices].tolist() == [3, 3, 3, 3]
 	assert store._live_count == 12
 	assert store._size == 12
 	assert np.all(store._dense["entity"][: store._size] != NO_ENTITY)
