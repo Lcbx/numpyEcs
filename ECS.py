@@ -350,51 +350,50 @@ class ComponentStorage:
 		entities: EntityArray,
 		values: object,
 	) -> dict[str, FieldArray]:
-		quantity = int(entities.size)
+		quantity = entities.size
 
 		if isinstance(values, self.component_cls):
 			return {
 				field: self._broadcast_field(
-					field,
-					getattr(values, field),
-					quantity,
-					scalar=True,
+					field, getattr(values, field), quantity, scalar=True
 				)
 				for field in self.fields
 			}
 
 		if len(self.fields) == 1:
-			value = values[0] if isinstance(values, tuple) and len(values) == 1 else values
-			field = self.fields[0]
-			return {field: self._broadcast_field(field, value, quantity)}
+			field_values = (
+				values[0] if isinstance(values, tuple) and len(values) == 1
+				else values,
+			)
 
-		if isinstance(values, tuple):
-			if len(values) != len(self.fields):
+		elif isinstance(values, tuple):
+			field_values = values
+
+		else:
+			packed = np.asarray(values)
+
+			if packed.shape == (len(self.fields),):
+				field_values = tuple(packed)
+
+			elif packed.shape == (quantity, len(self.fields)):
+				field_values = tuple(packed.T)
+
+			else:
 				raise ValueError(
-					f"{self.component_cls.__name__} expects {len(self.fields)} fields, "
-					f"got {len(values)}"
+					f"cannot map values with shape {packed.shape} to "
+					f"{self.component_cls.__name__}{self.fields}"
 				)
-			return {
-				field: self._broadcast_field(field, value, quantity)
-				for field, value in zip(self.fields, values)
-			}
 
-		packed = np.asarray(values)
-		if packed.ndim == 1 and packed.shape[0] == len(self.fields):
-			return {
-				field: self._broadcast_field(field, packed[i], quantity)
-				for i, field in enumerate(self.fields)
-			}
-		if packed.ndim == 2 and packed.shape == (quantity, len(self.fields)):
-			return {
-				field: self._broadcast_field(field, packed[:, i], quantity)
-				for i, field in enumerate(self.fields)
-			}
+		if len(field_values) != len(self.fields):
+			raise ValueError(
+				f"{self.component_cls.__name__} expects {len(self.fields)} fields, "
+				f"got {len(field_values)}"
+			)
 
-		raise ValueError(
-			f"cannot map values with shape {packed.shape} to "
-			f"{self.component_cls.__name__}{self.fields}"
-		)
+		return {
+			field: self._broadcast_field(field, value, quantity)
+			for field, value in zip(self.fields, field_values)
+		}
 
 	# ---------- mutation ----------
 
@@ -821,34 +820,28 @@ class ECS:
 	def _parse_add_components(
 		self,
 		params: tuple[object, ...],
-	) -> Iterator[tuple[type[Any], ComponentStorage, Mask, object]]:
+	) -> Iterator[tuple[ComponentStorage, Mask, object]]:
 		i = 0
-
-		# ex:
-		# add([entity1, entity2], Velocity2D, [0,1], [0,1])
-		# or add([entity1, entity2], Velocity(0,1) )
 
 		while i < len(params):
 			item = params[i]
 
-			if isinstance(item, type):
-				component_cls = item
-				store, bit = self._component_info(component_cls)
-
-				# component instance / values should come next 
-				if i + 1 >= len(params) or (
-					isinstance(components := params[i + 1], type) and components in self._stores
-				):
-					raise TypeError(f"missing components for {component_cls.__name__}")
-				i += 2
-
-			else:
-				component_cls = type(item)
-				store, bit = self._component_info(component_cls)
-				components = item
+			if not isinstance(item, type):
+				store, bit = self._component_info(type(item))
+				yield store, bit, item
 				i += 1
+				continue
 
-			yield component_cls, store, bit, components
+			store, bit = self._component_info(item)
+
+			if i + 1 >= len(params) or (
+				isinstance(params[i + 1], type)
+				and params[i + 1] in self._stores
+			):
+				raise TypeError(f"missing components for {item.__name__}")
+
+			yield store, bit, params[i + 1]
+			i += 2
 
 	# ---------- registration ----------
 
@@ -942,19 +935,16 @@ class ECS:
 		if not np.any(alive):
 			return
 
-		parsed = list(self._parse_add_components(components))
 		live_entities = entity_array[alive]
 		live_indices = _entity_indices(live_entities)
 
-		for component_cls, store, bit, values in parsed:
-			normalised = store._normalise_values(entity_array, values)
-			filtered_values = {
-				field: field_values[alive]
-				for field, field_values in normalised.items()
-			}
+		for store, bit, values in list(self._parse_add_components(components)):
+			values = store._normalise_values(entity_array, values)
 
-			store._add_normalised(live_entities, #live_indices,
-				filtered_values)
+			if not np.all(alive):
+				values = {field: value[alive] for field, value in values.items()}
+
+			store._add_normalised(live_entities, values)
 			self.entity_masks[live_indices] |= bit
 
 	def remove(self, entities: EntityLike, *component_types: type[Any]) -> None:
