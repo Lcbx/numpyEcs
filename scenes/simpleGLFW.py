@@ -1,31 +1,29 @@
 from RenderContext import *
 from Utils import *
 from ECS import *
+
 from math import cos, sin
 import random as rd
-
-# maybe collapse the whole thing into a movingMesh component ?
-# or just use instance_dtype directly in the ecs ?
 
 @component
 class Position:
 	x: float; y: float; z: float
 
+
 @component
 class Velocity:
 	x: float; y: float; z: float
 
+
 @component
 class Rotation:
-	x: float; y: float; z: float; w:float
+	x: float; y: float; z: float; w: float
+
 
 @component
 class Scale:
-	x: float; y: float; z: float; w:float # w is not used
+	x: float; y: float; z: float; w: float # w is not used
 
-#@component
-#class MeshInstance:
-#	data : mesh_instance_dtype
 
 @component
 class Tint:
@@ -35,54 +33,60 @@ class Tint:
 world = ECS()
 world.register(Position, Velocity, Rotation, Scale, Tint)
 
-positions = world.get_store(Position)
-velocities = world.get_store(Velocity)
-rotations = world.get_store(Rotation)
-scales = world.get_store(Scale)
-tints = world.get_store(Tint)
+positions = world.get(Position)
+velocities = world.get(Velocity)
+rotations = world.get(Rotation)
+scales = world.get(Scale)
+tints = world.get(Tint)
 
 SPACE_SIZE = 180
 CUBE_MAX_SIDE = 7
 
-ground = world.create_entity(
-	Position(0,-0.51,0),
-	Rotation( *Quaternion() ),
-	Scale(
-		2*SPACE_SIZE, 1, 2*SPACE_SIZE,
-	0),
-	Tint(
-		pack_rgba8_srgb([0.5, 0.5, 0.5, 1.0])
-	),
+ground = world.create()
+world.add(
+	ground,
+	Position, Position(0, -0.51, 0),
+	Rotation, Rotation(*Quaternion()),
+	Scale, Scale(2 * SPACE_SIZE, 1, 2 * SPACE_SIZE, 0),
+	Tint, Tint(pack_rgba8_srgb([0.5, 0.5, 0.5, 1.0])),
 )
 
-for e in world.create_entities(200):
-	world.add_component(e,
-		Position(
-			rd.randrange(-SPACE_SIZE, SPACE_SIZE),
-			rd.randrange(0, 20),
-			rd.randrange(-SPACE_SIZE, SPACE_SIZE)
-		),
-		Velocity(
-			rd.randrange(-4, 4),
-			0,
-			rd.randrange(-4, 4)
-		),
-		Rotation( *Quaternion() ),
-		Scale(
-			rd.randrange(1, CUBE_MAX_SIDE),
-			rd.randrange(1, CUBE_MAX_SIDE),
-			rd.randrange(1, CUBE_MAX_SIDE),
-			0),
-		Tint(
-			pack_rgba8_srgb([rd.random(), rd.random(), rd.random(), 1.0])
-		),
-	)
+cube_entities = world.create(200)
+cube_count = cube_entities.size
 
+cube_positions = np.column_stack((
+	np.random.randint(-SPACE_SIZE, SPACE_SIZE, cube_count),
+	np.random.randint(0, 20, cube_count),
+	np.random.randint(-SPACE_SIZE, SPACE_SIZE, cube_count),
+))
+cube_velocities = np.column_stack((
+	np.random.randint(-4, 4, cube_count),
+	np.zeros(cube_count),
+	np.random.randint(-4, 4, cube_count),
+))
+cube_rotations = np.tile(np.asarray(Quaternion()), (cube_count, 1))
+cube_scales = np.column_stack((
+	np.random.randint(1, CUBE_MAX_SIDE, cube_count),
+	np.random.randint(1, CUBE_MAX_SIDE, cube_count),
+	np.random.randint(1, CUBE_MAX_SIDE, cube_count),
+	np.zeros(cube_count),
+))
+cube_tints = np.asarray([
+	pack_rgba8_srgb([rd.random(), rd.random(), rd.random(), 1.0])
+	for _ in range(cube_count)
+], dtype=np.uint32)
 
+world.add(
+	cube_entities,
+	Position, cube_positions,
+	Velocity, cube_velocities,
+	Rotation, cube_rotations,
+	Scale, cube_scales,
+	Tint, cube_tints,
+)
 
 WINDOW_W, WINDOW_H = 1200, 1200
 TITLE = "glfw + wgpu"
-
 
 camera_dist = 30.0
 camera = Camera(
@@ -90,7 +94,8 @@ camera = Camera(
 	target=(0.0, 10.0, 0.0),
 	up=(0.0, 1.0, 0.0),
 	fovy_deg=60.0,
-	near=0.1, far=1000.0
+	near=0.1,
+	far=1000.0,
 )
 
 light_camera = Camera(
@@ -98,150 +103,195 @@ light_camera = Camera(
 	target=(0.0, 0.0, -20.0),
 	up=(0.0, 1.0, 0.0),
 	fovy_deg=90.0,
-	near=1.0, far=300.0,
-	perspective = False
+	near=1.0,
+	far=300.0,
+	perspective=False,
 )
 
+RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE, target_fps=-1)
+# RenderContext.capture_mouse()
 
-RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE
-#)
-#, target_fps=120)
-, target_fps=-1)
-#RenderContext.capture_mouse()
+shader = RenderContext.Shader(filepath='scenes/shaders/simple.shader', label="simple")
+main_pipeline = RenderContext.RenderPipeline(
+	shader,
+	vertex_entry="vertex",
+	fragment_entry="fragment",
+	label="main",
+)
+shadow_pipeline = RenderContext.RenderPipeline(
+	shader,
+	vertex_entry="shadow_vertex",
+	depth_bias=2,
+	depth_bias_slope_scale=2.0,
+	label="shadow",
+)
 
-# seems to use a weird color space
-renderpass = RenderContext.RenderPass(camera = camera, clear_color = (0.02, 0.02, 0.03, 1.0))
-shader = RenderContext.Shader(filepath='scenes/shaders/simple.shader')
-shadow_shader = RenderContext.Shader(filepath='scenes/shaders/prepass.shader')
-vertices, indices = load_gltf_first_mesh_interleaved('scenes/resources/rooftop_utility_pole.glb')
+vertices, indices = load_gltf_first_mesh_interleaved(
+	"scenes/resources/rooftop_utility_pole.glb"
+)
 scale = 10.0
-model_mesh = Mesh(vertices, indices)
-model_instances = np.zeros(2, mesh_instance_dtype) 
+model_mesh = RenderContext.Mesh(vertices, indices)
+model_instances = np.zeros(2, mesh_instance_dtype)
 model_instances[0]["iPosition"] = Vec3([15.0, 0.0, 15.0])
 model_instances[0]["iRotation"] = Quaternion()
-model_instances[0]["iScale"] = [scale] * 4 # only 3 are used
+model_instances[0]["iScale"] = [scale] * 4
 model_instances[0]["iTint"] = pack_rgba8_srgb(Vec4([0.3, 0.5, 0.7, 1.0]))
-model_mesh.set_instances(model_instances)
+model_instance_buffer = RenderContext.Buffer(
+	model_instances,
+	BufferUsage.VERTEX | BufferUsage.COPY_DST,
+)
 
 cube_mesh = RenderContext.resources["cube"]
+render_entities = world.where(Position, Rotation, Scale, Tint)
 
 
-uniformBuffer = shader.UniformBuffer()
+def make_world_instances(entities):
+	position = positions[entities]
+	rotation = rotations[entities]
+	scale = scales[entities]
+	tint = tints[entities]
 
-shadow_texture = create_depth_framebuffer(512, 512)
-shadow_view = shadow_texture.create_view()
-shadow_rp = RenderContext.RenderPass(camera = light_camera,
-	frame_buffers = (None, shadow_view)
+	instances = np.empty(entities.size, dtype=mesh_instance_dtype)
+	instances["iPosition"] = position.vector()
+	instances["iRotation"] = rotation.vector()
+	instances["iScale"] = scale.vector()
+	instances["iTint"][:, 0] = tint.value
+	return instances
+
+
+cube_instance_buffer = RenderContext.Buffer(
+	make_world_instances(render_entities),
+	BufferUsage.VERTEX | BufferUsage.COPY_DST,
 )
+
+uniform_buffer = shader.UniformBuffer()
+#print(shader.vertex_dtype)
+shadow_texture = create_depth_framebuffer(1024, 1024)
+shadow_view = shadow_texture.view()
 shadow_sampler = create_depth_sampler()
 
+uniform_bindings = main_pipeline.bind_group(0, uniforms=uniform_buffer)
+shadow_bindings = main_pipeline.bind_group(
+	1,
+	shadow_map=shadow_view,
+	shadow_sampler=shadow_sampler,
+)
 
-print('init done')
+print("init done")
+
 
 def clamp(val, val_min, val_max):
 	return min(max(val, val_min), val_max)
+
 
 def scroll_callback(xoff, yoff):
 	global camera_dist, camera
 	camera_dist = clamp(camera_dist - 5.0 * yoff, 5.0, 100.0)
 	cp = camera.position
 	y_factor = 1.0 if cp.y < 15.0 else 3.0
-	#print(f'{y_factor=}')
-	camera.position = Vec3( (cp.x, cp.y - y_factor * yoff, cp.z) )
+	camera.position = Vec3((cp.x, cp.y - y_factor * yoff, cp.z))
 	return True
 
-RenderContext.event_handlers['mouse_scroll'].append(scroll_callback)
 
-#setup_gc_monitor()
-#print_memory = setup_memory_monitor()
-
+RenderContext.event_handlers["mouse_scroll"].append(scroll_callback)
 
 fps_frames = 0
 start_t = getTime()
 fps_print_timestamp = start_t
+
 while RenderContext.WindowLoop():
 	now = RenderContext.frame_start
 
-	# simple FPS to console
 	fps_frames += 1
 	if now - fps_print_timestamp >= 1.0:
 		print(f"fps {fps_frames}")
 		fps_frames = 0
 		fps_print_timestamp = now
-		
-		model_instances[1]["iPosition"] = Vec3([np.random.rand()*15.0, 0.0, np.random.rand()*15.0])
+
+		model_instances[1]["iPosition"] = Vec3([
+			np.random.rand() * 15.0,
+			0.0,
+			np.random.rand() * 15.0,
+		])
 		model_instances[1]["iRotation"] = Quaternion()
-		model_instances[1]["iScale"] = [scale] * 4 # only 3 are used
+		model_instances[1]["iScale"] = [scale] * 4
 		model_instances[1]["iTint"] = pack_rgba8_srgb(Vec4([0.6, 0.5, 0.4, 1.0]))
+		model_instance_buffer.upload()
 
-		model_mesh.instance_buffer.upload()
-
-		#camera.perspective = not camera.perspective
-
-		#print(WatchTimer.capture())
-		#print_memory()
-		#print("")
-
-
-	# orbit update (based on time wince start)
+	# orbit update
 	elapsed = now - start_t
 	cam_ang = elapsed * 0.5
-	camera.position = Vec3( (
+	camera.position = Vec3((
 		cos(cam_ang) * camera_dist,
 		camera.position.y,
-		sin(cam_ang) * camera_dist
-	) )
-
+		sin(cam_ang) * camera_dist,
+	))
 
 	# cubes movement
-
 	pv = world.where(Position, Velocity)
-	p_vec, v_vec = (positions.get_full_vector(pv), velocities.get_full_vector(pv))
+	p = positions[pv]
+	v = velocities[pv]
+	p_vec, v_vec = p.vector(), v.vector()
 	p_vec += v_vec * RenderContext.frame_time
 
-	# bounce when out of bounds
 	mask_x = np.abs(p_vec[:, 0]) > SPACE_SIZE
 	mask_z = np.abs(p_vec[:, 2]) > SPACE_SIZE
 	v_vec[mask_x, 0] *= -1
 	v_vec[mask_z, 2] *= -1
-	# if further than boundary, it would get stuck alternating direction each frame
 	p_vec[mask_x, 0] = np.sign(p_vec[mask_x, 0]) * 0.99 * SPACE_SIZE
 	p_vec[mask_z, 2] = np.sign(p_vec[mask_z, 2]) * 0.99 * SPACE_SIZE
 
-	positions.set_full_vector(pv, p_vec.transpose())
-	velocities.set_full_vector(pv, v_vec.transpose())
+	p.set_vector(p_vec)
+	v.set_vector(v_vec)
 
-	cube_mesh.set_instances( make_instances(
-		positions.get_vector(),
-		rotations.get_vector(),
-		scales.get_vector(),
-		tints.get_vector()
-	))
+	cube_instance_buffer.content = make_world_instances(render_entities)
+	cube_instance_buffer.resize(cube_instance_buffer.content.size)
+
+	view = camera.view()
+	proj = camera.projection(RenderContext.aspect)
+	light_view = light_camera.view()
+	light_proj = light_camera.projection(RenderContext.aspect)
+
+	uniform_buffer.content["view"] = view
+	uniform_buffer.content["proj"] = proj
+	uniform_buffer.content["light_dir"] = [*light_camera.direction(), 0.0]
+	uniform_buffer.content["light_view_proj"] = light_view @ light_proj
 
 	with WatchTimer("draw"):
+		with WatchTimer("upload_buffers"):
+			cube_instance_buffer.upload()
+			uniform_buffer.upload()
 
-		with renderpass as rp:
+		shadow_cmd = RenderContext.commands("shadow")
+		main_cmd = RenderContext.commands("main")
 
-			# shadows, from light viewpoint
-			with shadow_rp as rp2:
+		with shadow_cmd.render_pass(
+			depth=shadow_texture.depth_attachment(clear=1.0),
+			label="shadow",
+		) as rp:
+			rp.set_pipeline(shadow_pipeline)
+			rp.set_bind_group(0, uniform_bindings)
 
-				with WatchTimer("upload_buffers"):
-					cube_mesh.instance_buffer.upload()
+			with WatchTimer("draw_model_shadow"):
+				rp.draw_mesh(model_mesh, instances=model_instance_buffer)
+			with WatchTimer("draw_cubes_shadow"):
+				rp.draw_mesh(cube_mesh, instances=cube_instance_buffer)
 
-					uniformBuffer.content['uView'] = renderpass.view
-					uniformBuffer.content['uProj'] = renderpass.projection
-					uniformBuffer.content['uInverseProj'] = np.linalg.inv(renderpass.projection)
-					uniformBuffer.content['uLightDir'] = light_camera.direction()
-					uniformBuffer.content['uLightViewProj'] = shadow_rp.view @ shadow_rp.projection
-					uniformBuffer.upload()
+		with main_cmd.render_pass(
+			color=RenderContext.screen(clear=(0.02, 0.02, 0.03, 1.0)),
+			depth=RenderContext.depth_attachment(clear=1.0),
+			label="main",
+		) as rp:
+			rp.set_pipeline(main_pipeline)
+			rp.set_bind_group(0, uniform_bindings)
+			rp.set_bind_group(1, shadow_bindings)
 
-				with WatchTimer("draw_model"):
-					model_mesh.draw(rp2, shadow_shader, uniformBuffer)
-					model_mesh.draw(rp, shader, uniformBuffer, textureSamplerGroups = [(shadow_view,shadow_sampler)])
+			with WatchTimer("draw_model"):
+				rp.draw_mesh(model_mesh, instances=model_instance_buffer)
+			with WatchTimer("draw_cubes"):
+				rp.draw_mesh(cube_mesh, instances=cube_instance_buffer)
 
-				with WatchTimer("draw_cubes"):
-					cube_mesh.draw(rp2, shadow_shader, uniformBuffer)
-					cube_mesh.draw(rp, shader, uniformBuffer, textureSamplerGroups = [(shadow_view,shadow_sampler)])
-
-			# TODO : use shadow map results in regular renderpass
-
+		RenderContext.submit(
+			shadow_cmd.finish(),
+			main_cmd.finish(),
+		)

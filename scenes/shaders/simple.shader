@@ -1,109 +1,139 @@
 
-in vec3 vPos;
-in vec3 vNormal;
-in vec2 vUV;
+struct Uniforms {
+	view: mat4x4<f32>,
+	proj: mat4x4<f32>,
+	light_dir: vec4<f32>,
+	light_view_proj: mat4x4<f32>,
+};
 
-// from instance buffer
-in vec3 iPosition;
-in vec4 iRotation; // quaternion
-in vec4 iScale;    // last float16 is unused
-in uint iTint;
+@group(0) @binding(0)
+var<uniform> uniforms: Uniforms;
 
-uniform mat4 uView;
-uniform mat4 uProj;
-uniform mat4 uInverseProj;
+@group(1) @binding(0)
+var shadow_map: texture_depth_2d;
 
-uniform vec3 uLightDir;
-uniform mat4 uLightViewProj;
-uniform texture2D uLightMap; // classic depth map (R channel)
+@group(1) @binding(1)
+var shadow_sampler: sampler_comparison;
 
-varying vec3 vViewPos;
-varying vec3 vNormalWS;
-varying vec2 vUV;
-flat varying uint tint;
-varying vec3 vShadowPos;
+struct VertexInput {
+	@location(0) position: vec3<f32>,
+	@location(1) normal: vec3<f32>,
+	@location(2) uv: vec2<f32>,
+	@location(3) iPosition: vec3<f32>,
+	@location(4) iRotation: vec4<f32>,
+	@location(5) iScale: vec4<f32>,
+	@location(6) iTint: u32,
+};
 
+struct VertexOutput {
+	@builtin(position) position: vec4<f32>,
+	@location(0) normal: vec3<f32>,
+	@location(1) @interpolate(flat) tint: u32,
+	@location(2) shadow_pos: vec3<f32>,
+};
 
-vec3 quat_rotate(vec4 q, vec3 v) {
-    vec3 t = cross(q.xyz, v) * 2.0;
-    return v + q.w * t + cross(q.xyz, t);
+fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
+	let t = cross(q.xyz, v) * 2.0;
+	return v + q.w * t + cross(q.xyz, t);
 }
 
-bool between(vec2 v, vec2 bottomLeft, vec2 topRight){
-	vec2 s = step(bottomLeft, v) - step(topRight, v);
-	return bool(s.x * s.y);
+fn world_position(
+	position: vec3<f32>,
+	iPosition: vec3<f32>,
+	iRotation: vec4<f32>,
+	iScale: vec3<f32>,
+) -> vec3<f32> {
+	return iPosition + quat_rotate(iRotation, position * iScale);
 }
 
-void vertex() {
-    vec3 worldPos = iPosition + quat_rotate(iRotation, vPos * iScale.xyz);
+@vertex
+fn vertex(input: VertexInput) -> VertexOutput {
+	let world_pos = world_position(
+		input.position,
+		input.iPosition,
+		input.iRotation,
+		input.iScale.xyz,
+	);
 
-    vec3 normal = vNormal;
-    if(iScale.xyz!=vec3(1.0,1.0,1.0)) normal /= iScale.xyz;
-    vec3 world_normal = quat_rotate(iRotation, normal);
-    vNormalWS = normalize(world_normal);
+	var normal = input.normal;
+	if any(input.iScale.xyz != vec3<f32>(1.0)) {
+		normal /= input.iScale.xyz;
+	}
 
-	vec4 vertex = vec4(worldPos, 1.0);
-    vec4 view_pos = uView * vertex;
-    gl_Position = uProj * view_pos;
+	let normal_ws = normalize(quat_rotate(input.iRotation, normal));
+	let world = vec4<f32>(world_pos, 1.0);
+	let view_pos = uniforms.view * world;
+	let shadow_clip = uniforms.light_view_proj * world;
+	let shadow_ndc = shadow_clip.xyz / shadow_clip.w;
 
-    vViewPos.xyz = view_pos.xyz;
-	vec4 shadow_clip = uLightViewProj*vertex;
-    vShadowPos = shadow_clip.xyz / shadow_clip.w *0.5+0.5;
-
-    vUV = vUV;
-    tint = iTint;
+	var output: VertexOutput;
+	output.position = uniforms.proj * view_pos;
+	output.normal = normal_ws;
+	output.tint = input.iTint;
+	output.shadow_pos = vec3<f32>(
+		shadow_ndc.x * 0.5 + 0.5,
+		0.5 - shadow_ndc.y * 0.5,
+		shadow_ndc.z,
+	);
+	return output;
 }
 
-// TODO: move color utilities into a shader_include file
-
-float srgb_to_linear_channel(float c) {
-    if( c <= 0.04045 ){
-        return c / 12.92;
-    }
-    return pow((c + 0.055) / 1.055, 2.4);
+@vertex
+fn shadow_vertex(input: VertexInput) -> @builtin(position) vec4<f32> {
+	let world_pos = world_position(
+		input.position,
+		input.iPosition,
+		input.iRotation,
+		input.iScale.xyz,
+	);
+	return uniforms.light_view_proj * vec4<f32>(world_pos, 1.0);
 }
 
-vec4 unpack_rgba8_srgb(uint c) {
-    vec4 rgba = vec4(
-        float( c         & 255u),
-        float((c >> 8u)  & 255u),
-        float((c >> 16u) & 255u),
-        float((c >> 24u) & 255u)
-    ) / 255.0;
-
-    return vec4(
-        srgb_to_linear_channel(rgba.r),
-        srgb_to_linear_channel(rgba.g),
-        srgb_to_linear_channel(rgba.b),
-        rgba.a
-    );
+fn srgb_to_linear_channel(c: f32) -> f32 {
+	if c <= 0.04045 {
+		return c / 12.92;
+	}
+	return pow((c + 0.055) / 1.055, 2.4);
 }
 
-vec3 fastSaturation(vec3 c, float saturation)
-{
-	return mix(vec3(dot(c, vec3(0.3, 0.7, 0.15)) + 0.2), c, saturation);
+fn unpack_rgba8_srgb(c: u32) -> vec4<f32> {
+	let rgba = vec4<f32>(
+		f32(c & 255u),
+		f32((c >> 8u) & 255u),
+		f32((c >> 16u) & 255u),
+		f32((c >> 24u) & 255u),
+	) / 255.0;
+
+	return vec4<f32>(
+		srgb_to_linear_channel(rgba.r),
+		srgb_to_linear_channel(rgba.g),
+		srgb_to_linear_channel(rgba.b),
+		rgba.a,
+	);
 }
 
-out vec4 FragColor;
+fn sample_shadow(position: vec3<f32>) -> f32 {
+	let in_bounds = all(position.xy >= vec2<f32>(0.0)) &&
+		all(position.xy <= vec2<f32>(1.0)) &&
+		position.z >= 0.0 && position.z <= 1.0;
 
-void fragment() {
-    vec4 color = unpack_rgba8_srgb(tint);
-    
-	float shadow = 1;
-	//if(between(fragShadow.xy, vec2(0), vec2(1)))
-	//	shadow = tapShadowPoisson();
+	if !in_bounds {
+		return 1.0;
+	}
 
-    float NdotL = max(dot(vNormalWS, uLightDir), 0.0);
-    vec3 lighting = color.rgb * mix(0.4, 0.8, min(shadow, NdotL));
+	return textureSampleCompare(
+		shadow_map,
+		shadow_sampler,
+		position.xy,
+		position.z - 0.001,
+	);
+}
 
-	vec3 halfwayDir = normalize(uLightDir - vViewPos.xyz);  
-	float specular = pow(max(dot(vNormalWS, halfwayDir), 0.0), 8.0);
-	//lighting += vec3(specular) * 0.15; // = light.Color * specular * attenuation;
-
-	// desaturate based on fragment depth 
-	//float effect = 1.2 - vViewPos.z;
-	//effect = mix(0.4, 1.0, effect);
-	//lighting = fastSaturation(lighting, effect);
-
-    FragColor = vec4(lighting, color.a);
+@fragment
+fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
+	let color = unpack_rgba8_srgb(input.tint);
+	let light = max(dot(input.normal, uniforms.light_dir.xyz), 0.0);
+	let shadow = sample_shadow(input.shadow_pos);
+	let lighting = mix(0.35, 1.0, light) * mix(0.45, 1.0, shadow);
+	return vec4<f32>(color.rgb * lighting, color.a);
 }
