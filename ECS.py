@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
 from enum import IntFlag
-from inspect import signature
-from typing import Any, Callable, ClassVar, Iterable, Iterator, Mapping, Sequence, TypeAlias, TypeVar, get_origin, get_type_hints
+from inspect import signature as _signature
+from functools import lru_cache
+from typing import cast, Any, Callable, ClassVar, Iterable, Iterator, Mapping, Sequence, TypeAlias, TypeVar, get_origin, get_type_hints
 
 import numpy as np
 from numpy.typing import NDArray
@@ -35,6 +36,9 @@ GENERATION_INCREMENT = Entity(1 << INDEX_BITS)
 NONE                 = Index(INDEX_MAX)
 NO_ENTITY            = Entity(np.iinfo(Entity).max)
 INITIAL_CAPACITY     = 128
+OBJECT_DTYPE         = np.dtype(object)
+_ENTITY_STR          = "_entity"
+_COUNT_STR           = "_count"
 
 
 # useful for buffer resizing
@@ -47,32 +51,29 @@ def entity_index(entity: Entity | EntityArray) -> Index | IndexArray:
 	if result.ndim == 0: return Index(result & INDEX_MASK)
 	return _entity_indices(result)
 
-
 def entity_generation(entity: Entity | EntityArray) -> Generation | GenerationArray:
 	result = np.asarray(entity, dtype=Entity) >> Entity(INDEX_BITS)
 	if result.ndim == 0: return Generation(result)
 	return result.astype(Generation, copy=False)
 
-
 def _entity_indices(entities: EntityArray) -> IndexArray:
 	return (entities & INDEX_MASK).astype(Index, copy=False)
 
+def as_entities(entities: EntityLike) -> EntityArray:
+	return cast(EntityArray, _as_1D_dtype(entities, Entity))
 
-def _as_entities(entities: EntityLike) -> EntityArray:
-	array = np.asarray(entities, dtype=Entity)
-	if array.ndim == 0:
-		return array.reshape(1)
-	if array.ndim != 1:
-		raise ValueError("entities must be a scalar or a 1-D array")
-	return array
+def as_rows(rows: IndexLike) -> IndexArray:
+	return cast(IndexArray, _as_1D_dtype(rows, Index))
 
-
-def _as_rows(rows: IndexLike) -> IndexArray:
-	array = np.asarray(rows, dtype=Index)
+def _as_1D_dtype(array:Any, ndtype:type) -> FieldArray:
+	array = np.asarray(array, dtype=ndtype)
 	if array.ndim == 0: return array.reshape(1)
-	if array.ndim != 1: raise ValueError("rows must be a scalar or a 1-D array")
+	if array.ndim != 1: raise ValueError("parameter must be a scalar or a 1-D array")
 	return array
 
+@lru_cache(maxsize=128)
+def cached_signature(func):
+	return _signature(func)
 
 def _component_fields(component_cls: type[Any]) -> tuple[tuple[str, Any], ...]:
 	hints = get_type_hints(component_cls)
@@ -91,15 +92,15 @@ def _component_fields(component_cls: type[Any]) -> tuple[tuple[str, Any], ...]:
 
 def _dtype_for(annotation: Any) -> np.dtype[Any]:
 	if annotation is str or annotation is bytes:
-		return np.dtype(object)
+		return OBJECT_DTYPE
 	if isinstance(annotation, type) and issubclass(annotation, IntFlag):
 		return np.dtype(np.int64)
 	try:
 		dtype = np.dtype(annotation)
 	except TypeError:
-		return np.dtype(object)
+		return OBJECT_DTYPE
 	if dtype.kind in ("U", "S"):
-		return np.dtype(object)
+		return OBJECT_DTYPE
 	return dtype
 
 
@@ -110,8 +111,7 @@ class ComponentSelection:
 		self._store = store
 		self._rows = rows
 
-	@property
-	def rows(self) -> IndexArray:
+	def get_rows(self) -> IndexArray:
 		return self._rows
 
 	def vector(self, *field_names: str) -> FieldArray:
@@ -165,14 +165,16 @@ class ComponentAccessor:
 		self._component_cls = component_cls
 		self._store = store
 
+	def get_rows(self) -> IndexArray:
+		return self._store._active_rows()
+
+	def owner_ids(self, component_rows: IndexArray) -> EntityArray:
+		return self._store._dense_entities[component_rows].astype(Entity, copy=False)
+
 	def __getitem__(self, entities: EntityLike) -> ComponentSelection:
-		entities_ = self._ecs._filter_alive(_as_entities(entities))
+		entities_ = self._ecs._filter_alive(as_entities(entities))
 		indices = _entity_indices(entities_)
 		return ComponentSelection(self._store, self._store._get_rows(indices))
-
-	@property
-	def rows(self) -> IndexArray:
-		return self._store._active_rows()
 
 	def query(
 		self,
@@ -182,14 +184,14 @@ class ComponentAccessor:
 		if entities is None:
 			rows = self._store._active_rows()
 		else:
-			entities_ = self._ecs._filter_alive(np.unique(_as_entities(entities)))
+			entities_ = self._ecs._filter_alive(np.unique(as_entities(entities)))
 			rows = self._store._get_rows(_entity_indices(entities_))
 		return self._store._query_rows(condition, rows)
 
 	def remove(self, rows: IndexLike) -> None:
-		rows_ = np.unique(_as_rows(rows))
+		rows_ = np.unique(as_rows(rows))
 		rows_ = rows_[rows_ < self._store._size]
-		rows_ = rows_[self._store._dense["entity"][rows_] != NO_ENTITY]
+		rows_ = rows_[self._store._dense_entities[rows_] != NO_ENTITY]
 		if rows_.size == 0:
 			return
 
@@ -221,14 +223,19 @@ class ComponentStorage:
 		self._size = 0
 		self._sparse = np.full(self._capacity, NONE, dtype=Index)
 
-		self._dense: dict[str, FieldArray] = {
-			"entity": np.full(self._capacity, NO_ENTITY, dtype=Entity)
-		}
+		self._dense: dict[str, FieldArray] = {}
+		self._dense[_ENTITY_STR] = np.full(self._capacity, NO_ENTITY, dtype=Entity)
+
 		for name, dtype in self._field_dtypes.items():
 			array = np.empty(self._capacity, dtype=dtype)
-			if dtype == np.dtype(object):
+			if dtype == OBJECT_DTYPE:
 				array.fill(None)
 			self._dense[name] = array
+
+	@property
+	def _dense_entities(self) -> EntityArray:
+		return self._dense[_ENTITY_STR]
+	
 
 	# ---------- sparse ----------
 
@@ -266,20 +273,20 @@ class ComponentStorage:
 		for name, old in tuple(self._dense.items()):
 			new = np.empty(new_capacity, dtype=old.dtype)
 			new[: self._capacity] = old
-			if name == "entity":
+			if name == _ENTITY_STR:
 				new[self._capacity :] = NO_ENTITY
-			if name == "_count":
+			if name == _COUNT_STR:
 				new[self._capacity :] = 0
-			elif old.dtype == np.dtype(object):
+			elif old.dtype == OBJECT_DTYPE:
 				new[self._capacity :] = None
 			self._dense[name] = new
 		self._capacity = new_capacity
 
 	def _clear_rows(self, rows: IndexArray) -> None:
-		self._dense["entity"][rows] = NO_ENTITY
+		self._dense_entities[rows] = NO_ENTITY
 		for field in self.fields:
 			array = self._dense[field]
-			if array.dtype == np.dtype(object):
+			if array.dtype == OBJECT_DTYPE:
 				array[rows] = None
 
 	def _active_rows(self) -> IndexArray:
@@ -302,13 +309,13 @@ class ComponentStorage:
 		dtype = self._field_dtypes[field]
 
 		if scalar:
-			if dtype == np.dtype(object):
+			if dtype == OBJECT_DTYPE:
 				array = np.empty(quantity, dtype=object)
 				array.fill(value)
 				return array
 			return np.full(quantity, value, dtype=dtype)
 
-		if dtype == np.dtype(object):
+		if dtype == OBJECT_DTYPE:
 			if isinstance(value, np.ndarray) and value.ndim == 1:
 				if value.size == quantity:
 					return value.astype(object, copy=False)
@@ -344,13 +351,13 @@ class ComponentStorage:
 		raise ValueError(
 			f"field {field!r} has {array.size} values for {quantity} entities"
 		)
-
 	def _normalise_values(
 		self,
 		entities: EntityArray,
 		values: object,
 	) -> dict[str, FieldArray]:
 		quantity = entities.size
+		field_values: tuple[Any, ...]
 
 		if isinstance(values, self.component_cls):
 			return {
@@ -411,7 +418,7 @@ class ComponentStorage:
 		self._grow_dense(stop)
 
 		rows = np.arange(start, stop, dtype=Index)
-		self._dense["entity"][start:stop] = entities
+		self._dense_entities[start:stop] = entities
 		for field, field_values_array in field_values.items():
 			self._dense[field][start:stop] = field_values_array
 		self._set_dense_indices(indices, rows)
@@ -428,7 +435,7 @@ class ComponentStorage:
 		if rows.size == 0:
 			return np.empty(0, dtype=Entity)
 
-		removed_entities = self._dense["entity"][rows].astype(Entity, copy=True)
+		removed_entities = self._dense_entities[rows].astype(Entity, copy=True)
 		old_size = self._size
 		new_size = old_size - int(rows.size)
 
@@ -441,7 +448,7 @@ class ComponentStorage:
 		self._clear_dense_indices(_entity_indices(removed_entities))
 
 		if holes.size:
-			moved_entities = self._dense["entity"][sources].astype(Entity, copy=True)
+			moved_entities = self._dense_entities[sources].astype(Entity, copy=True)
 			for array in self._dense.values():
 				array[holes] = array[sources]
 			self._set_dense_indices(_entity_indices(moved_entities), holes)
@@ -460,7 +467,7 @@ class ComponentStorage:
 		if rows.size == 0:
 			return np.empty(0, dtype=Index)
 
-		params = signature(condition).parameters
+		params = cached_signature(condition).parameters
 		missing = [name for name in params if name not in self._dense]
 		if missing:
 			raise TypeError(
@@ -486,16 +493,20 @@ class MultiComponentStorage(ComponentStorage):
 		capacity: int = INITIAL_CAPACITY,
 	) -> None:
 		super().__init__(component_cls, capacity)
-		self._dense["_count"] = np.zeros( self._capacity, dtype=ComponentPerEntityCount )
+		self._dense[_COUNT_STR] = np.zeros( self._capacity, dtype=ComponentPerEntityCount )
 		self._live_count = 0
+
+	@property
+	def _dense_counts(self) -> CountArray:
+		return self._dense[_COUNT_STR]
 
 	def _clear_rows(self, rows: IndexArray) -> None:
 		super()._clear_rows(rows)
-		self._dense["_count"][rows] = 0
+		self._dense_counts[rows] = 0
 
 	def _active_rows(self) -> IndexArray:
 		return np.flatnonzero(
-			self._dense["entity"][:self._size] != NO_ENTITY
+			self._dense_entities[:self._size] != NO_ENTITY
 		).astype(Index, copy=False)
 
 	def _block_rows(
@@ -508,7 +519,7 @@ class MultiComponentStorage(ComponentStorage):
 			return np.empty(0, dtype=Index)
 
 		if counts is None:
-			counts = self._dense["_count"][heads]
+			counts = self._dense_counts[heads]
 
 		counts64 = counts.astype(np.int64, copy=False)
 		total = int(counts64.sum())
@@ -538,11 +549,11 @@ class MultiComponentStorage(ComponentStorage):
 			self._size = 0
 			return
 
-		if self._dense["entity"][self._size - 1] != NO_ENTITY:
+		if self._dense_entities[self._size - 1] != NO_ENTITY:
 			return
 
 		reverse_live = (
-			self._dense["entity"][:self._size][::-1] != NO_ENTITY
+			self._dense_entities[:self._size][::-1] != NO_ENTITY
 		)
 		self._size -= int(np.argmax(reverse_live))
 
@@ -570,11 +581,11 @@ class MultiComponentStorage(ComponentStorage):
 
 			new[:live] = old[rows]
 
-			if name == "entity":
+			if name == _ENTITY_STR:
 				new[live:] = NO_ENTITY
-			elif name == "_count":
+			elif name == _ENTITY_STR:
 				new[live:] = 0
-			elif old.dtype == np.dtype(object):
+			elif old.dtype == OBJECT_DTYPE:
 				new[live:] = None
 
 			self._dense[name] = new
@@ -584,7 +595,7 @@ class MultiComponentStorage(ComponentStorage):
 
 		self._sparse.fill(NONE)
 
-		owners = self._dense["entity"][:live]
+		owners = self._dense_entities[:live]
 		starts = np.flatnonzero(
 			np.diff(owners, prepend=NO_ENTITY)
 		).astype(Index, copy=False)
@@ -627,7 +638,7 @@ class MultiComponentStorage(ComponentStorage):
 		existing = old_heads != NONE
 
 		old_counts = np.zeros_like(add_counts)
-		old_counts[existing] = self._dense["_count"][ old_heads[existing] ]
+		old_counts[existing] = self._dense_counts[ old_heads[existing] ]
 
 		final_counts = old_counts + add_counts
 
@@ -663,11 +674,11 @@ class MultiComponentStorage(ComponentStorage):
 
 		stop = start + append_count
 
-		self._dense["entity"][start:stop] = np.repeat( owners, final_counts )
+		self._dense_entities[start:stop] = np.repeat( owners, final_counts )
 
 		# Count metadata exists only at block heads.
-		self._dense["_count"][start:stop] = 0
-		self._dense["_count"][new_heads] = final_counts
+		self._dense_counts[start:stop] = 0
+		self._dense_counts[new_heads] = final_counts
 
 		old_destinations = self._block_rows( new_heads, old_counts )
 
@@ -692,7 +703,7 @@ class MultiComponentStorage(ComponentStorage):
 		)
 
 	def _remove_rows(self, rows: IndexArray) -> EntityArray:
-		removed_owners = self._dense["entity"][rows]
+		removed_owners = self._dense_entities[rows]
 
 		owners, removed_counts_ = np.unique(
 			removed_owners,
@@ -702,7 +713,7 @@ class MultiComponentStorage(ComponentStorage):
 		owner_indices = _entity_indices(owners)
 		heads = self._sparse[owner_indices]
 
-		old_counts = self._dense["_count"][heads]
+		old_counts = self._dense_counts[heads]
 
 		removed_counts = removed_counts_.astype(ComponentPerEntityCount, copy=False )
 
@@ -725,7 +736,7 @@ class MultiComponentStorage(ComponentStorage):
 		for field in self.fields:
 			self._dense[field][destinations] = self._dense[field][kept_rows]
 
-		self._dense["entity"][destinations] = np.repeat(
+		self._dense_entities[destinations] = np.repeat(
 			owners,
 			new_counts,
 		)
@@ -737,7 +748,7 @@ class MultiComponentStorage(ComponentStorage):
 		self._clear_rows(tails)
 
 		nonempty = new_counts != 0
-		self._dense["_count"][heads[nonempty]] =  new_counts[nonempty]
+		self._dense_counts[heads[nonempty]] =  new_counts[nonempty]
 
 		emptied = ~nonempty
 		self._sparse[owner_indices[emptied]] = NONE
@@ -905,7 +916,7 @@ class ECS:
 		return np.concatenate((reused, fresh))
 
 	def delete(self, entities: EntityLike) -> None:
-		entity_array = self._filter_alive(_as_entities(entities))
+		entity_array = self._filter_alive(as_entities(entities))
 		if entity_array.size == 0:
 			return
 
@@ -927,7 +938,7 @@ class ECS:
 	# ---------- components ----------
 
 	def add(self, entities: EntityLike, *components: object) -> None:
-		entity_array = _as_entities(entities)
+		entity_array = as_entities(entities)
 		if entity_array.size == 0 or not components:
 			return
 
@@ -948,7 +959,7 @@ class ECS:
 			self.entity_masks[live_indices] |= bit
 
 	def remove(self, entities: EntityLike, *component_types: type[Any]) -> None:
-		entity_array = np.unique(self._filter_alive(_as_entities(entities)))
+		entity_array = np.unique(self._filter_alive(as_entities(entities)))
 		if entity_array.size == 0 or not component_types:
 			return
 
@@ -958,7 +969,7 @@ class ECS:
 			store._remove_entities(indices)
 			self.entity_masks[indices] &= ~bit
 
-	def get_store(self, component_cls: type) -> ComponentStorage:
+	def _get_store(self, component_cls: type) -> ComponentStorage:
 		return self._component_info(component_cls)[0]
 
 	def get(self, component_cls: type) -> ComponentAccessor:

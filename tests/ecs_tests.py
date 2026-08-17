@@ -9,20 +9,6 @@ import pytest
 from ECS import *
 
 
-def entities(values: Any) -> EntityArray:
-	arr = np.asarray(values, dtype=Entity)
-	return arr.reshape(1) if arr.ndim == 0 else arr
-
-
-def rows(values: Any) -> IndexArray:
-	arr = np.asarray(values, dtype=Index)
-	return arr.reshape(1) if arr.ndim == 0 else arr
-
-
-def owner_ids(accessor: ComponentAccessor, component_rows: IndexArray) -> EntityArray:
-	return accessor._store._dense["entity"][component_rows].astype(Entity, copy=False)
-
-
 def test_higher_pow2() -> None:
 	for i in range(0, 512):
 		res = higher_pow2(i)
@@ -54,44 +40,44 @@ class Bar:
 def test_single_component_storage_basic() -> None:
 	store = ComponentStorage(Foo, capacity=2)
 
-	store._add_range(entities([1]), Foo(1.23, "first"))
-	selection = ComponentSelection(store, store._get_rows(entities([1])))
+	store._add_range(as_entities([1]), Foo(1.23, "first"))
+	selection = ComponentSelection(store, store._get_rows(as_entities([1])))
 	assert selection.a.tolist() == pytest.approx([1.23])
 	assert selection.b.tolist() == ["first"]
 
-	emptied = store._remove_entities(entities([1]))
+	emptied = store._remove_entities(as_entities([1]))
 	assert emptied.tolist() == [1]
-	assert store._get_rows(entities([1])).size == 0
+	assert store._get_rows(as_entities([1])).size == 0
 
-	store._add_range(entities([1]), Foo(4.56, "second"))
+	store._add_range(as_entities([1]), Foo(4.56, "second"))
 	store._add_range(
-		entities([2, 3]),
+		as_entities([2, 3]),
 		(np.array([7.89, 0.12]), np.array(["third", "fourth"])),
 	)
 
 	# forces dense growth from initial capacity 2
 	assert store._capacity >= 3
 
-	selection = ComponentSelection(store, store._get_rows(entities([3])))
+	selection = ComponentSelection(store, store._get_rows(as_entities([3])))
 	assert selection.a.tolist() == pytest.approx([0.12])
 	assert selection.b.tolist() == ["fourth"]
 
 	selection.a = 0.69
-	assert store._dense["a"][store._get_rows(entities([3]))][0] == pytest.approx(0.69)
+	assert store._dense["a"][store._get_rows(as_entities([3]))][0] == pytest.approx(0.69)
 
-	store._remove_entities(entities([2]))
-	assert store._get_rows(entities([2])).size == 0
+	store._remove_entities(as_entities([2]))
+	assert store._get_rows(as_entities([2])).size == 0
 
 	# forces flat sparse growth
-	store._add_range(entities([10_000]), Foo(0.5, "fifth"))
-	row = store._get_rows(entities([10_000]))
+	store._add_range(as_entities([10_000]), Foo(0.5, "fifth"))
+	row = store._get_rows(as_entities([10_000]))
 	assert store._dense["a"][row][0] == pytest.approx(0.5)
 	assert store._dense["b"][row][0] == "fifth"
 
 
 def test_single_component_storage_sparse_dense_integrity() -> None:
 	store = ComponentStorage(Foo, capacity=1)
-	ids = entities([5, 6, 7])
+	ids = as_entities([5, 6, 7])
 	store._add_range(
 		ids,
 		(
@@ -105,11 +91,11 @@ def test_single_component_storage_sparse_dense_integrity() -> None:
 	assert np.all(dense_rows != np.iinfo(Index).max)
 	assert np.all(dense_rows < store._size)
 
-	store._remove_entities(entities([6]))
+	store._remove_entities(as_entities([6]))
 
-	assert store._get_rows(entities([6])).size == 0
+	assert store._get_rows(as_entities([6])).size == 0
 	for eid, expected in ((5, 10.0), (7, 30.0)):
-		row = store._get_rows(entities([eid]))
+		row = store._get_rows(as_entities([eid]))
 		assert store._dense["a"][row][0] == pytest.approx(expected)
 
 
@@ -200,7 +186,7 @@ def make_multitag_ecs(
 		values.extend(tags)
 
 	if owners:
-		ecs.add(entities(owners), Tag, np.asarray(values, dtype=object))
+		ecs.add(as_entities(owners), Tag, np.asarray(values, dtype=object))
 
 	return ecs, ids, ecs.get(Tag)
 
@@ -249,9 +235,9 @@ def test_component_rows_follow_dense_compaction() -> None:
 	remaining = ecs.where(Position2D)
 	assert sorted(remaining.tolist()) == [1, 2, 4, 5]
 
-	active_rows = pos.rows
+	active_rows = pos.get_rows()
 	assert sorted(active_rows.tolist()) == [0, 1, 2, 3]
-	assert sorted(owner_ids(pos, active_rows).tolist()) == [1, 2, 4, 5]
+	assert sorted(pos.owner_ids(active_rows).tolist()) == [1, 2, 4, 5]
 
 
 def test_query_simple_vectorized() -> None:
@@ -259,7 +245,7 @@ def test_query_simple_vectorized() -> None:
 	out = pos.query(lambda x, y: (x > 0) & (np.abs(y) < 3))
 
 	assert out.dtype == Index
-	assert owner_ids(pos, out).tolist() == [1]
+	assert pos.owner_ids(out).tolist() == [1]
 
 
 def test_query_annotated_types() -> None:
@@ -270,7 +256,7 @@ def test_query_annotated_types() -> None:
 
 	out = pos.query(condition)
 	assert out.dtype == Index
-	assert owner_ids(pos, out).tolist() == [1]
+	assert pos.owner_ids(out).tolist() == [1]
 
 
 def test_query_subset_filtering() -> None:
@@ -278,7 +264,7 @@ def test_query_subset_filtering() -> None:
 	subset = ids[[0, 1, 3]]
 
 	out = pos.query(lambda x, y: x >= 10, subset)
-	assert owner_ids(pos, out).tolist() == [0]
+	assert pos.owner_ids(out).tolist() == [0]
 
 
 def test_query_returns_empty_when_no_match() -> None:
@@ -291,8 +277,8 @@ def test_query_returns_empty_when_no_match() -> None:
 
 def test_query_can_use_entity_id_in_predicate() -> None:
 	_, _, pos = make_pos2d_ecs([(5, 0), (5, 0), (5, 0)])
-	out = pos.query(lambda x, y, entity: (x == 5) & (entity != 1))
-	assert owner_ids(pos, out).tolist() == [0, 2]
+	out = pos.query(lambda x, y, _entity: (x == 5) & (_entity != 1))
+	assert pos.owner_ids(out).tolist() == [0, 2]
 
 
 def test_query_raises_on_length_mismatch() -> None:
@@ -320,7 +306,7 @@ def test_query_mult_comp_returns_matching_rows() -> None:
 
 	out = tags.query(lambda value: value == 1)
 	assert out.dtype == Index
-	assert owner_ids(tags, out).tolist() == [0, 2]
+	assert tags.owner_ids(out).tolist() == [0, 2]
 	assert tags._store._dense["value"][out].tolist() == [1, 1]
 
 
@@ -335,7 +321,7 @@ def test_query_mult_comp_subset_filtering() -> None:
 	)
 
 	out = tags.query(lambda value: value == 1, ids[[5, 7, 9]])
-	assert owner_ids(tags, out).tolist() == [7, 9]
+	assert tags.owner_ids(out).tolist() == [7, 9]
 
 
 def test_query_mult_comp_no_match_returns_empty() -> None:
@@ -369,7 +355,7 @@ def test_query_intflag_predicate() -> None:
 
 	tags = ecs.get(Tag)
 	out = tags.query(lambda value: (value & TagEnum.Enemy) != 0)
-	assert owner_ids(tags, out).tolist() == [0, 2]
+	assert tags.owner_ids(out).tolist() == [0, 2]
 
 
 def test_movement_system() -> None:
@@ -407,7 +393,7 @@ def test_movement_system() -> None:
 	assert not (tag_value & TagEnum.Flying)
 
 	tag_rows = ecs.get(Tag).query(lambda value: (value & TagEnum.Enemy) != 0)
-	assert owner_ids(ecs.get(Tag), tag_rows).tolist() == [2]
+	assert ecs.get(Tag).owner_ids(tag_rows).tolist() == [2]
 
 
 def rotate_vectors_by_quaternions(q: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -532,15 +518,15 @@ def test_storage_multicomp_add_get_remove() -> None:
 	entity_id = Entity(42)
 
 	store._add_range(
-		entities([entity_id, entity_id, entity_id]),
+		as_entities([entity_id, entity_id, entity_id]),
 		np.array([1.0, 2.0, 3.0]),
 	)
 
-	component_rows = store._get_rows(entities([entity_id]))
+	component_rows = store._get_rows(as_entities([entity_id]))
 	assert store._dense["val"][component_rows].tolist() == pytest.approx([1.0, 2.0, 3.0])
 
 	store._remove_rows(component_rows[1:2])
-	component_rows = store._get_rows(entities([entity_id]))
+	component_rows = store._get_rows(as_entities([entity_id]))
 	assert store._dense["val"][component_rows].tolist() == pytest.approx([1.0, 3.0])
 
 
@@ -608,19 +594,19 @@ def test_ecs_multicomp_defragment() -> None:
 
 	owners = ids[[0, 4, 8, 12]]
 	for owner in owners:
-		owner_array = entities([owner] * 3)
+		owner_array = as_entities([owner] * 3)
 		ecs.add(owner_array, MultiComp, np.array([owner, owner + 1, owner + 2], dtype=float))
 		remove_rows = comps.query(lambda val: val != float(owner), owner_array)
 		comps.remove(remove_rows)
 
-	store = ecs.get_store(MultiComp)
+	store = ecs._get_store(MultiComp)
 	owner_indices = store._get_dense_indices( entity_index(owners) )
-	assert store._dense["_count"][owner_indices].tolist() == [1, 1, 1, 1]
-	assert sorted(store._dense["entity"][: store._size][store._dense["entity"][: store._size] != NO_ENTITY].tolist()) == [0, 4, 8, 12]
+	assert store._dense_counts[owner_indices].tolist() == [1, 1, 1, 1]
+	assert sorted(store._dense_entities[: store._size][store._dense_entities[: store._size] != NO_ENTITY].tolist()) == [0, 4, 8, 12]
 
 	# Adding 8 rows with a capacity of 12 forces defragmentation of the holes.
 	for owner in owners:
-		owner_array = entities([owner] * 2)
+		owner_array = as_entities([owner] * 2)
 		ecs.add(
 			owner_array,
 			MultiComp,
@@ -628,13 +614,13 @@ def test_ecs_multicomp_defragment() -> None:
 		)
 
 	owner_indices = store._get_dense_indices( entity_index(owners) )
-	assert store._dense["_count"][owner_indices].tolist() == [3, 3, 3, 3]
+	assert store._dense_counts[owner_indices].tolist() == [3, 3, 3, 3]
 	assert store._live_count == 12
 	assert store._size == 12
-	assert np.all(store._dense["entity"][: store._size] != NO_ENTITY)
+	assert np.all(store._dense_entities[: store._size] != NO_ENTITY)
 
 	for owner in owners:
-		vals = np.sort(comps[entities([owner])].val)
+		vals = np.sort(comps[as_entities([owner])].val)
 		assert vals.tolist() == pytest.approx(
 			[float(owner), float(owner + 1), float(owner + 2)]
 		)
@@ -730,7 +716,7 @@ def test_reused_entity_starts_without_old_component_mask() -> None:
 def test_component_storage_checks_full_generation() -> None:
 	store = ComponentStorage(Foo)
 
-	old = entities([5])
+	old = as_entities([5])
 	newer = old + GENERATION_INCREMENT
 	store._add_range(old, Foo(1.0, "old"))
 
