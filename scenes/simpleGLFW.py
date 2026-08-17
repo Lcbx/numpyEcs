@@ -170,8 +170,8 @@ shadow_texture = create_depth_framebuffer(1024, 1024)
 shadow_view = shadow_texture.view()
 shadow_sampler = create_depth_sampler()
 
-uniform_bindings = main_pipeline.bind_group(0, uniforms=uniform_buffer)
-shadow_bindings = main_pipeline.bind_group(
+uniform_bindings = shader.bind_group(0, uniforms=uniform_buffer)
+shadow_bindings = shader.bind_group(
 	1,
 	shadow_map=shadow_view,
 	shadow_sampler=shadow_sampler,
@@ -196,10 +196,10 @@ def scroll_callback(xoff, yoff):
 RenderContext.event_handlers["mouse_scroll"].append(scroll_callback)
 
 fps_frames = 0
-start_t = getTime()
+start_t = get_time()
 fps_print_timestamp = start_t
 
-while RenderContext.WindowLoop():
+while RenderContext.window_loop():
 	now = RenderContext.frame_start
 
 	fps_frames += 1

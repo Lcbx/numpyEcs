@@ -15,43 +15,10 @@ from glob import glob
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 
-getTime = time.perf_counter
+get_time = time.perf_counter
 sleep = time.sleep
 Color = tuple[float, float, float, float]
 
-
-@dataclass(frozen=True)
-class ColorAttachment:
-	view: wgpu.GPUTextureView
-	format: str
-	clear: Color | None = None
-	store: bool = True
-
-	def descriptor(self) -> wgpu.RenderPassColorAttachment:
-		return wgpu.RenderPassColorAttachment(
-			view=self.view,
-			clear_value=self.clear or (0.0, 0.0, 0.0, 0.0),
-			load_op="clear" if self.clear is not None else "load",
-			store_op="store" if self.store else "discard",
-		)
-
-
-@dataclass(frozen=True)
-class DepthAttachment:
-	view: wgpu.GPUTextureView
-	format: str
-	clear: float | None = None
-	store: bool = True
-	read_only: bool = False
-
-	def descriptor(self) -> wgpu.RenderPassDepthStencilAttachment:
-		return wgpu.RenderPassDepthStencilAttachment(
-			view=self.view,
-			depth_clear_value=self.clear or 0.0,
-			depth_load_op="clear" if self.clear is not None else "load",
-			depth_store_op="store" if self.store else "discard",
-			depth_read_only=self.read_only,
-		)
 
 
 class _RenderContext:
@@ -125,7 +92,7 @@ class _RenderContext:
 		for name, init in cls.resources.items():
 			cls.resources[name] = init()
 
-		cls.frame_start = getTime()
+		cls.frame_start = get_time()
 
 	def setup_graphics(cls, *, vsync: bool, highpower_gpu: bool) -> None:
 		"""Setup gpu compute & render surface."""
@@ -216,28 +183,26 @@ class _RenderContext:
 			glfw.wait_events_timeout(end_time - time.perf_counter())
 		glfw.terminate()
 
-	def WindowLoop(cls) -> bool:
-		"""Present the previous image, update window/input state, and continue the loop.
+	def window_loop(cls) -> bool:
+		""" Present the previous image, update window/input state, and continue the loop. """
+		cls.present()
 
-		This deliberately has no command encoder associated with it. Independent command
-		contexts can be created at any point during the iteration.
-		"""
 		wh = glfw.get_framebuffer_size(cls.window)
 		if wh != cls.windowDimensions and wh[0] > 0 and wh[1] > 0:
 			cls.updateWindowSize(wh)
-
-		if cls._screen_view is not None:
-			cls.canvas.present()
-			cls._screen_view = None
 
 		cls._frame_pacing()
 		glfw.poll_events()
 		return not glfw.window_should_close(cls.window)
 
+	def present(cls) -> None:
+		cls.canvas.present()
+		cls._screen_view = None
+
 	_FRAME_WAIT_MARGIN = 0.001 # 1ms
 
 	def _frame_pacing(cls) -> None:
-		now = getTime()
+		now = get_time()
 		cls.frame_time = now - cls.frame_start
 
 		if cls.target_frame_time and cls.frame_time < cls.target_frame_time:
@@ -246,7 +211,7 @@ class _RenderContext:
 				sleep(sleep_time)
 			wait_end = cls.frame_start + cls.target_frame_time
 			while now < wait_end:
-				now = getTime()
+				now = get_time()
 
 		cls.frame_start = now
 
@@ -413,13 +378,15 @@ class RenderPass:
 
 	def set_pipeline(self, pipeline: RenderPipeline) -> None:
 		self.pipeline = pipeline
-		self._gpu_pipeline = None
+		self._variant = None
 
 	def set_bind_group(
 		self,
 		index: int,
 		bindings: BindGroup | wgpu.GPUBindGroup,
 	) -> None:
+		if isinstance(bindings, BindGroup) and bindings.group != index:
+			raise ValueError( f"BindGroup belongs to group {bindings.group}, not group {index}" )
 		self.bind_groups[index] = bindings
 
 	def set_vertex_buffer(
@@ -513,6 +480,7 @@ class RenderPass:
 			instance_count = instances.content.size if instances is not None else 1
 		handle.draw_indexed(mesh.index_count, instance_count, 0, 0, 0)
 
+	
 	def _prepare_pipeline(
 		self,
 		buffers: Sequence[tuple[np.dtype, str]],
@@ -520,15 +488,17 @@ class RenderPass:
 		if self.pipeline is None:
 			raise RuntimeError("No RenderPipeline has been set on this pass")
 
-		pipeline = self.pipeline.get_pipeline(self, buffers)
+		variant = self.pipeline.get_variant(self, buffers)
 		handle = self._require_handle()
-		if pipeline is not self._gpu_pipeline:
-			handle.set_pipeline(pipeline)
-			self._gpu_pipeline = pipeline
+
+		if variant is not self._variant:
+			handle.set_pipeline(variant.handle)
+			self._variant = variant
 
 		for index, bindings in self.bind_groups.items():
 			if isinstance(bindings, BindGroup):
-				bindings = bindings.get_handle(pipeline)
+				bindings = variant.bind_group(bindings)
+
 			handle.set_bind_group(index, bindings)
 
 	def _require_handle(self) -> wgpu.GPURenderPassEncoder:
@@ -560,11 +530,12 @@ class ComputePass:
 		self.pipeline = pipeline
 		self._require_handle().set_pipeline(pipeline.handle)
 
-	def set_bind_group(self, index: int, bindings: BindGroup | wgpu.GPUBindGroup) -> None:
+	def set_bind_group(self, index: int, bindings: BindGroup | wgpu.GPUBindGroup ) -> None:
 		if self.pipeline is None:
 			raise RuntimeError("Set the ComputePipeline before its bind groups")
-		if isinstance(bindings, BindGroup):
-			bindings = bindings.get_handle(self.pipeline.handle)
+		if isinstance(bindings, BindGroup) and bindings.group != index:
+			raise ValueError( f"BindGroup belongs to group {bindings.group}, not {index}" )
+		bindings = self.pipeline._variant.bind_group(bindings)
 		self._require_handle().set_bind_group(index, bindings)
 
 	def dispatch(self, x: int, y: int = 1, z: int = 1) -> None:
@@ -578,6 +549,39 @@ class ComputePass:
 			raise RuntimeError("ComputePass is not active")
 		return self.handle
 
+
+@dataclass(frozen=True)
+class ColorAttachment:
+	view: wgpu.GPUTextureView
+	format: str
+	clear: Color | None = None
+	store: bool = True
+
+	def descriptor(self) -> wgpu.RenderPassColorAttachment:
+		return wgpu.RenderPassColorAttachment(
+			view=self.view,
+			clear_value=self.clear or (0.0, 0.0, 0.0, 0.0),
+			load_op="clear" if self.clear is not None else "load",
+			store_op="store" if self.store else "discard",
+		)
+
+
+@dataclass(frozen=True)
+class DepthAttachment:
+	view: wgpu.GPUTextureView
+	format: str
+	clear: float | None = None
+	store: bool = True
+	read_only: bool = False
+
+	def descriptor(self) -> wgpu.RenderPassDepthStencilAttachment:
+		return wgpu.RenderPassDepthStencilAttachment(
+			view=self.view,
+			depth_clear_value=self.clear or 0.0,
+			depth_load_op="clear" if self.clear is not None else "load",
+			depth_store_op="store" if self.store else "discard",
+			depth_read_only=self.read_only,
+		)
 
 # numpy buffers ---------------------------------------------------------------
 
@@ -642,32 +646,7 @@ def dtype_to_vertex_format(dtype: np.dtype) -> List | str:
 	)
 
 
-def _vertex_buffer_layout(
-	dtype: np.dtype,
-	step_mode: str,
-	shader_location: int,
-) -> tuple[wgpu.VertexBufferLayout, int]:
-	formats = dtype_to_vertex_format(dtype)
-	if isinstance(formats, str):
-		formats = [(formats, 0)]
-
-	attributes = [
-		wgpu.VertexAttribute(
-			shader_location=shader_location + i,
-			offset=offset,
-			format=vertex_format,
-		)
-		for i, (vertex_format, offset) in enumerate(formats)
-	]
-	return wgpu.VertexBufferLayout(
-		array_stride=np.dtype(dtype).itemsize,
-		step_mode=step_mode,
-		attributes=attributes,
-	), shader_location + len(attributes)
-
-
 class GpuBuffer:
-	# Keeping the numpy reference is convenient for ECS-driven buffers and uploads.
 	def __init__(
 		self,
 		content: np.ndarray,
@@ -678,6 +657,7 @@ class GpuBuffer:
 		self.content = np.asarray(content)
 		self.usage = usage
 		self.label = label
+		self.generation = 0
 
 		if upload:
 			self.handle = RenderContext.device.create_buffer_with_data(
@@ -702,6 +682,7 @@ class GpuBuffer:
 			size=size,
 			usage=self.usage,
 		)
+		self.generation += 1
 		return True
 
 	def upload(self) -> None:
@@ -1473,6 +1454,9 @@ class Shader:
 
 		return UniformBuffer(self.uniforms[name])
 
+	def bind_group(self, group: int, **resources: Any) -> BindGroup:
+		return BindGroup(self, group, resources)
+
 	def entry(
 		self,
 		stage: str,
@@ -1572,8 +1556,7 @@ class BindGroup:
 	):
 		self.shader = shader
 		self.group = group
-		self.resources = resources
-		self._cache: Dict[int, wgpu.GPUBindGroup] = {}
+		self.resources = dict(resources)
 
 		for name in resources:
 			binding = shader.bindings.get(name)
@@ -1581,34 +1564,42 @@ class BindGroup:
 				raise KeyError(f"Shader has no binding named {name!r}")
 			if binding.group != group:
 				raise ValueError(
-					f"Binding {name!r} belongs to group {binding.group}, not group {group}"
+					f"Binding {name!r} belongs to group {binding.group}, not {group}"
 				)
 
-	def get_handle(
-		self,
-		pipeline: wgpu.GPURenderPipeline | wgpu.GPUComputePipeline,
-	) -> wgpu.GPUBindGroup:
-		key = id(pipeline)
-		cached = self._cache.get(key)
-		if cached is not None:
-			return cached
-
-		layout = pipeline.get_bind_group_layout(self.group)
-
-		entries = []
-		for name, resource in self.resources.items():
-			binding = self.shader.bindings[name]
-			entries.append(wgpu.BindGroupEntry(
-				binding=binding.binding,
-				resource=self._resource(resource),
-			))
-
-		handle = RenderContext.device.create_bind_group(
-			layout=layout,
-			entries=entries,
+	def cache_key(self) -> tuple:
+		return (
+			self.group,
+			tuple(
+				(
+					self.shader.bindings[name].binding,
+					self._resource_key(resource),
+				)
+				for name, resource in self.resources.items()
+			),
 		)
-		self._cache[key] = handle
-		return handle
+
+	def entries(self) -> List[wgpu.BindGroupEntry]:
+		return [
+			wgpu.BindGroupEntry(
+				binding=self.shader.bindings[name].binding,
+				resource=self._resource(resource),
+			)
+			for name, resource in self.resources.items()
+		]
+
+	def _resource_key(self, resource: Any) -> tuple:
+		if isinstance(resource, GpuBuffer):
+			return (
+				id(resource),
+				resource.generation,
+				resource.content.nbytes,
+			)
+
+		if isinstance(resource, (Texture, TextureView, Sampler)):
+			return (id(resource),)
+
+		return (id(resource),)
 
 	def _resource(self, resource: Any) -> Any:
 		if isinstance(resource, GpuBuffer):
@@ -1624,6 +1615,32 @@ class BindGroup:
 		if isinstance(resource, Sampler):
 			return resource.handle
 		return resource
+
+class _PipelineVariant:
+	def __init__(
+		self,
+		handle: wgpu.GPURenderPipeline | wgpu.GPUComputePipeline,
+	):
+		self.handle = handle
+		self._bind_groups: Dict[tuple, wgpu.GPUBindGroup] = {}
+		self._lock = Lock()
+
+	def bind_group(self, bindings: BindGroup) -> wgpu.GPUBindGroup:
+		key = bindings.cache_key()
+		cached = self._bind_groups.get(key)
+		if cached is not None:
+			return cached
+
+		with self._lock:
+			cached = self._bind_groups.get(key)
+			if cached is None:
+				cached = RenderContext.device.create_bind_group(
+					layout=self.handle.get_bind_group_layout(bindings.group),
+					entries=bindings.entries(),
+				)
+				self._bind_groups[key] = cached
+
+		return cached
 
 
 class RenderPipeline:
@@ -1678,22 +1695,24 @@ class RenderPipeline:
 				"duplicate input field names"
 			)
 
-		self._cache: Dict[tuple, wgpu.GPURenderPipeline] = {}
+		self._cache: Dict[tuple, _PipelineVariant] = {}
 		self._cache_lock = Lock()
 
-	def bind_group(self, group: int, **resources: Any) -> BindGroup:
-		return BindGroup(self.shader, group, resources)
 
-	def get_pipeline(
+	def get_variant(
 		self,
 		render_pass: RenderPass,
 		buffers: Sequence[tuple[np.dtype, str]],
-	) -> wgpu.GPURenderPipeline:
+	) -> _PipelineVariant:
 		key = (
-			tuple((repr(np.dtype(dtype).descr), step_mode) for dtype, step_mode in buffers),
+			tuple(
+				(repr(np.dtype(dtype).descr), step_mode)
+				for dtype, step_mode in buffers
+			),
 			render_pass.color_formats,
 			render_pass.depth_format,
 		)
+
 		cached = self._cache.get(key)
 		if cached is not None:
 			return cached
@@ -1701,8 +1720,11 @@ class RenderPipeline:
 		with self._cache_lock:
 			cached = self._cache.get(key)
 			if cached is None:
-				cached = self._make_pipeline(render_pass, buffers)
+				cached = _PipelineVariant(
+					self._make_pipeline(render_pass, buffers)
+				)
 				self._cache[key] = cached
+
 		return cached
 
 	def _make_pipeline(
@@ -1820,6 +1842,7 @@ class RenderPipeline:
 		)
 
 
+
 class ComputePipeline:
 	def __init__(
 		self,
@@ -1830,10 +1853,11 @@ class ComputePipeline:
 	):
 		self.shader = shader
 		self.entry = shader.entry("compute", entry)
+
 		if self.entry is None:
 			raise ValueError("ComputePipeline shader has no @compute entry point")
 
-		self.handle = RenderContext.device.create_compute_pipeline(
+		handle = RenderContext.device.create_compute_pipeline(
 			label=label or "",
 			layout="auto",
 			compute=wgpu.ProgrammableStage(
@@ -1841,9 +1865,12 @@ class ComputePipeline:
 				entry_point=self.entry,
 			),
 		)
+		self._variant = _PipelineVariant(handle)
 
-	def bind_group(self, group: int, **resources: Any) -> BindGroup:
-		return BindGroup(self.shader, group, resources)
+	@property
+	def handle(self) -> wgpu.GPUComputePipeline:
+		return self._variant.handle
+
 
 
 # compatibility-ish helpers ---------------------------------------------------

@@ -196,7 +196,7 @@ class WatchTimer:
 		self.region = region
 	
 	def __enter__(self) -> None:
-		self.start_time = getTime()
+		self.start_time = get_time()
 		self.nesting = WatchTimer.nesting
 		WatchTimer.nesting += 1
 		for i,t in enumerate(WatchTimer.timers):
@@ -215,11 +215,11 @@ class WatchTimer:
 		return ('  ' * self.nesting + f'{self.region} : { self.elapsed_percent() :.0f}%')	
 	
 	def elapsed_ms(self):
-		return (getTime() - self.start_time) * 1000.0
+		return (get_time() - self.start_time) * 1000.0
 
 	def elapsed_percent(self):
 		ft = RenderContext.frame_time + 0.00001
-		return (getTime() - self.start_time) / ft * 100.0
+		return (get_time() - self.start_time) / ft * 100.0
 	
 	def capture():
 		WatchTimer.report = '\n'.join( list(map(
@@ -371,9 +371,9 @@ def setup_gc_monitor() -> None:
 	def gc_probe(phase:str, info:dict) -> None:
 		nonlocal _gc_start
 		if phase == "start":
-			_gc_start = getTime()
+			_gc_start = get_time()
 		elif phase == "stop":
-			dt_ms = (getTime() - _gc_start) * 1000
+			dt_ms = (get_time() - _gc_start) * 1000
 			if not any(info.values()): return
 			print(
 				f"GC gen={info['generation']} "
