@@ -1,34 +1,43 @@
+import numpy as np
 import pytest
 
 from RenderContext import *
 from pyrr import Matrix44 as Mat4
 
+
 RenderContext.setup_graphics_backend(highpower_gpu=False)
 
-# will throw if invalid
-source1, shader1 = build_shader_program('tests/test.shader')
-source2, shader2 = build_shader_program('tests/test.shader',features={"BIAS"})
-source3, shader3 = build_shader_program('tests/test.shader',features={"BIAS"}, params={"bias":0.01})
+shader1 = Shader(filepath="tests/test.shader")
+shader2 = Shader(filepath="tests/test.shader", features={"BIAS"})
+shader3 = Shader(filepath="tests/test.shader", features={"BIAS"}, params={"bias": 0.01} )
 
-bias_decl = "const float bias = "
-func_decl = "float plus_one(float bias)"
-vertex_bias = "vertex.z *= plus_one(bias);"
+bias_decl = "const bias: f32 = "
+func_decl = "fn plus_one(bias: f32) -> f32"
+vertex_bias = "position.z *= plus_one(bias);"
+
 
 def test_shader_variants():
-	assert bias_decl not in source1.vertex_glsl
-	assert "vertex.z *=" not in source1.vertex_glsl
+	assert bias_decl not in shader1.source
+	assert "position.z *=" not in shader1.source
 
-	assert bias_decl + "0.0001" in source2.vertex_glsl
-	assert vertex_bias in source2.vertex_glsl
+	assert bias_decl + "0.0001" in shader2.source
+	assert vertex_bias in shader2.source
 
-	assert bias_decl + "0.01" in source3.vertex_glsl
-	assert vertex_bias in source3.vertex_glsl
+	assert bias_decl + "0.01" in shader3.source
+	assert vertex_bias in shader3.source
 
-	for shader in (source1, source2, source3):
-		assert func_decl not in shader.fragment_glsl
-		assert vertex_bias not in shader.fragment_glsl
+	for shader in (shader1, shader2, shader3):
+		assert func_decl in shader.source if shader is not shader1 else func_decl not in shader.source
+
+	assert shader1.vertex_dtype == np.dtype([
+		("vertexPosition", np.float32, (3,)),
+		("vertexNormal", np.float32, (3,)),
+		("vertexTexCoord", np.float32, (2,)),
+	])
+
 
 def test_uniform_buffer():
 	u = shader1.UniformBuffer()
-	u.content['mvp'] = Mat4.from_scale([1.0, 1.0, 1.0], dtype=np.float32)
+
+	u.content["mvp"] = Mat4.from_scale([1.0, 1.0, 1.0], dtype=np.float32)
 	u.upload()

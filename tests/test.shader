@@ -1,39 +1,53 @@
+struct VertexInput {
+	@location(0) vertexPosition: vec3f,
+	@location(1) vertexNormal: vec3f,
+	@location(2) vertexTexCoord: vec2f,
+};
 
-in vec3 vertexPosition;
-in vec3 vertexNormal;
-in vec2 vertexTexCoord;
+struct Uniforms {
+	matModel: mat4x4f,
+	mvp: mat4x4f,
+};
 
-uniform mat4 matModel;
-uniform mat4 mvp;
+// Kept to exercise struct/type parsing without requiring creation of
+// a CPU uniform dtype for padded vec3 arrays yet.
+struct ArrayParsingTest {
+	test: array<vec3f, 5>,
+	test2: array<array<vec3f, 5>, 3>,
+};
 
-// uniform array parsing test
-uniform vec3[5] test;
-uniform vec3[5][ 3] test2;
+@group(0) @binding(0)
+var<uniform> uniforms: Uniforms;
 
 #if FEATURES.BIAS
 
-const float bias = {{ PARAMS.bias |default(0.0001) }};
+const bias: f32 = {{ PARAMS.bias | default(0.0001) }};
 
-// contains plus_one definition
 #include "test_include.shader"
 
 #endif
 
-varying vec4 fragColor;
+struct VertexOutput {
+	@builtin(position) position: vec4f,
+	@location(0) fragColor: vec4f,
+};
 
-void vertex(){
-	fragColor = vec4(0.5, 0.1, 1.0, 1.0);
-	vec4 vertex = vec4(vertexPosition, 1.0);
-	vertex = mvp*vertex;
+@vertex
+fn vertex(input: VertexInput) -> VertexOutput {
+	var output: VertexOutput;
+
+	output.fragColor = vec4f(0.5, 0.1, 1.0, 1.0);
+	var position = uniforms.mvp * vec4f(input.vertexPosition, 1.0);
+
 #if FEATURES.BIAS
-	vertex.z *= plus_one(bias);
-	//vertex.z += bias;
+	position.z *= plus_one(bias);
 #endif
-	gl_Position = vertex;
+
+	output.position = position;
+	return output;
 }
 
-
-out vec4 finalColor;
-void fragment() {
-	finalColor = fragColor;
+@fragment
+fn fragment(input: VertexOutput) -> @location(0) vec4f {
+	return input.fragColor;
 }
