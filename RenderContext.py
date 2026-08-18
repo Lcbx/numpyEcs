@@ -928,14 +928,33 @@ _SCALAR_TYPES = {
 	"u32": (np.dtype(np.uint32), 4, 4),
 }
 
+_SCALAR_ALIAS = {
+	"f": "f32",
+	"i": "i32",
+	"u": "u32",
+}
 
 def _round_up(alignment: int, value: int) -> int:
 	return (value + alignment - 1) // alignment * alignment
 
-
 def _strip_wgsl_comments(source: str) -> str:
 	source = re.sub(r"/\*[\s\S]*?\*/", "", source)
 	return re.sub(r"//.*", "", source)
+
+def _normalise_wgsl_type(type_name: str) -> str:
+	if match := re.fullmatch(r"vec([234])([fiu])", type_name):
+		return f"vec{match.group(1)}<{_SCALAR_ALIAS[match.group(2)]}>"
+
+	if match := re.fullmatch(r"mat([234])x([234])f", type_name):
+		return f"mat{match.group(1)}x{match.group(2)}<f32>"
+
+	return type_name
+
+
+def _wgsl_vector_type(type_name: str) -> tuple[np.dtype, int] | None:
+	match = re.fullmatch(r"vec([234])<([fiu]32)>", _normalise_wgsl_type(type_name))
+	if match is None: return None
+	return _SCALAR_TYPES[match.group(2)][0], int(match.group(1))
 
 
 class ShaderSource:
@@ -1005,14 +1024,12 @@ class ShaderSource:
 		for entry in self.interface.entry_points.values():
 			entries[entry.stage].append(entry.name)
 
-		return {
-			stage: tuple(names)
-			for stage, names in entries.items()
-		}
+		return {stage: tuple(names) for stage, names in entries.items()}
 
 	@property
 	def vertex_dtype(self) -> np.dtype | None:
 		entries = self.entry_points["vertex"]
+
 		if not entries:
 			return None
 
@@ -1047,24 +1064,23 @@ class ShaderSource:
 		fields = []
 
 		for parameter in entry.parameters:
-			location = parameter.attribute("location")
-
-			if location is not None:
+			if location := parameter.attribute("location"):
 				fields.append(self._vertex_info(parameter, location))
 				continue
 
 			struct = self.structs.get(parameter.type_name)
+
 			if struct is None:
 				continue
 
 			for field in struct.fields:
-				location = field.attribute("location")
-				if location is not None:
+				if location := field.attribute("location"):
 					fields.append(self._vertex_info(field, location))
 
 		fields.sort(key=lambda field: field.location)
 
 		locations = [field.location for field in fields]
+
 		if len(locations) != len(set(locations)):
 			raise ValueError(
 				f"Vertex entry point {entry_point!r} contains duplicate @location values"
@@ -1076,6 +1092,13 @@ class ShaderSource:
 		return self._uniform_struct_dtype(struct_name)
 
 	def _parse(self, source: str) -> ShaderInterface:
+		return ShaderInterface(
+			structs=self._parse_structs(source),
+			bindings=self._parse_bindings(source),
+			entry_points=self._parse_entry_points(source),
+		)
+
+	def _parse_structs(self, source: str) -> Dict[str, ShaderStruct]:
 		structs = {}
 
 		for match in self._struct_pattern.finditer(source):
@@ -1084,36 +1107,24 @@ class ShaderSource:
 				for field in self._field_pattern.finditer(match.group("body"))
 			)
 
-			structs[match.group("name")] = ShaderStruct(
-				match.group("name"),
-				fields,
-			)
+			name = match.group("name")
+			structs[name] = ShaderStruct(name, fields)
 
+		return structs
+
+	def _parse_bindings(self, source: str) -> Dict[str, BindingInfo]:
 		bindings = {}
 
 		for match in self._binding_pattern.finditer(source):
 			attributes = self._attributes(match.group("attributes"))
-			group = self._attribute(attributes, "group")
-			binding = self._attribute(attributes, "binding")
+
+			group = attributes.get("group")
+			binding = attributes.get("binding")
 
 			if group is None or binding is None:
 				continue
 
-			storage = None
-			access = None
-			storage_text = match.group("storage")
-
-			if storage_text is not None:
-				storage_match = self._storage_pattern.fullmatch(storage_text)
-
-				if storage_match is None:
-					raise ValueError(
-						f"Cannot parse WGSL address space {storage_text!r}"
-					)
-
-				storage = storage_match.group("storage")
-				access = storage_match.group("access")
-
+			storage, access = self._storage(match.group("storage"))
 			name = match.group("name")
 
 			bindings[name] = BindingInfo(
@@ -1125,17 +1136,16 @@ class ShaderSource:
 				type_name=self._type_name(match.group("type")),
 			)
 
+		return bindings
+
+	def _parse_entry_points(self, source: str) -> Dict[str, EntryPointInfo]:
 		entry_points = {}
 
 		for match in self._entry_pattern.finditer(source):
 			attributes = self._attributes(match.group("attributes"))
 
 			stage = next(
-				(
-					stage
-					for stage in ("vertex", "fragment", "compute")
-					if self._attribute(attributes, stage) is not None
-				),
+				(stage for stage in ("vertex", "fragment", "compute") if stage in attributes),
 				None,
 			)
 
@@ -1144,9 +1154,7 @@ class ShaderSource:
 
 			parameters = tuple(
 				self._field(parameter)
-				for parameter in self._parameter_pattern.finditer(
-					match.group("parameters")
-				)
+				for parameter in self._parameter_pattern.finditer(match.group("parameters"))
 			)
 
 			name = match.group("name")
@@ -1157,42 +1165,39 @@ class ShaderSource:
 				stage=stage,
 				parameters=parameters,
 				return_type=self._type_name(return_type) if return_type else None,
-				return_attributes=self._attributes(
-					match.group("return_attributes") or ""
+				return_attributes=tuple(
+					self._attributes(match.group("return_attributes") or "").values()
 				),
 			)
 
-		return ShaderInterface(
-			structs=structs,
-			bindings=bindings,
-			entry_points=entry_points,
-		)
+		return entry_points
+
+	def _storage(self, text: str | None) -> tuple[str | None, str | None]:
+		if text is None:
+			return None, None
+
+		match = self._storage_pattern.fullmatch(text)
+
+		if match is None:
+			raise ValueError(f"Cannot parse WGSL address space {text!r}")
+
+		return match.group("storage"), match.group("access")
 
 	def _field(self, match: re.Match) -> ShaderField:
 		return ShaderField(
 			name=match.group("name"),
 			type_name=self._type_name(match.group("type")),
-			attributes=self._attributes(match.group("attributes")),
+			attributes=tuple(self._attributes(match.group("attributes")).values()),
 		)
 
-	def _attributes(self, text: str) -> tuple[ShaderAttribute, ...]:
-		return tuple(
-			ShaderAttribute(
+	def _attributes(self, text: str) -> dict[str, ShaderAttribute]:
+		return {
+			match.group("name"): ShaderAttribute(
 				match.group("name"),
 				match.group("value"),
 			)
 			for match in self._attribute_pattern.finditer(text)
-		)
-
-	@staticmethod
-	def _attribute(
-		attributes: tuple[ShaderAttribute, ...],
-		name: str,
-	) -> ShaderAttribute | None:
-		return next(
-			(attribute for attribute in attributes if attribute.name == name),
-			None,
-		)
+		}
 
 	@staticmethod
 	def _type_name(type_name: str) -> str:
@@ -1243,10 +1248,7 @@ class ShaderSource:
 		struct_align = 16
 
 		for field in struct.fields:
-			field_type = self._uniform_type(
-				field.type_name,
-				stack + (name,),
-			)
+			field_type = self._uniform_type(field.type_name, stack + (name,))
 
 			align = (
 				max(16, field_type.align)
@@ -1275,34 +1277,15 @@ class ShaderSource:
 		type_name: str,
 		stack: tuple[str, ...],
 	) -> _WGSLType:
+		type_name = _normalise_wgsl_type(type_name)
+
 		if type_name in _SCALAR_TYPES:
 			dtype, align, size = _SCALAR_TYPES[type_name]
 			return _WGSLType(dtype, align, size)
 
-		vector_alias = re.fullmatch(r"vec([234])([fiu])", type_name)
-
-		if vector_alias:
-			scalar = {
-				"f": "f32",
-				"i": "i32",
-				"u": "u32",
-			}[vector_alias.group(2)]
-
-			type_name = f"vec{vector_alias.group(1)}<{scalar}>"
-
-		matrix_alias = re.fullmatch(r"mat([234])x([234])f", type_name)
-
-		if matrix_alias:
-			type_name = (
-				f"mat{matrix_alias.group(1)}x"
-				f"{matrix_alias.group(2)}<f32>"
-			)
-
-		vector = re.fullmatch(r"vec([234])<([fiu]32)>", type_name)
-
-		if vector:
-			count = int(vector.group(1))
-			base, _, scalar_size = _SCALAR_TYPES[vector.group(2)]
+		if vector := _wgsl_vector_type(type_name):
+			base, count = vector
+			scalar_size = base.itemsize
 			align = 8 if count == 2 else 16
 
 			return _WGSLType(
@@ -1311,9 +1294,7 @@ class ShaderSource:
 				scalar_size * count,
 			)
 
-		matrix = re.fullmatch(r"mat([234])x([234])<f32>", type_name)
-
-		if matrix:
+		if matrix := re.fullmatch(r"mat([234])x([234])<f32>", type_name):
 			columns, rows = map(int, matrix.groups())
 			column = self._uniform_type(f"vec{rows}<f32>", stack)
 			stride = _round_up(column.align, column.size)
@@ -1330,9 +1311,7 @@ class ShaderSource:
 				stride * columns,
 			)
 
-		array = re.fullmatch(r"array<(.+),(\d+)>", type_name)
-
-		if array:
+		if array := re.fullmatch(r"array<(.+),(\d+)>", type_name):
 			member = self._uniform_type(array.group(1), stack)
 			count = int(array.group(2))
 
@@ -1370,31 +1349,16 @@ class ShaderSource:
 		)
 
 	def _vertex_type_dtype(self, type_name: str) -> np.dtype:
+		type_name = _normalise_wgsl_type(type_name)
+
 		if type_name in _SCALAR_TYPES:
 			return _SCALAR_TYPES[type_name][0]
 
-		alias = re.fullmatch(r"vec([234])([fiu])", type_name)
-
-		if alias:
-			scalar = {
-				"f": "f32",
-				"i": "i32",
-				"u": "u32",
-			}[alias.group(2)]
-
-			type_name = f"vec{alias.group(1)}<{scalar}>"
-
-		vector = re.fullmatch(r"vec([234])<([fiu]32)>", type_name)
-
-		if vector:
-			count = int(vector.group(1))
-			base = _SCALAR_TYPES[vector.group(2)][0]
-
+		if vector := _wgsl_vector_type(type_name):
+			base, count = vector
 			return np.dtype((base, (count,)))
 
-		raise TypeError(
-			f"Unsupported WGSL vertex type {type_name!r}"
-		)
+		raise TypeError(f"Unsupported WGSL vertex type {type_name!r}")
 
 
 class Shader:
