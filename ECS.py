@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
 from enum import IntFlag
-from inspect import signature as _signature
-from functools import lru_cache
 from typing import cast, Any, Callable, ClassVar, Iterable, Iterator, Mapping, Sequence, TypeAlias, TypeVar, get_origin, get_type_hints
 
 import numpy as np
@@ -71,9 +69,10 @@ def _as_1D_dtype(array:Any, ndtype:type) -> FieldArray:
 	if array.ndim != 1: raise ValueError("parameter must be a scalar or a 1-D array")
 	return array
 
-@lru_cache(maxsize=128)
-def cached_signature(func):
-	return _signature(func)
+def arg_names(func:Callable)->Sequence[str]:
+    code = func.__code__
+    n = code.co_argcount + code.co_kwonlyargcount
+    return code.co_varnames[:n]
 
 def _component_fields(component_cls: type[Any]) -> tuple[tuple[str, Any], ...]:
 	hints = get_type_hints(component_cls)
@@ -467,7 +466,7 @@ class ComponentStorage:
 		if rows.size == 0:
 			return np.empty(0, dtype=Index)
 
-		params = cached_signature(condition).parameters
+		params = arg_names(condition)
 		missing = [name for name in params if name not in self._dense]
 		if missing:
 			raise TypeError(
