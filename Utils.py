@@ -3,6 +3,7 @@ from RenderContext import *
 import numpy as np
 from pyrr import Matrix44 as Mat4, Vector3 as Vec3, Vector4 as Vec4, Quaternion
 from pygltflib import GLTF2, BufferView, Accessor
+from functools import lru_cache
 
 Vec3_f32_type = np.dtype( (np.float32, (3,))  )
 Vec4_f32_type = np.dtype( (np.float32, (4,))  )
@@ -43,20 +44,23 @@ class Camera:
 	# can't use pyrr projections since it follows opengl convetions
 	# opengl has ndc -1->1, wgpu is 0->1
 
-	@cache_1
+	# NOTE: would be better to have per-instance caching (lru_cache is global)
+
+	@lru_cache(16)
 	def perspective_projection(fovy_deg:float, aspect:float, near:float, far:float) -> Mat4:
 		f = 1.0/np.tan(fovy_deg*3.14159/180.0 *0.5)
 		far_factor = far/(near-far)
+
 		mat = np.array([
 			[f/aspect, 0.0,            0.0,  0.0],
 			[0.0,        f,            0.0,  0.0],
 			[0.0,      0.0,     far_factor, -1.0],
 			[0.0,      0.0, far_factor*near, 0.0],
 		], dtype=np.float32)
-		#return np.ascontiguousarray(mat, dtype=np.float32)
+		
 		return mat
 
-	@cache_1
+	@lru_cache(16)
 	def orthogonal_projection(left:float, right:float, bottom:float, top:float, near:float, far:float) -> Mat4:
 
 		rml = right - left

@@ -17,19 +17,19 @@ vertex_bias = "position.z *= plus_one(bias);"
 
 
 def test_shader_variants():
-	assert bias_decl not in shader1.source
-	assert "position.z *=" not in shader1.source
+	assert bias_decl not in shader1.info.wgsl
+	assert "position.z *=" not in shader1.info.wgsl
 
-	assert bias_decl + "0.0001" in shader2.source
-	assert vertex_bias in shader2.source
+	assert bias_decl + "0.0001" in shader2.info.wgsl
+	assert vertex_bias in shader2.info.wgsl
 
-	assert bias_decl + "0.01" in shader3.source
-	assert vertex_bias in shader3.source
+	assert bias_decl + "0.01" in shader3.info.wgsl
+	assert vertex_bias in shader3.info.wgsl
 
 	for shader in (shader1, shader2, shader3):
-		assert func_decl in shader.source if shader is not shader1 else func_decl not in shader.source
+		assert func_decl in shader.info.wgsl if shader is not shader1 else func_decl not in shader.info.wgsl
 
-	assert shader1.vertex_dtype == np.dtype([
+	assert shader1.info.vertex_dtype == np.dtype([
 		("vertexPosition", np.float32, (3,)),
 		("vertexNormal", np.float32, (3,)),
 		("vertexTexCoord", np.float32, (2,)),

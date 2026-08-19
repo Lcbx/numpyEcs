@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from common import *
+from typing import Any, Type, Sequence, Iterator, Iterable, List, Dict, Tuple, Callable
+from time import perf_counter as get_time, sleep
 import time, os, re
 from threading import Lock
 from dataclasses import dataclass
@@ -14,11 +15,16 @@ import numpy as np
 from glob import glob
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-
-get_time = time.perf_counter
-sleep = time.sleep
 Color = tuple[float, float, float, float]
 
+
+#useful for buffer resizing
+# 0->1, 1->2, 2->4, 3->4, 4->8, 5->8
+def higher_pow2(n: int|np.uint32|np.uint64) -> int:
+	return 1 << int(n).bit_length()
+
+def is_pow2(n:int|np.uint32|np.uint64) -> int:
+	return  n & (n-1) == 0
 
 
 class _RenderContext:
@@ -178,9 +184,9 @@ class _RenderContext:
 			glfw.destroy_window(cls.window)
 
 		# work around https://github.com/glfw/glfw/issues/1766
-		end_time = time.perf_counter() + 0.1
-		while time.perf_counter() < end_time:
-			glfw.wait_events_timeout(end_time - time.perf_counter())
+		end_time = get_time() + 0.1
+		while get_time() < end_time:
+			glfw.wait_events_timeout(end_time - get_time())
 		glfw.terminate()
 
 	def window_loop(cls) -> bool:
@@ -842,635 +848,162 @@ class Sampler:
 
 # WGSL shader metadata --------------------------------------------------------
 
-@dataclass(frozen=True)
-class ShaderAttribute:
-	name: str
-	value: str | None = None
-
-	def int_value(self) -> int:
-		if self.value is None:
-			raise ValueError(f"Shader attribute @{self.name} has no value")
-		return int(self.value)
-
-
-@dataclass(frozen=True)
-class ShaderField:
-	name: str
-	type_name: str
-	attributes: tuple[ShaderAttribute, ...] = ()
-
-	def attribute(self, name: str) -> ShaderAttribute | None:
-		return next(
-			(attribute for attribute in self.attributes if attribute.name == name),
-			None,
-		)
-
-
-@dataclass(frozen=True)
-class ShaderStruct:
-	name: str
-	fields: tuple[ShaderField, ...]
-
-
-@dataclass(frozen=True)
-class BindingInfo:
-	name: str
-	group: int
-	binding: int
-	storage: str | None
-	access: str | None
-	type_name: str
-
-
-@dataclass(frozen=True)
-class EntryPointInfo:
-	name: str
-	stage: str
-	parameters: tuple[ShaderField, ...]
-	return_type: str | None
-	return_attributes: tuple[ShaderAttribute, ...]
-
-
-@dataclass(frozen=True)
-class UniformInfo:
-	name: str
-	group: int
-	binding: int
-	struct_name: str
-	dtype: np.dtype
-
-
-@dataclass(frozen=True)
-class VertexInfo:
-	name: str
-	location: int
-	type_name: str
-	dtype: np.dtype
-
-
-@dataclass(frozen=True)
-class ShaderInterface:
-	structs: Dict[str, ShaderStruct]
-	bindings: Dict[str, BindingInfo]
-	entry_points: Dict[str, EntryPointInfo]
-
-
-@dataclass(frozen=True)
-class _WGSLType:
-	dtype: np.dtype
-	align: int
-	size: int
-
 
 _SCALAR_TYPES = {
 	"f32": (np.dtype(np.float32), 4, 4),
 	"i32": (np.dtype(np.int32), 4, 4),
 	"u32": (np.dtype(np.uint32), 4, 4),
 }
+_SCALAR_ALIAS = {"f": "f32", "i": "i32", "u": "u32"}
 
-_SCALAR_ALIAS = {
-	"f": "f32",
-	"i": "i32",
-	"u": "u32",
-}
 
 def _round_up(alignment: int, value: int) -> int:
 	return (value + alignment - 1) // alignment * alignment
 
-def _strip_wgsl_comments(source: str) -> str:
-	source = re.sub(r"/\*[\s\S]*?\*/", "", source)
-	return re.sub(r"//.*", "", source)
 
-def _normalise_wgsl_type(type_name: str) -> str:
-	if match := re.fullmatch(r"vec([234])([fiu])", type_name):
-		return f"vec{match.group(1)}<{_SCALAR_ALIAS[match.group(2)]}>"
+def _type_info(typ, *, uniform=False):
+	typ = re.sub(r"\s+", "", typ)
+	if typ in _SCALAR_TYPES:
+		return _SCALAR_TYPES[typ]
 
-	if match := re.fullmatch(r"mat([234])x([234])f", type_name):
-		return f"mat{match.group(1)}x{match.group(2)}<f32>"
+	m = re.fullmatch(r"vec([234])(?:<([fiu]32)>|([fiu]))", typ)
+	if m:
+		n = int(m.group(1))
+		dtype, _, size = _SCALAR_TYPES[m.group(2) or _SCALAR_ALIAS[m.group(3)]]
+		return np.dtype((dtype, (n,))), 8 if n == 2 else 16, n * size
 
-	return type_name
+	m = re.fullmatch(r"mat([234])x([234])(?:<f32>|f)", typ)
+	if m:
+		cols, rows = map(int, m.groups())
+		column, align, size = _type_info(f"vec{rows}f")
+		stride = _round_up(align, size)
+		if column.itemsize != stride:
+			raise ValueError(f"{typ} requires padded matrix columns")
+		return np.dtype((np.float32, (cols, rows))), align, cols * stride
+
+	m = re.fullmatch(r"array<(.+),(\d+)>", typ)
+	if m:
+		dtype, align, size = _type_info(m.group(1), uniform=uniform)
+		count = int(m.group(2))
+		if uniform:
+			align = max(16, align)
+		stride = _round_up(align, size)
+		if dtype.itemsize != stride:
+			raise ValueError(f"{typ} requires padded array elements")
+		return np.dtype((dtype, (count,))), align, count * stride
+
+	raise ValueError(f"unsupported WGSL dtype {typ!r}")
 
 
-def _wgsl_vector_type(type_name: str) -> tuple[np.dtype, int] | None:
-	match = re.fullmatch(r"vec([234])<([fiu]32)>", _normalise_wgsl_type(type_name))
-	if match is None: return None
-	return _SCALAR_TYPES[match.group(2)][0], int(match.group(1))
+def _struct_dtype(fields, *, uniform=False):
+	fields = list(fields)
+	if not uniform:
+		return np.dtype([(name, _type_info(typ)[0]) for typ, name in fields])
 
+	names, formats, offsets = [], [], []
+	offset, struct_align = 0, 1
+	for typ, name in fields:
+		dtype, align, size = _type_info(typ, uniform=True)
+		offset = _round_up(align, offset)
+		names.append(name); formats.append(dtype); offsets.append(offset)
+		offset += size
+		struct_align = max(struct_align, align)
+	return np.dtype({
+		"names": names, "formats": formats, "offsets": offsets,
+		"itemsize": _round_up(struct_align, offset),
+	})
+
+class _ShaderFileLoader(FileSystemLoader):
+	def get_source(self, environment, template):
+		source, filename, uptodate = super().get_source(environment, template)
+		return source + "\n", filename, uptodate
+
+class DefaultFalseDict(Dict):
+	def __missing__(self, key):
+		return False
 
 class ShaderSource:
-	_ATTRIBUTE = r"@\w+(?:\s*\([^)]*\))?"
-	_ATTRIBUTES = rf"(?:{_ATTRIBUTE}\s*)*"
-	_PARENS = r"(?:[^()]|\([^()]*\))*"
-
-	_attribute_pattern = re.compile(
-		r"@(?P<name>\w+)(?:\s*\(\s*(?P<value>[^)]*?)\s*\))?"
+	_decl_pattern = re.compile(
+		r"^(?P<attrs>(?:@(?:location\(\d+\)|position)[ \t\n]*)*)"
+		r"(?:(?P<flat>flat)[ \t]+)?"
+		r"(?P<qual>uniform|in|out|varying|texture|sampler)[ \t]+"
+		r"(?P<name>[A-Za-z_]\w*)"
+		r"(?:[ \t]*:[ \t]*(?P<type>[^;\n]+?))?"
+		r"[ \t]*;[ \t]*(?:\n|$)",
+		re.MULTILINE,
 	)
-
-	_struct_pattern = re.compile(
-		r"\bstruct\s+(?P<name>\w+)\s*\{(?P<body>.*?)\}\s*;?",
-		re.S,
+	_func_pattern = re.compile(
+		r"^(?P<attrs>(?:(?:@[A-Za-z_]\w*(?:\([^\n)]*\))?)[ \t\r\n]*)*)"
+		r"fn[ \t]+(?P<name>[A-Za-z_]\w*)"
+		r"[ \t]*\((?P<args>[^)]*)\)"
+		r"(?:[ \t]*->[ \t]*(?P<return>[^\n{]+?))?"
+		r"[ \t\r\n]*\{[ \t]*\n"
+		r"(?P<body>[\s\S]*?)"
+		r"^\}",
+		re.MULTILINE,
 	)
-
-	_field_pattern = re.compile(
-		rf"(?P<attributes>{_ATTRIBUTES})(?P<name>\w+)\s*:\s*"
-		rf"(?P<type>.+?)"
-		rf"(?=,\s*(?:{_ATTRIBUTE}\s*)*\w+\s*:|,\s*$|\s*$)",
-		re.S,
-	)
-
-	_binding_pattern = re.compile(
-		rf"(?P<attributes>{_ATTRIBUTES})"
-		r"var(?:\s*<\s*(?P<storage>[^>]+?)\s*>)?\s+"
-		r"(?P<name>\w+)\s*:\s*(?P<type>[^;]+?)\s*;",
-		re.S,
-	)
-
-	_entry_pattern = re.compile(
-		rf"(?P<attributes>{_ATTRIBUTES})fn\s+(?P<name>\w+)\s*"
-		rf"\((?P<parameters>{_PARENS})\)\s*"
-		rf"(?:->\s*(?P<return_attributes>{_ATTRIBUTES})"
-		r"(?P<return_type>[^{]+?))?\s*\{",
-		re.S,
-	)
-
-	_parameter_pattern = re.compile(
-		rf"(?P<attributes>{_ATTRIBUTES})(?P<name>\w+)\s*:\s*"
-		rf"(?P<type>.+?)"
-		rf"(?=,\s*(?:{_ATTRIBUTE}\s*)*\w+\s*:|\s*$)",
-		re.S,
-	)
-
-	_storage_pattern = re.compile(
-		r"^\s*(?P<storage>\w+)(?:\s*,\s*(?P<access>\w+))?\s*$"
-	)
-
-	def __init__(self, source: str):
-		self.source = source
-		self.interface = self._parse(_strip_wgsl_comments(source))
-		self.uniforms = self._uniforms()
-
-	@property
-	def structs(self) -> Dict[str, ShaderStruct]:
-		return self.interface.structs
-
-	@property
-	def bindings(self) -> Dict[str, BindingInfo]:
-		return self.interface.bindings
-
-	@property
-	def entry_points(self) -> Dict[str, tuple[str, ...]]:
-		entries = {"vertex": [], "fragment": [], "compute": []}
-
-		for entry in self.interface.entry_points.values():
-			entries[entry.stage].append(entry.name)
-
-		return {stage: tuple(names) for stage, names in entries.items()}
-
-	@property
-	def vertex_dtype(self) -> np.dtype | None:
-		entries = self.entry_points["vertex"]
-
-		if not entries:
-			return None
-
-		dtype = self.vertex_dtype_for(entries[0])
-
-		for entry in entries[1:]:
-			if self.vertex_dtype_for(entry) != dtype:
-				raise ValueError(
-					"Shader vertex entry points use different input layouts; "
-					"use vertex_dtype_for(entry_point)"
-				)
-
-		return dtype
-
-	def vertex_dtype_for(self, entry_point: str) -> np.dtype:
-		return np.dtype([
-			(field.name, field.dtype)
-			for field in self.vertex_inputs(entry_point)
-		])
-
-	def vertex_inputs(self, entry_point: str) -> tuple[VertexInfo, ...]:
-		try:
-			entry = self.interface.entry_points[entry_point]
-		except KeyError:
-			raise ValueError(f"Shader has no entry point {entry_point!r}") from None
-
-		if entry.stage != "vertex":
-			raise ValueError(
-				f"Shader entry point {entry_point!r} is not a vertex shader"
-			)
-
-		fields = []
-
-		for parameter in entry.parameters:
-			if location := parameter.attribute("location"):
-				fields.append(self._vertex_info(parameter, location))
-				continue
-
-			struct = self.structs.get(parameter.type_name)
-
-			if struct is None:
-				continue
-
-			for field in struct.fields:
-				if location := field.attribute("location"):
-					fields.append(self._vertex_info(field, location))
-
-		fields.sort(key=lambda field: field.location)
-
-		locations = [field.location for field in fields]
-
-		if len(locations) != len(set(locations)):
-			raise ValueError(
-				f"Vertex entry point {entry_point!r} contains duplicate @location values"
-			)
-
-		return tuple(fields)
-
-	def uniform_dtype(self, struct_name: str) -> np.dtype:
-		return self._uniform_struct_dtype(struct_name)
-
-	def _parse(self, source: str) -> ShaderInterface:
-		return ShaderInterface(
-			structs=self._parse_structs(source),
-			bindings=self._parse_bindings(source),
-			entry_points=self._parse_entry_points(source),
-		)
-
-	def _parse_structs(self, source: str) -> Dict[str, ShaderStruct]:
-		structs = {}
-
-		for match in self._struct_pattern.finditer(source):
-			fields = tuple(
-				self._field(field)
-				for field in self._field_pattern.finditer(match.group("body"))
-			)
-
-			name = match.group("name")
-			structs[name] = ShaderStruct(name, fields)
-
-		return structs
-
-	def _parse_bindings(self, source: str) -> Dict[str, BindingInfo]:
-		bindings = {}
-
-		for match in self._binding_pattern.finditer(source):
-			attributes = self._attributes(match.group("attributes"))
-
-			group = attributes.get("group")
-			binding = attributes.get("binding")
-
-			if group is None or binding is None:
-				continue
-
-			storage, access = self._storage(match.group("storage"))
-			name = match.group("name")
-
-			bindings[name] = BindingInfo(
-				name=name,
-				group=group.int_value(),
-				binding=binding.int_value(),
-				storage=storage,
-				access=access,
-				type_name=self._type_name(match.group("type")),
-			)
-
-		return bindings
-
-	def _parse_entry_points(self, source: str) -> Dict[str, EntryPointInfo]:
-		entry_points = {}
-
-		for match in self._entry_pattern.finditer(source):
-			attributes = self._attributes(match.group("attributes"))
-
-			stage = next(
-				(stage for stage in ("vertex", "fragment", "compute") if stage in attributes),
-				None,
-			)
-
-			if stage is None:
-				continue
-
-			parameters = tuple(
-				self._field(parameter)
-				for parameter in self._parameter_pattern.finditer(match.group("parameters"))
-			)
-
-			name = match.group("name")
-			return_type = match.group("return_type")
-
-			entry_points[name] = EntryPointInfo(
-				name=name,
-				stage=stage,
-				parameters=parameters,
-				return_type=self._type_name(return_type) if return_type else None,
-				return_attributes=tuple(
-					self._attributes(match.group("return_attributes") or "").values()
-				),
-			)
-
-		return entry_points
-
-	def _storage(self, text: str | None) -> tuple[str | None, str | None]:
-		if text is None:
-			return None, None
-
-		match = self._storage_pattern.fullmatch(text)
-
-		if match is None:
-			raise ValueError(f"Cannot parse WGSL address space {text!r}")
-
-		return match.group("storage"), match.group("access")
-
-	def _field(self, match: re.Match) -> ShaderField:
-		return ShaderField(
-			name=match.group("name"),
-			type_name=self._type_name(match.group("type")),
-			attributes=tuple(self._attributes(match.group("attributes")).values()),
-		)
-
-	def _attributes(self, text: str) -> dict[str, ShaderAttribute]:
-		return {
-			match.group("name"): ShaderAttribute(
-				match.group("name"),
-				match.group("value"),
-			)
-			for match in self._attribute_pattern.finditer(text)
-		}
-
-	@staticmethod
-	def _type_name(type_name: str) -> str:
-		return re.sub(r"\s+", "", type_name)
-
-	def _uniforms(self) -> Dict[str, UniformInfo]:
-		uniforms = {}
-
-		for binding in self.bindings.values():
-			if binding.storage != "uniform":
-				continue
-
-			if binding.type_name not in self.structs:
-				raise TypeError(
-					f"Uniform {binding.name!r} must refer to a named WGSL struct"
-				)
-
-			uniforms[binding.name] = UniformInfo(
-				name=binding.name,
-				group=binding.group,
-				binding=binding.binding,
-				struct_name=binding.type_name,
-				dtype=self._uniform_struct_dtype(binding.type_name),
-			)
-
-		return uniforms
-
-	def _uniform_struct_dtype(
-		self,
-		name: str,
-		stack: tuple[str, ...] = (),
-	) -> np.dtype:
-		if name in stack:
-			raise TypeError(
-				f"Recursive WGSL struct {name!r} cannot be a uniform dtype"
-			)
-
-		try:
-			struct = self.structs[name]
-		except KeyError:
-			raise TypeError(f"Unknown WGSL struct {name!r}") from None
-
-		names = []
-		formats = []
-		offsets = []
-
-		offset = 0
-		struct_align = 16
-
-		for field in struct.fields:
-			field_type = self._uniform_type(field.type_name, stack + (name,))
-
-			align = (
-				max(16, field_type.align)
-				if field.type_name in self.structs
-				else field_type.align
-			)
-
-			offset = _round_up(align, offset)
-
-			names.append(field.name)
-			formats.append(field_type.dtype)
-			offsets.append(offset)
-
-			offset += field_type.size
-			struct_align = max(struct_align, align)
-
-		return np.dtype({
-			"names": names,
-			"formats": formats,
-			"offsets": offsets,
-			"itemsize": _round_up(struct_align, offset),
-		})
-
-	def _uniform_type(
-		self,
-		type_name: str,
-		stack: tuple[str, ...],
-	) -> _WGSLType:
-		type_name = _normalise_wgsl_type(type_name)
-
-		if type_name in _SCALAR_TYPES:
-			dtype, align, size = _SCALAR_TYPES[type_name]
-			return _WGSLType(dtype, align, size)
-
-		if vector := _wgsl_vector_type(type_name):
-			base, count = vector
-			scalar_size = base.itemsize
-			align = 8 if count == 2 else 16
-
-			return _WGSLType(
-				np.dtype((base, (count,))),
-				align,
-				scalar_size * count,
-			)
-
-		if matrix := re.fullmatch(r"mat([234])x([234])<f32>", type_name):
-			columns, rows = map(int, matrix.groups())
-			column = self._uniform_type(f"vec{rows}<f32>", stack)
-			stride = _round_up(column.align, column.size)
-
-			if stride != column.size:
-				raise TypeError(
-					f"{type_name} requires padding inside matrix columns; "
-					"this uniform layout is not implemented yet"
-				)
-
-			return _WGSLType(
-				np.dtype((np.float32, (columns, rows))),
-				column.align,
-				stride * columns,
-			)
-
-		if array := re.fullmatch(r"array<(.+),(\d+)>", type_name):
-			member = self._uniform_type(array.group(1), stack)
-			count = int(array.group(2))
-
-			align = max(16, member.align)
-			stride = _round_up(align, member.size)
-
-			if stride != member.dtype.itemsize:
-				raise TypeError(
-					f"{type_name} requires per-element padding; "
-					"this uniform layout is not implemented yet"
-				)
-
-			return _WGSLType(
-				np.dtype((member.dtype, (count,))),
-				align,
-				stride * count,
-			)
-
-		if type_name in self.structs:
-			dtype = self._uniform_struct_dtype(type_name, stack)
-			return _WGSLType(dtype, 16, dtype.itemsize)
-
-		raise TypeError(f"Unsupported WGSL uniform type {type_name!r}")
-
-	def _vertex_info(
-		self,
-		field: ShaderField,
-		location: ShaderAttribute,
-	) -> VertexInfo:
-		return VertexInfo(
-			name=field.name,
-			location=location.int_value(),
-			type_name=field.type_name,
-			dtype=self._vertex_type_dtype(field.type_name),
-		)
-
-	def _vertex_type_dtype(self, type_name: str) -> np.dtype:
-		type_name = _normalise_wgsl_type(type_name)
-
-		if type_name in _SCALAR_TYPES:
-			return _SCALAR_TYPES[type_name][0]
-
-		if vector := _wgsl_vector_type(type_name):
-			base, count = vector
-			return np.dtype((base, (count,)))
-
-		raise TypeError(f"Unsupported WGSL vertex type {type_name!r}")
-
-
-class Shader:
+	_location_pattern = re.compile(r"@location\((\d+)\)")
+	_long_comment_pattern = re.compile(r"/\*[\s\S]*?\*/")
+	_comment_pattern = re.compile(r"//.*")
+
+	def _strip_wgsl_comments(self, source: str) -> str:
+		source = self._long_comment_pattern.sub("", source)
+		return self._comment_pattern.sub("", source)
 
 	def __init__(
 		self,
 		*,
 		source: str | None = None,
 		filepath: str | None = None,
+		wgsl: str | None = None,
 		basedir: str | None = None,
 		features: Sequence[str] | None = None,
 		params: Dict[str, Any] | None = None,
-		label: str | None = None,
 	):
-		if source is None and filepath is None:
-			raise ValueError("Shader requires source= or filepath=")
+		if filepath:
+			basedir = basedir or os.path.dirname(os.path.abspath(filepath))
+			with open(filepath, "r", encoding="utf8") as f:
+				source = f.read()
 
-		self.source = self._load_source(
-			source,
-			filepath,
-			basedir,
-			features,
-			params,
-		)
+		if source is None:
+			raise ValueError("source or filepath is required")
 
-		self.info = ShaderSource(self.source)
+		self.source = source
+		self._basedir = basedir or "."
 
-		self.module = RenderContext.device.create_shader_module(
-			label=label or filepath or "shader",
-			code=self.source,
-		)
+		self.uniforms = []
+		self.ins = []
+		self.varyings = []
+		self.outs = []
+		self._io = {"in": [], "varying": [], "out": []}
+		self.textures = []
+		self.samplers = []
+		self.resources = []
+		self.vertex_entry_points = []
+		self.fragment_entry_points = []
 
-		self.structs = self.info.structs
-		self.bindings = self.info.bindings
-		self.uniforms = self.info.uniforms
-		self.entry_points = self.info.entry_points
+		self.wgsl = wgsl or self.compile(features, params)
+
 
 	@property
-	def vertex_dtype(self) -> np.dtype | None:
-		return self.info.vertex_dtype
+	def entry_points(self):
+		return {"vertex": self.vertex_entry_points, "fragment": self.fragment_entry_points}
 
-	def vertex_dtype_for(self, entry_point: str) -> np.dtype:
-		return self.info.vertex_dtype_for(entry_point)
+	@property
+	def vertex_dtype(self):
+		return _struct_dtype((typ, name) for _, typ, name in self.ins)
 
-	def vertex_inputs(self, entry_point: str) -> tuple[VertexInfo, ...]:
-		return self.info.vertex_inputs(entry_point)
+	@property
+	def uniform_dtype(self):
+		return _struct_dtype(self.uniforms, uniform=True)
 
-	def UniformBuffer(self, name: str | None = None) -> UniformBuffer:
-		if name is None:
-			if len(self.uniforms) != 1:
-				raise ValueError(
-					"Uniform name is required when a shader has "
-					"multiple uniform blocks"
-				)
-
-			name = next(iter(self.uniforms))
-
-		return UniformBuffer(self.uniforms[name])
-
-	def bind_group(self, group: int, **resources: Any) -> BindGroup:
-		return BindGroup(self, group, resources)
-
-	def entry(
-		self,
-		stage: str,
-		name: str | None = None,
-	) -> str | None:
-		entries = self.entry_points.get(stage, ())
-
-		if name is not None:
-			if name not in entries:
-				raise ValueError(
-					f"Shader has no {stage} entry point {name!r}"
-				)
-
-			return name
-
-		if not entries:
-			return None
-
-		if len(entries) > 1:
-			raise ValueError(
-				f"Shader has multiple {stage} entry points; "
-				"specify one explicitly"
-			)
-
-		return entries[0]
-
-	def _load_source(
-		self,
-		source: str | None,
-		filepath: str | None,
-		basedir: str | None,
-		features: Sequence[str] | None,
-		params: Dict[str, Any] | None,
+	def compile(self,
+		features: Sequence[str] | None = None,
+		params: Dict[str, Any] | None = None
 	) -> str:
-		text = (
-			source
-			if source is not None
-			else open(filepath, "r").read()
-		)
-
-		base = (
-			basedir
-			if basedir
-			else os.path.dirname(os.path.abspath(filepath))
-			if filepath
-			else glob("**/shaders/", recursive=True)
-		)
-
+		
 		env = Environment(
-			loader=FileSystemLoader(base),
+			loader=_ShaderFileLoader(self._basedir),
 			undefined=StrictUndefined,
 			autoescape=False,
 			keep_trailing_newline=True,
@@ -1479,32 +1012,205 @@ class Shader:
 			line_statement_prefix="#",
 		)
 
-		template = env.from_string(text)
 		feature_dict = DefaultFalseDict()
-
 		if features is not None:
-			feature_dict.update({
-				feature: True
-				for feature in features
-			})
+			feature_dict.update({ feature: True for feature in features })
 
-		return template.render(
+		text = env.from_string(
+			self.source
+		).render(
 			FEATURES=feature_dict,
 			PARAMS=params or {},
 		)
+		text = self._strip_wgsl_comments(text)
+		decls = list(self._decl_pattern.finditer(text))
+		funcs = list(self._func_pattern.finditer(text))
+		self._parse_declarations(decls)
+		self._validate_functions(funcs)
+
+		replacements = [(m.start(), m.end(), self._generate_prelude() + "\n\n" if i == 0 else "") for i, m in enumerate(decls)]
+		replacements += [(m.start(), m.end(), self._generate_function(m)) for m in funcs]
+		for start, end, replacement in sorted(replacements, reverse=True):
+			text = text[:start] + replacement + text[end:]
+
+		return  text + "\n"
+
+	def _parse_declarations(self, decls):
+		resources = 0
+		for m in decls:
+			attrs, flat, qual, name, typ = (m.group(k) for k in ("attrs", "flat", "qual", "name", "type"))
+			
+			if qual != "sampler" and typ is None:
+				raise SyntaxError(f"{qual} {name!r} requires a type")
+
+			if qual == "uniform":
+				self.uniforms.append((typ, name))
+				continue
+
+			if qual in {"texture", "sampler"}:
+
+				typ = typ or "sampler"
+				if qual == "sampler" and typ not in {"sampler", "sampler_comparison"}:
+					raise SyntaxError(f"invalid sampler type {typ!r}")
+
+				(self.textures if qual == "texture" else self.samplers).append((typ, name))
+				self.resources.append((1, resources, typ, name))
+				resources += 1
+				continue
+
+			position = "@position" in attrs
+			loc = self._location_pattern.search(attrs)
+			loc = int(loc.group(1)) if loc else None
+			if position and (qual != "varying" or loc is not None or flat):
+				raise SyntaxError("@position must be a non-flat varying without @location")
+			self._io[qual].append([loc, typ, name, bool(flat), position])
+
+		for entries in self._io.values():
+			used = {loc for loc, _, _, _, position in entries if loc is not None and not position}
+			loc = 0
+			for entry in entries:
+				if entry[4] or entry[0] is not None:
+					continue
+				while loc in used:
+					loc += 1
+				entry[0] = loc
+				used.add(loc)
+				loc += 1
+
+		self.ins = [tuple(e[:3]) for e in self._io["in"]]
+		self.varyings = [tuple(e[:4]) for e in self._io["varying"]]
+		self.outs = [tuple(e[:3]) for e in self._io["out"]]
+
+	def _validate_functions(self, funcs):
+		positions = sum(position for _, _, _, _, position in self._io["varying"])
+
+		for m in funcs:
+			if m.group(0).count("{") != m.group(0).count("}"):
+				raise SyntaxError(f"unbalanced braces in function {m.group('name')!r}")
+
+			attrs = m.group("attrs")
+			vertex, fragment = "@vertex" in attrs, "@fragment" in attrs
+
+			if not (vertex or fragment): continue
+
+			if vertex:
+				self.vertex_entry_points.append(m.group("name"))
+			else:
+				self.fragment_entry_points.append(m.group("name"))
+
+	def _generate_prelude(self):
+		sections = []
+		
+		if self.uniforms:
+			fields = "\n".join(f"\t{name}: {typ}," for typ, name in self.uniforms)
+			sections.append(f"struct _Uniforms {{\n{fields}\n}}\n\n@group(0) @binding(0)\nvar<uniform> _U: _Uniforms;")
+		
+		if self.resources:
+			sections.append("\n\n".join(
+				f"@group({group}) @binding({binding})\nvar {name}: {typ};"
+				for group, binding, typ, name in self.resources
+			))
+		
+		for name, entries in (
+				("_VertexIn", self._io["in"]), ("_VertexOut", self._io["varying"]),
+				("_FragmentIn", self._io["varying"]), ("_FragmentOut", self._io["out"]),
+			):
+			if entries:
+				sections.append(self._generate_io_struct(name, entries))
+
+		return "\n\n".join(sections)
+
+	def _generate_io_struct(self, name, entries):
+		fields = []
+		
+		for loc, typ, field, flat, position in entries:
+			attrs = "@builtin(position)" if position else f"@location({loc})" + (" @interpolate(flat)" if flat else "")
+			fields.append(f"\t{attrs} {field}: {typ},")
+
+		return f"struct {name} {{\n" + "\n".join(fields) + "\n}"
+
+	def _generate_function(self, m):
+		attrs = m.group("attrs").strip()
+		vertex, fragment = "@vertex" in attrs, "@fragment" in attrs
+		if not (vertex or fragment):
+			return self._rewrite_function_uniforms(m)
+
+		body = self._rewrite_uniforms(m.group("body")).rstrip()
+		if vertex:
+			args, result, outputs = ("in: _VertexIn" if self.ins else ""), " -> _VertexOut", True
+		else:
+			args = "in: _FragmentIn" if self.varyings else ""
+			outputs = bool(self.outs)
+			result = " -> _FragmentOut" if outputs else ""
+
+		lines = [attrs, f"fn {m.group('name')}({args}){result} {{"]
+		if outputs:
+			lines.append("\tvar out: " + ("_VertexOut;" if vertex else "_FragmentOut;"))
+		if body:
+			lines.append(body)
+		if outputs:
+			lines.append("\treturn out;")
+		lines.append("}")
+		return "\n".join(lines)
+
+	def _rewrite_function_uniforms(self, m):
+		text, body = m.group(0), m.group("body")
+		start = m.start("body") - m.start()
+		return text[:start] + self._rewrite_uniforms(body) + text[start + len(body):]
+
+	def _rewrite_uniforms(self, text):
+		for _, name in self.uniforms:
+			text = re.sub(rf"(?<![A-Za-z0-9_.]){re.escape(name)}(?![A-Za-z0-9_])", f"_U.{name}", text)
+		return text
 
 
-class DefaultFalseDict(Dict):
-	def __missing__(self, key):
-		return False
+class Shader:
+
+	def __init__(
+		self,
+		label: str | None = None,
+		*args,
+		**kwargs
+	):
+		try:
+			self.info = ShaderSource(**kwargs)
+			self.module = RenderContext.device.create_shader_module(
+				label=label or kwargs.get('filepath') or "shader",
+				code=self.info.wgsl,
+			)
+		except Exception as ex:
+			print(self.info.wgsl)
+			raise ex from None
+
+	def UniformBuffer(self) -> UniformBuffer:
+		return UniformBuffer(self.info.uniform_dtype)
+
+	def bind_group(self, group: int, **resources: Any) -> BindGroup:
+		return BindGroup(self, group, resources)
+
+	def entry(self, stage: str, name: str | None = None) -> str | None:
+		entries = self.info.entry_points.get(stage, ())
+
+		if name is not None:
+			if name not in entries:
+				raise ValueError( f"Shader has no {stage} entry point {name!r}" )
+			return name
+
+		if not entries:
+			return None
+
+		if len(entries) > 1:
+			raise ValueError(
+				f"Shader has multiple {stage} entry points; specify one explicitly"
+			)
+
+		return entries[0]
 
 
 class UniformBuffer(GpuBuffer):
-	def __init__(self, info: UniformInfo):
-		self.info = info
-
+	def __init__(self, dtype:np.dtype):
 		super().__init__(
-			np.zeros(1, dtype=info.dtype),
+			np.zeros(1, dtype=dtype),
 			wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST,
 		)
 
@@ -1521,32 +1227,39 @@ class BindGroup:
 		self.shader = shader
 		self.group = group
 		self.resources = dict(resources)
+ 
+		self.bindings = {
+			name: (group, binding)
+			for group, binding, _, name in shader.info.resources
+		}
+		if shader.info.uniforms:
+			self.bindings["uniforms"] = (0, 0)
 
 		for name in resources:
-			binding = shader.bindings.get(name)
+			binding = self.bindings.get(name)
 			if binding is None:
 				raise KeyError(f"Shader has no binding named {name!r}")
-			if binding.group != group:
+			if binding[0] != group:
 				raise ValueError(
-					f"Binding {name!r} belongs to group {binding.group}, not {group}"
+					f"Binding {name!r} belongs to group {binding[0]}, not {group}"
 				)
-
+ 
 	def cache_key(self) -> tuple:
 		return (
 			self.group,
 			tuple(
 				(
-					self.shader.bindings[name].binding,
+					self.bindings[name][1],
 					self._resource_key(resource),
 				)
 				for name, resource in self.resources.items()
 			),
 		)
-
+ 
 	def entries(self) -> List[wgpu.BindGroupEntry]:
 		return [
 			wgpu.BindGroupEntry(
-				binding=self.shader.bindings[name].binding,
+				binding=self.bindings[name][1],
 				resource=self._resource(resource),
 			)
 			for name, resource in self.resources.items()
@@ -1554,11 +1267,7 @@ class BindGroup:
 
 	def _resource_key(self, resource: Any) -> tuple:
 		if isinstance(resource, GpuBuffer):
-			return (
-				id(resource),
-				resource.generation,
-				resource.content.nbytes,
-			)
+			return ( id(resource), resource.generation, resource.content.nbytes )
 
 		if isinstance(resource, (Texture, TextureView, Sampler)):
 			return (id(resource),)
@@ -1574,11 +1283,13 @@ class BindGroup:
 			)
 		if isinstance(resource, Texture):
 			return resource.handle.create_view()
-		if isinstance(resource, TextureView):
+
+		if isinstance(resource, (TextureView, Sampler) ):
 			return resource.handle
-		if isinstance(resource, Sampler):
-			return resource.handle
+		
 		return resource
+
+
 
 class _PipelineVariant:
 	def __init__(
@@ -1646,19 +1357,6 @@ class RenderPipeline:
 		if self.vertex_entry is None:
 			raise ValueError("RenderPipeline shader has no @vertex entry point")
 
-		vertex_inputs = shader.vertex_inputs(self.vertex_entry)
-
-		self.vertex_inputs = {
-			field.name: field
-			for field in vertex_inputs
-		}
-
-		if len(self.vertex_inputs) != len(vertex_inputs):
-			raise ValueError(
-				f"Vertex entry point {self.vertex_entry!r} contains "
-				"duplicate input field names"
-			)
-
 		self._cache: Dict[tuple, _PipelineVariant] = {}
 		self._cache_lock = Lock()
 
@@ -1699,6 +1397,10 @@ class RenderPipeline:
 		provided_vertex_input = set()
 		layouts = []
 
+		vertex_locations = {
+			name: location for location, _, name in self.shader.info.ins
+		}
+
 		for dtype, step_mode in buffers:
 			if dtype.fields is None:
 				raise TypeError(f"Vertex buffer dtype must be structured, got {dtype}")
@@ -1706,10 +1408,6 @@ class RenderPipeline:
 			attributes = []
 
 			for name, (field_dtype, offset) in dtype.fields.items():
-				shader_input = self.vertex_inputs.get(name)
-
-				if shader_input is None:
-					continue
 
 				if name in provided_vertex_input:
 					raise ValueError(
@@ -1717,8 +1415,8 @@ class RenderPipeline:
 					)
 
 				field_dtype = np.dtype(field_dtype)
-				shader_dtype = shader_input.dtype
-
+				location = vertex_locations.get(name)
+				shader_dtype = self.shader.info.vertex_dtype.fields[name][0]
 
 				field_size = int(np.prod(field_dtype.shape)) if field_dtype.shape else 1
 				shader_size = int(np.prod(shader_dtype.shape)) if shader_dtype.shape else 1
@@ -1729,11 +1427,11 @@ class RenderPipeline:
 				):
 					raise TypeError(
 						f"Vertex attribute {name!r} has dtype {field_dtype}; "
-						f"shader expects {shader_input.type_name}"
+						f"shader expects {shader_dtype}"
 					)
 
 				attributes.append(wgpu.VertexAttribute(
-					shader_location=shader_input.location,
+					shader_location=location,
 					offset=offset,
 					format=dtype_to_vertex_format(field_dtype),
 				))
@@ -1745,7 +1443,7 @@ class RenderPipeline:
 				attributes=attributes,
 			))
 
-		missing = self.vertex_inputs.keys() - provided_vertex_input
+		missing = vertex_locations.keys() - provided_vertex_input
 		if missing:
 			raise ValueError(
 				f"Vertex shader {self.vertex_entry!r} requires attributes "
@@ -1860,7 +1558,3 @@ def create_depth_sampler() -> Sampler:
 		min_filter=wgpu.FilterMode.linear,
 		mag_filter=wgpu.FilterMode.linear,
 	)
-
-
-def build_shader_program(shaderPath: str, **kwargs) -> Shader:
-	return RenderContext.Shader(filepath=shaderPath, **kwargs)
