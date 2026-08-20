@@ -1,5 +1,8 @@
 from RenderContext import *
 
+from functools import wraps
+from typing import Any, Type, Sequence, Iterator, Iterable, List, Dict, Tuple, Callable, ParamSpec, TypeVar
+
 import numpy as np
 from pyrr import Matrix44 as Mat4, Vector3 as Vec3, Vector4 as Vec4, Quaternion
 from pygltflib import GLTF2, BufferView, Accessor
@@ -9,6 +12,35 @@ Vec4_f32_type = np.dtype( (np.float32, (4,))  )
 Vec4_f16_type = np.dtype( (np.float16, (4,))  )
 Mat4_f32_type = np.dtype( (np.float32, (4,4)) )
 Color_type    = np.dtype( (np.uint32,  (1,))  )
+
+
+# caches last return value and retrieves it based on args
+def cache_last(key: Callable[..., object]):
+	P = ParamSpec("P")
+	R = TypeVar("R")
+	missing = object()
+
+	def decorator(fn: Callable[P, R]) -> Callable[P, R]:
+		cache_key = f"__cache_key_{fn.__name__}"
+		cache_val = f"__cache_val_{fn.__name__}"
+
+		@wraps(fn)
+		def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
+			self = args[0]
+			current_key = key(*args, **kwargs)
+
+			cached = getattr(self, cache_key, missing)
+			if cached == current_key:
+				return getattr(self, cache_val)
+
+			value = fn(*args, **kwargs)
+			setattr(self, cache_key, current_key)
+			setattr(self, cache_val, value)
+
+			return value
+		return wrapped
+	return decorator
+
 
 class Camera:
 	def __init__(self, position: tuple, target: tuple, up: tuple, fovy_deg:float, near:float=0.1, far:float=1000.0, perspective:bool=True):
@@ -20,14 +52,15 @@ class Camera:
 		self.far = far
 		self.perspective = perspective
 
-	# NOTE: view changes often, and Vec3s are not haashable (though we could ceonvert them to tuples)
+	@cache_last(lambda self: (tuple(self.position), tuple(self.target), tuple(self.up)) )
 	def view(self) -> Mat4:
 		return Camera.calc_view(self.position, self.target, self.up)
 	
 	def calc_view(position, target:Vec3, up:Vec3) -> Mat4:
 		return Mat4.look_at(position, target, up)
 	
-	# NOTE: we could split this class into orth and perspective cameras
+	# NOTE: we could split this class into orth and perspective cameras	
+	@cache_last(lambda self, aspect: (self.fovy_deg, aspect, self.near, self.far))
 	def projection(self, aspect:float) -> Mat4:
 		if self.perspective: return Camera.perspective_projection(self.fovy_deg, aspect, self.near, self.far )
 		top = self.fovy_deg * 0.5
@@ -36,6 +69,7 @@ class Camera:
 		bottom = -top
 		return Camera.orthogonal_projection(left, right, bottom, top, self.near, self.far)
 
+	@cache_last(lambda self: (tuple(self.position), tuple(self.target)) )
 	def direction(self):
 		l = self.position - self.target
 		return l / np.linalg.norm(l)
@@ -43,7 +77,6 @@ class Camera:
 	# can't use pyrr projections since it follows opengl convetions
 	# opengl has ndc -1->1, wgpu is 0->1
 
-	@cache_1
 	def perspective_projection(fovy_deg:float, aspect:float, near:float, far:float) -> Mat4:
 		f = 1.0/np.tan(fovy_deg*3.14159/180.0 *0.5)
 		far_factor = far/(near-far)
@@ -56,7 +89,6 @@ class Camera:
 		#return np.ascontiguousarray(mat, dtype=np.float32)
 		return mat
 
-	@cache_1
 	def orthogonal_projection(left:float, right:float, bottom:float, top:float, near:float, far:float) -> Mat4:
 
 		rml = right - left
@@ -154,7 +186,7 @@ def interleave_mesh_position_normal_uv(pos, nor, uv):
 	vertex_dtype = np.dtype([
 			("position", np.float32, (3,)),
 			("normal",   np.float32, (3,)), # float16x3 does not exist in wgpu
-			("uv",	   	 np.float16, (2,)),
+			("uv",       np.float16, (2,)),
 		], align=False,   # important: keep it tightly packed (no padding surprises)
 	)
 	#print("stride:", vertex_dtype.itemsize)

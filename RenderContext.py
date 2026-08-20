@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from common import *
 import time, os, re
+from time import sleep, perf_counter as get_time
 from threading import Lock
 from dataclasses import dataclass
+from typing import Any, Type, Sequence, Iterator, Iterable, List, Dict, Tuple, Callable, ParamSpec, TypeVar
 
 import wgpu
 from wgpu.utils.glfw_present_info import get_glfw_present_info
@@ -15,10 +16,12 @@ from glob import glob
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 
-get_time = time.perf_counter
-sleep = time.sleep
 Color = tuple[float, float, float, float]
 
+# useful for buffer resizing
+# 0->1, 1->2, 2->4, 3->4, 4->8, 5->8
+def higher_pow2(n: int|np.uint32|np.uint64) -> int:
+	return 1 << int(n).bit_length()
 
 
 class _RenderContext:
@@ -178,9 +181,9 @@ class _RenderContext:
 			glfw.destroy_window(cls.window)
 
 		# work around https://github.com/glfw/glfw/issues/1766
-		end_time = time.perf_counter() + 0.1
-		while time.perf_counter() < end_time:
-			glfw.wait_events_timeout(end_time - time.perf_counter())
+		end_time = get_time() + 0.1
+		while get_time() < end_time:
+			glfw.wait_events_timeout(end_time - get_time())
 		glfw.terminate()
 
 	def window_loop(cls) -> bool:
