@@ -675,6 +675,19 @@ class GpuBuffer:
 				usage=self.usage,
 			)
 
+	@property
+	def binding(self):
+		return wgpu.BufferBinding(
+			buffer=self.handle,
+			offset=0,
+			size=self.content.nbytes,
+		)
+
+	@property
+	def resource_key(self):
+		return (id(self), self.generation)
+	
+
 	def resize(self, count: int) -> bool:
 		size = higher_pow2(max(4, count * self.content.itemsize))
 		if size <= self.handle.size:
@@ -806,6 +819,10 @@ class Texture:
 			usage=usage,
 			mip_level_count=mip_level_count,
 		)
+
+	@property
+	def binding(self):
+		return self.handle.create_view()
 
 	def view(self, **kwargs) -> TextureView:
 		return TextureView(self, self.handle.create_view(**kwargs))
@@ -1523,7 +1540,7 @@ class BindGroup:
 	):
 		self.shader = shader
 		self.group = group
-		self.resources = dict(resources)
+		self.resources = resources
 
 		for name in resources:
 			binding = shader.bindings.get(name)
@@ -1556,31 +1573,15 @@ class BindGroup:
 		]
 
 	def _resource_key(self, resource: Any) -> tuple:
-		if isinstance(resource, GpuBuffer):
-			return (
-				id(resource),
-				resource.generation,
-				resource.content.nbytes,
-			)
-
-		if isinstance(resource, (Texture, TextureView, Sampler)):
-			return (id(resource),)
-
+		if key := getattr(resource, "resource_key", None):
+			return key
 		return (id(resource),)
 
 	def _resource(self, resource: Any) -> Any:
-		if isinstance(resource, GpuBuffer):
-			return wgpu.BufferBinding(
-				buffer=resource.handle,
-				offset=0,
-				size=resource.content.nbytes,
-			)
-		if isinstance(resource, Texture):
-			return resource.handle.create_view()
-		if isinstance(resource, TextureView):
-			return resource.handle
-		if isinstance(resource, Sampler):
-			return resource.handle
+		if bind := getattr(resource, "binding", None):
+			return bind
+		if handle := getattr(resource, "handle", None):
+			return handle
 		return resource
 
 class _PipelineVariant:

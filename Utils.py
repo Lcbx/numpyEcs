@@ -223,9 +223,12 @@ class WatchTimer:
 	nesting : int = 0
 	timers: list = []
 	report = ''
+	print_region = None
 	
-	def __init__(self, region:str):
+	def __init__(self, region:str, print_:bool=False):
 		self.region = region
+		if print_:
+			WatchTimer.print_region = self
 	
 	def __enter__(self) -> None:
 		self.start_time = get_time()
@@ -240,20 +243,22 @@ class WatchTimer:
 	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
 		WatchTimer.nesting -= 1
 		self.message = self.get_message()
-		#print(self.message.encode())
+
+		if WatchTimer.print_region is self:
+			print(WatchTimer.capture())
 	
-	def get_message(self):
+	def get_message(self) -> str:
 		#return ('  ' * self.nesting + f'{self.region} : { self.elapsed_ms() :.1f}ms')	
 		return ('  ' * self.nesting + f'{self.region} : { self.elapsed_percent() :.0f}%')	
 	
-	def elapsed_ms(self):
+	def elapsed_ms(self) -> float:
 		return (get_time() - self.start_time) * 1000.0
 
-	def elapsed_percent(self):
+	def elapsed_percent(self) -> float:
 		ft = RenderContext.frame_time + 0.00001
 		return (get_time() - self.start_time) / ft * 100.0
 	
-	def capture():
+	def capture() -> str:
 		WatchTimer.report = '\n'.join( list(map(
 			lambda t: t.message if hasattr(t, 'message') else t.get_message(),
 			WatchTimer.timers))

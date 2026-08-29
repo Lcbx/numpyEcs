@@ -257,41 +257,35 @@ while RenderContext.window_loop():
 	uniform_buffer.content["light_dir"] = [*light_camera.direction(), 0.0]
 	uniform_buffer.content["light_view_proj"] = light_view @ light_proj
 
-	with WatchTimer("draw"):
-		with WatchTimer("upload_buffers"):
-			cube_instance_buffer.upload()
-			uniform_buffer.upload()
+	cube_instance_buffer.upload()
+	uniform_buffer.upload()
 
-		shadow_cmd = RenderContext.commands("shadow")
-		main_cmd = RenderContext.commands("main")
+	shadow_cmd = RenderContext.commands("shadow")
+	main_cmd = RenderContext.commands("main")
 
-		with shadow_cmd.render_pass(
-			depth=shadow_texture.depth_attachment(clear=1.0),
-			label="shadow",
-		) as rp:
-			rp.set_pipeline(shadow_pipeline)
-			rp.set_bind_group(0, uniform_bindings)
+	with shadow_cmd.render_pass(
+		depth=shadow_texture.depth_attachment(clear=1.0),
+		label="shadow",
+	) as rp:
+		rp.set_pipeline(shadow_pipeline)
+		rp.set_bind_group(0, uniform_bindings)
 
-			with WatchTimer("draw_model_shadow"):
-				rp.draw_mesh(model_mesh, instances=model_instance_buffer)
-			with WatchTimer("draw_cubes_shadow"):
-				rp.draw_mesh(cube_mesh, instances=cube_instance_buffer)
+		rp.draw_mesh(model_mesh, instances=model_instance_buffer)
+		rp.draw_mesh(cube_mesh, instances=cube_instance_buffer)
 
-		with main_cmd.render_pass(
-			color=RenderContext.screen(clear=(0.02, 0.02, 0.03, 1.0)),
-			depth=RenderContext.depth_attachment(clear=1.0),
-			label="main",
-		) as rp:
-			rp.set_pipeline(main_pipeline)
-			rp.set_bind_group(0, uniform_bindings)
-			rp.set_bind_group(1, shadow_bindings)
+	with main_cmd.render_pass(
+		color=RenderContext.screen(clear=(0.02, 0.02, 0.03, 1.0)),
+		depth=RenderContext.depth_attachment(clear=1.0),
+		label="main",
+	) as rp:
+		rp.set_pipeline(main_pipeline)
+		rp.set_bind_group(0, uniform_bindings)
+		rp.set_bind_group(1, shadow_bindings)
 
-			with WatchTimer("draw_model"):
-				rp.draw_mesh(model_mesh, instances=model_instance_buffer)
-			with WatchTimer("draw_cubes"):
-				rp.draw_mesh(cube_mesh, instances=cube_instance_buffer)
+		rp.draw_mesh(model_mesh, instances=model_instance_buffer)
+		rp.draw_mesh(cube_mesh, instances=cube_instance_buffer)
 
-		RenderContext.submit(
-			shadow_cmd.finish(),
-			main_cmd.finish(),
-		)
+	RenderContext.submit(
+		shadow_cmd.finish(),
+		main_cmd.finish(),
+	)
