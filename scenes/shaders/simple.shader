@@ -1,10 +1,8 @@
 
-struct Uniforms {
-	view: mat4x4<f32>,
-	proj: mat4x4<f32>,
-	light_dir: vec4<f32>,
-	light_view_proj: mat4x4<f32>,
-};
+<Uniforms> view: mat4x4<f32>;
+<Uniforms> proj: mat4x4<f32>;
+<Uniforms> light_dir: vec4<f32>;
+<Uniforms> light_view_proj: mat4x4<f32>;
 
 @group(0) @binding(0)
 var<uniform> uniforms: Uniforms;
@@ -15,22 +13,18 @@ var shadow_map: texture_depth_2d;
 @group(1) @binding(1)
 var shadow_sampler: sampler_comparison;
 
-struct VertexInput {
-	@location(0) position: vec3<f32>,
-	@location(1) normal: vec3<f32>,
-	@location(2) uv: vec2<f32>,
-	@location(3) iPosition: vec3<f32>,
-	@location(4) iRotation: vec4<f32>,
-	@location(5) iScale: vec4<f32>,
-	@location(6) iTint: u32,
-};
+<VertexInput> position: vec3<f32>;
+<VertexInput> normal: vec3<f32>;
+<VertexInput> uv: vec2<f32>;
+<VertexInput> iPosition: vec3<f32>;
+<VertexInput> iRotation: vec4<f32>;
+<VertexInput> iScale: vec4<f32>;
+<VertexInput> iTint: u32;
 
-struct VertexOutput {
-	@builtin(position) position: vec4<f32>,
-	@location(0) normal: vec3<f32>,
-	@location(1) @interpolate(flat) tint: u32,
-	@location(2) shadow_pos: vec3<f32>,
-};
+<VertexOutput> @builtin(position) position: vec4<f32>;
+<VertexOutput> normal: vec3<f32>;
+<VertexOutput> @interpolate(flat) tint: u32;
+<VertexOutput> shadow_pos: vec3<f32>;
 
 fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
 	let t = cross(q.xyz, v) * 2.0;

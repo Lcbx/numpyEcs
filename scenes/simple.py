@@ -108,17 +108,17 @@ light_camera = Camera(
 	perspective=False,
 )
 
-RenderContext.InitWindow(WINDOW_W, WINDOW_H, TITLE, target_fps=-1)
+RenderContext.init_window(WINDOW_W, WINDOW_H, TITLE, target_fps=-1)
 # RenderContext.capture_mouse()
 
-shader = RenderContext.Shader(filepath='scenes/shaders/simple.shader', label="simple")
-main_pipeline = RenderContext.RenderPipeline(
+shader = Shader(filepath='scenes/shaders/simple.shader', label="simple")
+main_pipeline = RenderPipeline(
 	shader,
 	vertex_entry="vertex",
 	fragment_entry="fragment",
 	label="main",
 )
-shadow_pipeline = RenderContext.RenderPipeline(
+shadow_pipeline = RenderPipeline(
 	shader,
 	vertex_entry="shadow_vertex",
 	depth_bias=2,
@@ -130,13 +130,13 @@ vertices, indices = load_gltf_first_mesh_interleaved(
 	"scenes/resources/rooftop_utility_pole.glb"
 )
 scale = 10.0
-model_mesh = RenderContext.Mesh(vertices, indices)
+model_mesh = Mesh(vertices, indices)
 model_instances = np.zeros(2, mesh_instance_dtype)
 model_instances[0]["iPosition"] = Vec3([15.0, 0.0, 15.0])
 model_instances[0]["iRotation"] = Quaternion()
 model_instances[0]["iScale"] = [scale] * 4
 model_instances[0]["iTint"] = pack_rgba8_srgb(Vec4([0.3, 0.5, 0.7, 1.0]))
-model_instance_buffer = RenderContext.Buffer(
+model_instance_buffer = GpuBuffer(
 	model_instances,
 	BufferUsage.VERTEX | BufferUsage.COPY_DST,
 )
@@ -159,13 +159,13 @@ def make_world_instances(entities):
 	return instances
 
 
-cube_instance_buffer = RenderContext.Buffer(
+cube_instance_buffer = GpuBuffer(
 	make_world_instances(render_entities),
 	BufferUsage.VERTEX | BufferUsage.COPY_DST,
 )
-
+#print(shader.info.uniforms)
 uniform_buffer = shader.UniformBuffer()
-#print(shader.vertex_dtype)
+#print(shader.info.vertex_dtype)
 shadow_texture = create_depth_framebuffer(1024, 1024)
 shadow_view = shadow_texture.view()
 shadow_sampler = create_depth_sampler()
@@ -176,8 +176,6 @@ shadow_bindings = shader.bind_group(
 	shadow_map=shadow_view,
 	shadow_sampler=shadow_sampler,
 )
-
-print("init done")
 
 
 def clamp(val, val_min, val_max):

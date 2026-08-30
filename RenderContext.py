@@ -4,8 +4,11 @@ import time, os, re
 from time import sleep, perf_counter as get_time
 from threading import Lock
 from dataclasses import dataclass
-from typing import Any, Type, Sequence, Iterator, Iterable, List, Dict, Tuple, Callable, ParamSpec, TypeVar
+from typing import Any, Sequence, Iterator, Iterable, Callable, ParamSpec, TypeVar
+from collections import defaultdict
 
+import glfw
+import atexit
 import wgpu
 from wgpu.utils.glfw_present_info import get_glfw_present_info
 from wgpu import BufferUsage
@@ -20,7 +23,7 @@ Color = tuple[float, float, float, float]
 
 # useful for buffer resizing
 # 0->1, 1->2, 2->4, 3->4, 4->8, 5->8
-def higher_pow2(n: int|np.uint32|np.uint64) -> int:
+def higher_pow2(n: int | np.uint32 | np.uint64) -> int:
 	return 1 << int(n).bit_length()
 
 
@@ -33,7 +36,7 @@ class _RenderContext:
 		self.device: wgpu.GPUDevice
 		self.presentation_format: str
 
-		self.window: glfw._GLFWwindow
+		self.window: glfw._GLFWwindow | None = None
 		self.windowDimensions: tuple[float, float] = (0.0, 0.0)
 		self.aspect: float = 1.0
 
@@ -47,15 +50,15 @@ class _RenderContext:
 
 		# event_name:[handlers]
 		# handlers return True if no need to propagate further
-		self.event_handlers: Dict[str, List[Callable]] = {}
+		self.event_handlers: dict[str, list[Callable]] = {}
 
 		# before startup -> resource_name:func
 		# after startup  -> resource_name:resource
 		# used to setup utils if imported
 		self.resources = {}
 
-	def InitWindow(
-		cls,
+	def init_window(
+		self,
 		w: float,
 		h: float,
 		title: str,
@@ -67,11 +70,8 @@ class _RenderContext:
 		:param highpower_gpu: use the high performance gpu if there are multiple
 		:param target_fps: -1 is limitless, 0 is vsync, other values is fps limit
 		"""
-		global glfw
-		import glfw, atexit
-
 		glfw.init()
-		atexit.register(cls.cleanup)
+		atexit.register(self.cleanup)
 
 		glfw.window_hint(glfw.CLIENT_API, glfw.NO_API)
 
@@ -86,67 +86,67 @@ class _RenderContext:
 			target_fps = video_mode.refresh_rate
 
 		if target_fps != -1:
-			cls.target_frame_time = 1.0 / float(target_fps)
+			self.target_frame_time = 1.0 / float(target_fps)
 
-		cls.window = glfw.create_window(w, h, title, None, None)
-		cls.setup_callbacks()
-		cls.setup_graphics(vsync=target_fps == 0, highpower_gpu=highpower_gpu)
+		self.window = glfw.create_window(w, h, title, None, None)
+		self.setup_callbacks()
+		self.setup_graphics(vsync=target_fps == 0, highpower_gpu=highpower_gpu)
 
-		for name, init in cls.resources.items():
-			cls.resources[name] = init()
+		for name, init in self.resources.items():
+			self.resources[name] = init()
 
-		cls.frame_start = get_time()
+		self.frame_start = get_time()
 
-	def setup_graphics(cls, *, vsync: bool, highpower_gpu: bool) -> None:
+	def setup_graphics(self, *, vsync: bool, highpower_gpu: bool) -> None:
 		"""Setup gpu compute & render surface."""
-		present_info = get_glfw_present_info(cls.window, vsync=vsync)
-		cls.canvas = wgpu.gpu.get_canvas_context(present_info)
-		cls.setup_graphics_backend(highpower_gpu=highpower_gpu)
-		cls.presentation_format = cls.canvas.get_preferred_format(cls.adapter)
-		cls.canvas.configure(device=cls.device, format=cls.presentation_format)
+		present_info = get_glfw_present_info(self.window, vsync=vsync)
+		self.canvas = wgpu.gpu.get_canvas_context(present_info)
+		self.setup_graphics_backend(highpower_gpu=highpower_gpu)
+		self.presentation_format = self.canvas.get_preferred_format(self.adapter)
+		self.canvas.configure(device=self.device, format=self.presentation_format)
 
-	def setup_graphics_backend(cls, *, highpower_gpu: bool) -> None:
+	def setup_graphics_backend(self, *, highpower_gpu: bool) -> None:
 		"""Setup gpu compute, not necessarily with canvas output. Used notably for tests."""
 		request_params = {
 			"power_preference": "high-performance" if highpower_gpu else "low-power"
 		}
-		if cls.canvas:
-			request_params["canvas"] = cls.canvas
-		cls.adapter = wgpu.gpu.request_adapter_sync(**request_params)
-		cls.device = cls.adapter.request_device_sync()
+		if self.canvas:
+			request_params["canvas"] = self.canvas
+		self.adapter = wgpu.gpu.request_adapter_sync(**request_params)
+		self.device = self.adapter.request_device_sync()
 
-	def setup_callbacks(cls) -> None:
-		glfw.set_key_callback(cls.window, cls.setup_event("key"))
-		glfw.set_char_callback(cls.window, cls.setup_event("char"))
-		glfw.set_mouse_button_callback(cls.window, cls.setup_event("mouse_click"))
-		glfw.set_cursor_pos_callback(cls.window, cls.setup_event("mouse_move"))
-		glfw.set_cursor_enter_callback(cls.window, cls.setup_event("mouse_enter"))
-		glfw.set_scroll_callback(cls.window, cls.setup_event("mouse_scroll"))
+	def setup_callbacks(self) -> None:
+		glfw.set_key_callback(self.window, self.setup_event("key"))
+		glfw.set_char_callback(self.window, self.setup_event("char"))
+		glfw.set_mouse_button_callback(self.window, self.setup_event("mouse_click"))
+		glfw.set_cursor_pos_callback(self.window, self.setup_event("mouse_move"))
+		glfw.set_cursor_enter_callback(self.window, self.setup_event("mouse_enter"))
+		glfw.set_scroll_callback(self.window, self.setup_event("mouse_scroll"))
 
-	def updateWindowSize(cls, wh: Tuple[int, int]) -> None:
+	def update_window_size(self, wh: tuple[int, int]) -> None:
 		w, h = wh
-		cls.windowDimensions = wh
-		cls.canvas.set_physical_size(w, h)
-		cls.aspect = w / h
-		cls.depth = cls.device.create_texture(
+		self.windowDimensions = wh
+		self.canvas.set_physical_size(w, h)
+		self.aspect = w / h
+		self.depth = self.device.create_texture(
 			size=(w, h, 1),
-			format=cls.depth_format,
+			format=self.depth_format,
 			usage=wgpu.TextureUsage.RENDER_ATTACHMENT,
 		).create_view()
 
-	def capture_mouse(cls, capture: bool = True) -> None:
+	def capture_mouse(self, capture: bool = True) -> None:
 		"""Hide and keep the mouse inside the window."""
 		glfw.set_input_mode(
-			cls.window,
+			self.window,
 			glfw.CURSOR,
 			glfw.CURSOR_DISABLED if capture else glfw.CURSOR_NORMAL,
 		)
 
-	def subscribe_event(cls, channel_name: str, handler: Callable) -> None:
-		cls.event_handlers[channel_name].append(handler)
+	def subscribe_event(self, channel_name: str, handler: Callable) -> None:
+		self.event_handlers[channel_name].append(handler)
 
 	def setup_event(
-		cls,
+		self,
 		channel_name: str,
 		mapper: Callable | None = None,
 		info_log: bool = False,
@@ -157,7 +157,7 @@ class _RenderContext:
 		handlers = []
 		if info_log:
 			handlers.append(print_handler)
-		cls.event_handlers[channel_name] = handlers
+		self.event_handlers[channel_name] = handlers
 
 		def deflt_mapper(*args) -> tuple:
 			return args[1:]
@@ -167,18 +167,18 @@ class _RenderContext:
 		def handlers_call(*args) -> None:
 			if mapper:
 				args = mapper(*args)
-			for handler in cls.event_handlers[channel_name]:
+			for handler in self.event_handlers[channel_name]:
 				if handler(*args):
 					break
 
 		return handlers_call
 
-	def cleanup(cls) -> None:
-		if cls.canvas:
-			cls.canvas.unconfigure()
+	def cleanup(self) -> None:
+		if self.canvas:
+			self.canvas.unconfigure()
 
-		if hasattr(cls, "window"):
-			glfw.destroy_window(cls.window)
+		if self.window is not None:
+			glfw.destroy_window(self.window)
 
 		# work around https://github.com/glfw/glfw/issues/1766
 		end_time = get_time() + 0.1
@@ -186,93 +186,70 @@ class _RenderContext:
 			glfw.wait_events_timeout(end_time - get_time())
 		glfw.terminate()
 
-	def window_loop(cls) -> bool:
+	def window_loop(self) -> bool:
 		""" Present the previous image, update window/input state, and continue the loop. """
-		cls.present()
+		self.present()
 
-		wh = glfw.get_framebuffer_size(cls.window)
-		if wh != cls.windowDimensions and wh[0] > 0 and wh[1] > 0:
-			cls.updateWindowSize(wh)
+		wh = glfw.get_framebuffer_size(self.window)
+		if wh != self.windowDimensions and wh[0] > 0 and wh[1] > 0:
+			self.update_window_size(wh)
 
-		cls._frame_pacing()
+		self._frame_pacing()
 		glfw.poll_events()
-		return not glfw.window_should_close(cls.window)
+		return not glfw.window_should_close(self.window)
 
-	def present(cls) -> None:
-		cls.canvas.present()
-		cls._screen_view = None
+	def present(self) -> None:
+		self.canvas.present()
+		self._screen_view = None
 
 	_FRAME_WAIT_MARGIN = 0.001 # 1ms
 
-	def _frame_pacing(cls) -> None:
+	def _frame_pacing(self) -> None:
 		now = get_time()
-		cls.frame_time = now - cls.frame_start
+		self.frame_time = now - self.frame_start
 
-		if cls.target_frame_time and cls.frame_time < cls.target_frame_time:
-			sleep_time = cls.target_frame_time - cls.frame_time - cls._FRAME_WAIT_MARGIN
+		if self.target_frame_time and self.frame_time < self.target_frame_time:
+			sleep_time = self.target_frame_time - self.frame_time - self._FRAME_WAIT_MARGIN
 			if sleep_time > 0.0:
 				sleep(sleep_time)
-			wait_end = cls.frame_start + cls.target_frame_time
+			wait_end = self.frame_start + self.target_frame_time
 			while now < wait_end:
 				now = get_time()
 
-		cls.frame_start = now
+		self.frame_start = now
 
 	# commands -----------------------------------------------------------------
 
-	def commands(cls, label: str | None = None) -> CommandContext:
+	def commands(self, label: str | None = None) -> CommandContext:
 		return CommandContext(label=label)
 
-	def Command(cls, label: str | None = None) -> wgpu.GPUCommandEncoder:
+	def command(self, label: str | None = None) -> wgpu.GPUCommandEncoder:
 		"""Raw command encoder escape hatch."""
-		return cls.device.create_command_encoder(label=label or "")
+		return self.device.create_command_encoder(label=label or "")
 
-	def submit(cls, *command_buffers: wgpu.GPUCommandBuffer) -> None:
-		cls.device.queue.submit(list(command_buffers))
+	def submit(self, *command_buffers: wgpu.GPUCommandBuffer) -> None:
+		self.device.queue.submit(list(command_buffers))
 
 	# attachments ---------------------------------------------------------------
 
 	def screen(
-		cls,
+		self,
 		*,
 		clear: Color | None = None,
 		store: bool = True,
 	) -> ColorAttachment:
-		if cls._screen_view is None:
-			cls._screen_view = cls.canvas.get_current_texture().create_view()
-		return ColorAttachment(cls._screen_view, cls.presentation_format, clear, store)
+		if self._screen_view is None:
+			self._screen_view = self.canvas.get_current_texture().create_view()
+		return ColorAttachment(self._screen_view, self.presentation_format, clear, store)
 
 	def depth_attachment(
-		cls,
+		self,
 		*,
 		clear: float | None = None,
 		store: bool = True,
 		read_only: bool = False,
 	) -> DepthAttachment:
-		return DepthAttachment(cls.depth, cls.depth_format, clear, store, read_only)
-
-	# resource factories --------------------------------------------------------
-
-	def Buffer(cls, *args, **kwargs) -> GpuBuffer:
-		return GpuBuffer(*args, **kwargs)
-
-	def Texture(cls, *args, **kwargs) -> Texture:
-		return Texture(*args, **kwargs)
-
-	def Sampler(cls, *args, **kwargs) -> Sampler:
-		return Sampler(*args, **kwargs)
-
-	def Mesh(cls, *args, **kwargs) -> Mesh:
-		return Mesh(*args, **kwargs)
-
-	def Shader(cls, *args, **kwargs) -> Shader:
-		return Shader(*args, **kwargs)
-
-	def RenderPipeline(cls, *args, **kwargs) -> RenderPipeline:
-		return RenderPipeline(*args, **kwargs)
-
-	def ComputePipeline(cls, *args, **kwargs) -> ComputePipeline:
-		return ComputePipeline(*args, **kwargs)
+		return DepthAttachment(self.depth, self.depth_format, clear, store, read_only)
 
 
 RenderContext = _RenderContext()
@@ -352,7 +329,7 @@ class RenderPass:
 
 		self.handle: wgpu.GPURenderPassEncoder | None = None
 		self.pipeline: RenderPipeline | None = None
-		self.bind_groups: Dict[int, BindGroup | wgpu.GPUBindGroup] = {}
+		self.bind_groups: dict[int, BindGroup | wgpu.GPUBindGroup] = {}
 		self._gpu_pipeline: wgpu.GPURenderPipeline | None = None
 
 	@property
@@ -588,7 +565,7 @@ class DepthAttachment:
 
 # numpy buffers ---------------------------------------------------------------
 
-_VertexFormat: Dict[Any, Tuple[str, int]] = {
+_VertexFormat: dict[Any, tuple[str, int]] = {
 	np.int8:	("sint8",   1),
 	np.uint8:	("uint8",   1),
 	np.int16:	("sint16",  2),
@@ -604,7 +581,7 @@ _VertexFormat: Dict[Any, Tuple[str, int]] = {
 }
 
 
-def dtype_to_vertex_format(dtype: np.dtype) -> List | str:
+def dtype_to_vertex_format(dtype: np.dtype) -> list | str:
 	dtype = np.dtype(dtype)
 	if dtype.fields is not None:
 		res = []
@@ -734,7 +711,7 @@ class GpuBufferPool:
 			upload=False,
 		)
 
-	def alloc(self, data: np.ndarray) -> Tuple[int, int]:
+	def alloc(self, data: np.ndarray) -> tuple[int, int]:
 		start = self.used
 		count = data.size
 		end = start + count
@@ -761,8 +738,8 @@ class GpuBufferPool:
 
 class Mesh:
 	# Cache geometry with the same dtype in shared pools, as in the original implementation.
-	vertex_buffers: Dict[np.dtype, GpuBufferPool] = {}
-	index_buffers: Dict[np.dtype, GpuBufferPool] = {}
+	vertex_buffers: dict[np.dtype, GpuBufferPool] = {}
+	index_buffers: dict[np.dtype, GpuBufferPool] = {}
 
 	index_formats = {
 		np.dtype(np.uint16): wgpu.IndexFormat.uint16,
@@ -929,13 +906,6 @@ class VertexInfo:
 
 
 @dataclass(frozen=True)
-class ShaderInterface:
-	structs: Dict[str, ShaderStruct]
-	bindings: Dict[str, BindingInfo]
-	entry_points: Dict[str, EntryPointInfo]
-
-
-@dataclass(frozen=True)
 class _WGSLType:
 	dtype: np.dtype
 	align: int
@@ -1015,7 +985,7 @@ class ShaderSource:
 
 	_parameter_pattern = re.compile(
 		rf"(?P<attributes>{_ATTRIBUTES})(?P<name>\w+)\s*:\s*"
-		rf"(?P<type>.+?)"
+		rf"(?P<type>.+?)" 
 		rf"(?=,\s*(?:{_ATTRIBUTE}\s*)*\w+\s*:|\s*$)",
 		re.S,
 	)
@@ -1024,31 +994,26 @@ class ShaderSource:
 		r"^\s*(?P<storage>\w+)(?:\s*,\s*(?P<access>\w+))?\s*$"
 	)
 
+	_dsl_pattern = re.compile(
+		rf"^[ \t]*<(?P<struct>\w+)>\s*(?P<attributes>{_ATTRIBUTES})"
+		r"(?P<name>\w+)\s*:\s*(?P<type>[^;]+);\s*(?:\r?\n)?",
+		re.S | re.M
+	)
+
+
 	def __init__(self, source: str):
-		self.source = source
-		self.interface = self._parse(_strip_wgsl_comments(source))
+
+		code = _strip_wgsl_comments(source)
+		self.structs  = self._parse_structs(source)
+		self.bindings = self._parse_bindings(source)
+		self.entry_points = self._parse_entry_points(source)
+		self.source = self._process_dsl(code)
+		#print(self.source)
 		self.uniforms = self._uniforms()
 
 	@property
-	def structs(self) -> Dict[str, ShaderStruct]:
-		return self.interface.structs
-
-	@property
-	def bindings(self) -> Dict[str, BindingInfo]:
-		return self.interface.bindings
-
-	@property
-	def entry_points(self) -> Dict[str, tuple[str, ...]]:
-		entries = {"vertex": [], "fragment": [], "compute": []}
-
-		for entry in self.interface.entry_points.values():
-			entries[entry.stage].append(entry.name)
-
-		return {stage: tuple(names) for stage, names in entries.items()}
-
-	@property
 	def vertex_dtype(self) -> np.dtype | None:
-		entries = self.entry_points["vertex"]
+		entries = [entry.name for entry in self.entry_points.values() if entry.stage == "vertex"]
 
 		if not entries:
 			return None
@@ -1072,7 +1037,7 @@ class ShaderSource:
 
 	def vertex_inputs(self, entry_point: str) -> tuple[VertexInfo, ...]:
 		try:
-			entry = self.interface.entry_points[entry_point]
+			entry = self.entry_points[entry_point]
 		except KeyError:
 			raise ValueError(f"Shader has no entry point {entry_point!r}") from None
 
@@ -1111,28 +1076,32 @@ class ShaderSource:
 	def uniform_dtype(self, struct_name: str) -> np.dtype:
 		return self._uniform_struct_dtype(struct_name)
 
-	def _parse(self, source: str) -> ShaderInterface:
-		return ShaderInterface(
-			structs=self._parse_structs(source),
-			bindings=self._parse_bindings(source),
-			entry_points=self._parse_entry_points(source),
-		)
+	def get_stage_entry_points(self):
+		entries = {"vertex": [], "fragment": [], "compute": []}
 
-	def _parse_structs(self, source: str) -> Dict[str, ShaderStruct]:
+		for entry in self.entry_points.values():
+			entries[entry.stage].append(entry.name)
+
+		return entries
+
+	def _parse_structs(self, source: str) -> dict[str, ShaderStruct]:
 		structs = {}
-
-		for match in self._struct_pattern.finditer(source):
-			fields = tuple(
-				self._field(field)
-				for field in self._field_pattern.finditer(match.group("body"))
-			)
-
-			name = match.group("name")
-			structs[name] = ShaderStruct(name, fields)
-
+		for struct_match in self._struct_pattern.finditer(source):
+			struct_name = struct_match.group("name")
+			fields = []
+			
+			for field_match in self._field_pattern.finditer(struct_match.group("body")):
+				attrs = self._attributes(field_match.group("attributes") or "")
+				fields.append( ShaderField(
+					name=field_match.group("name"),
+					type_name=field_match.group("type").strip(),
+					attributes=tuple(attrs.values())
+				))
+			structs[struct_name] = ShaderStruct(struct_name, tuple(fields))
+			
 		return structs
 
-	def _parse_bindings(self, source: str) -> Dict[str, BindingInfo]:
+	def _parse_bindings(self, source: str) -> dict[str, BindingInfo]:
 		bindings = {}
 
 		for match in self._binding_pattern.finditer(source):
@@ -1158,7 +1127,8 @@ class ShaderSource:
 
 		return bindings
 
-	def _parse_entry_points(self, source: str) -> Dict[str, EntryPointInfo]:
+
+	def _parse_entry_points(self, source: str) -> dict[str, EntryPointInfo]:
 		entry_points = {}
 
 		for match in self._entry_pattern.finditer(source):
@@ -1192,6 +1162,61 @@ class ShaderSource:
 
 		return entry_points
 
+
+	def _process_dsl(self, source) -> None:
+		dsl_fields = defaultdict(list)
+
+		def dsl_replacer(match):
+			struct_name = match.group("struct")
+			attr_str = match.group("attributes") or ""
+			field_name = match.group("name")
+			wgsl_type = match.group("type").strip()
+			
+			attrs = self._attributes(attr_str)
+			dsl_fields[struct_name].append((field_name, wgsl_type, attrs, attr_str))
+
+			#return "\n" * match.group(0).count('\n')
+			return ''
+
+		source = self._dsl_pattern.sub(dsl_replacer, source)
+
+		if not dsl_fields:
+			return source
+
+		injected_wgsl = []
+		
+		for struct_name, fields in dsl_fields.items():
+			parsed_fields = []
+			lines = [f"struct {struct_name} {{"]
+			
+			is_io_struct = "Input" in struct_name or "Output" in struct_name
+			loc_idx = 0
+			
+			for field_name, wgsl_type, attrs, attr_str in fields:
+				
+				# auto-assign @location for IO structs
+				if is_io_struct:
+					if "builtin" not in attrs and "location" not in attrs:
+						attrs["location"] = ShaderAttribute("location", str(loc_idx))
+						attr_str = f"@location({loc_idx}) {attr_str}".strip()
+						loc_idx += 1
+					elif "location" in attrs:
+						loc_idx = int(attrs["location"].value) + 1
+						
+				lines.append(f"	{attr_str}{' ' if attr_str else ''}{field_name}: {wgsl_type},")
+				parsed_fields.append(ShaderField(
+					name=field_name,
+					type_name=wgsl_type,
+					attributes=tuple(attrs.values())
+				))
+				
+			lines.append("};")
+			injected_wgsl.append("\n".join(lines))
+			
+			self.structs[struct_name] = ShaderStruct(struct_name, tuple(parsed_fields))
+
+		return "\n\n".join(injected_wgsl) + "\n\n" + source
+
 	def _storage(self, text: str | None) -> tuple[str | None, str | None]:
 		if text is None:
 			return None, None
@@ -1223,7 +1248,7 @@ class ShaderSource:
 	def _type_name(type_name: str) -> str:
 		return re.sub(r"\s+", "", type_name)
 
-	def _uniforms(self) -> Dict[str, UniformInfo]:
+	def _uniforms(self) -> dict[str, UniformInfo]:
 		uniforms = {}
 
 		for binding in self.bindings.values():
@@ -1390,13 +1415,13 @@ class Shader:
 		filepath: str | None = None,
 		basedir: str | None = None,
 		features: Sequence[str] | None = None,
-		params: Dict[str, Any] | None = None,
+		params: dict[str, Any] | None = None,
 		label: str | None = None,
 	):
 		if source is None and filepath is None:
 			raise ValueError("Shader requires source= or filepath=")
 
-		self.source = self._load_source(
+		source = self._load_source(
 			source,
 			filepath,
 			basedir,
@@ -1404,39 +1429,28 @@ class Shader:
 			params,
 		)
 
-		self.info = ShaderSource(self.source)
+		self.info = ShaderSource(source)
 
-		self.module = RenderContext.device.create_shader_module(
-			label=label or filepath or "shader",
-			code=self.source,
-		)
-
-		self.structs = self.info.structs
-		self.bindings = self.info.bindings
-		self.uniforms = self.info.uniforms
-		self.entry_points = self.info.entry_points
-
-	@property
-	def vertex_dtype(self) -> np.dtype | None:
-		return self.info.vertex_dtype
-
-	def vertex_dtype_for(self, entry_point: str) -> np.dtype:
-		return self.info.vertex_dtype_for(entry_point)
-
-	def vertex_inputs(self, entry_point: str) -> tuple[VertexInfo, ...]:
-		return self.info.vertex_inputs(entry_point)
+		try:
+			self.module = RenderContext.device.create_shader_module(
+				label=label or filepath or "shader",
+				code=self.info.source,
+			)
+		except Exception as ex:
+			print(self.info.source)
+			raise ex from None
 
 	def UniformBuffer(self, name: str | None = None) -> UniformBuffer:
+		if not self.info.uniforms:
+			raise ValueError( "no uniforms were parsed" )
+
 		if name is None:
-			if len(self.uniforms) != 1:
-				raise ValueError(
-					"Uniform name is required when a shader has "
-					"multiple uniform blocks"
-				)
+			if len(self.info.uniforms) > 1:
+				raise ValueError( "Uniform name is required when a shader has multiple uniform blocks" )
 
-			name = next(iter(self.uniforms))
+			name = next(iter(self.info.uniforms))
 
-		return UniformBuffer(self.uniforms[name])
+		return UniformBuffer(self.info.uniforms[name])
 
 	def bind_group(self, group: int, **resources: Any) -> BindGroup:
 		return BindGroup(self, group, resources)
@@ -1446,15 +1460,10 @@ class Shader:
 		stage: str,
 		name: str | None = None,
 	) -> str | None:
-		entries = self.entry_points.get(stage, ())
-
-		if name is not None:
-			if name not in entries:
-				raise ValueError(
-					f"Shader has no {stage} entry point {name!r}"
-				)
-
-			return name
+		entries = [
+			entry.name for entry in self.info.entry_points.values()
+			if entry.stage == stage and (entry.name == name or name is None)
+		]
 
 		if not entries:
 			return None
@@ -1473,7 +1482,7 @@ class Shader:
 		filepath: str | None,
 		basedir: str | None,
 		features: Sequence[str] | None,
-		params: Dict[str, Any] | None,
+		params: dict[str, Any] | None,
 	) -> str:
 		text = (
 			source
@@ -1508,13 +1517,15 @@ class Shader:
 				for feature in features
 			})
 
-		return template.render(
+		rendered_wgsl = template.render(
 			FEATURES=feature_dict,
 			PARAMS=params or {},
 		)
+		
+		return rendered_wgsl
 
 
-class DefaultFalseDict(Dict):
+class DefaultFalseDict(dict):
 	def __missing__(self, key):
 		return False
 
@@ -1536,14 +1547,14 @@ class BindGroup:
 		self,
 		shader: Shader,
 		group: int,
-		resources: Dict[str, Any],
+		resources: dict[str, Any],
 	):
 		self.shader = shader
 		self.group = group
 		self.resources = resources
 
 		for name in resources:
-			binding = shader.bindings.get(name)
+			binding = shader.info.bindings.get(name)
 			if binding is None:
 				raise KeyError(f"Shader has no binding named {name!r}")
 			if binding.group != group:
@@ -1556,17 +1567,17 @@ class BindGroup:
 			self.group,
 			tuple(
 				(
-					self.shader.bindings[name].binding,
+					self.shader.info.bindings[name].binding,
 					self._resource_key(resource),
 				)
 				for name, resource in self.resources.items()
 			),
 		)
 
-	def entries(self) -> List[wgpu.BindGroupEntry]:
+	def entries(self) -> list[wgpu.BindGroupEntry]:
 		return [
 			wgpu.BindGroupEntry(
-				binding=self.shader.bindings[name].binding,
+				binding=self.shader.info.bindings[name].binding,
 				resource=self._resource(resource),
 			)
 			for name, resource in self.resources.items()
@@ -1590,7 +1601,7 @@ class _PipelineVariant:
 		handle: wgpu.GPURenderPipeline | wgpu.GPUComputePipeline,
 	):
 		self.handle = handle
-		self._bind_groups: Dict[tuple, wgpu.GPUBindGroup] = {}
+		self._bind_groups: dict[tuple, wgpu.GPUBindGroup] = {}
 		self._lock = Lock()
 
 	def bind_group(self, bindings: BindGroup) -> wgpu.GPUBindGroup:
@@ -1650,7 +1661,7 @@ class RenderPipeline:
 		if self.vertex_entry is None:
 			raise ValueError("RenderPipeline shader has no @vertex entry point")
 
-		vertex_inputs = shader.vertex_inputs(self.vertex_entry)
+		vertex_inputs = shader.info.vertex_inputs(self.vertex_entry)
 
 		self.vertex_inputs = {
 			field.name: field
@@ -1663,7 +1674,7 @@ class RenderPipeline:
 				"duplicate input field names"
 			)
 
-		self._cache: Dict[tuple, _PipelineVariant] = {}
+		self._cache: dict[tuple, _PipelineVariant] = {}
 		self._cache_lock = Lock()
 
 
@@ -1864,7 +1875,3 @@ def create_depth_sampler() -> Sampler:
 		min_filter=wgpu.FilterMode.linear,
 		mag_filter=wgpu.FilterMode.linear,
 	)
-
-
-def build_shader_program(shaderPath: str, **kwargs) -> Shader:
-	return RenderContext.Shader(filepath=shaderPath, **kwargs)

@@ -1,13 +1,10 @@
-struct VertexInput {
-	@location(0) vertexPosition: vec3f,
-	@location(1) vertexNormal: vec3f,
-	@location(2) vertexTexCoord: vec2f,
-};
 
-struct Uniforms {
-	matModel: mat4x4f,
-	mvp: mat4x4f,
-};
+<VertexInput> vertexPosition: vec3f;
+<VertexInput> vertexNormal: vec3f;
+<VertexInput> vertexTexCoord: vec2f;
+
+<Uniforms> matModel: mat4x4f;
+<Uniforms> mvp: mat4x4f;
 
 // Kept to exercise struct/type parsing without requiring creation of
 // a CPU uniform dtype for padded vec3 arrays yet.
