@@ -329,8 +329,12 @@ class RenderPass:
 
 		self.handle: wgpu.GPURenderPassEncoder | None = None
 		self.pipeline: RenderPipeline | None = None
+
 		self.bind_groups: dict[int, BindGroup | wgpu.GPUBindGroup] = {}
-		self._gpu_pipeline: wgpu.GPURenderPipeline | None = None
+		self.vertex_buffers: dict[int, tuple[np.dtype, str]] = {}
+
+		self._bound_bind_groups: dict[int, wgpu.GPUBindGroup] = {}
+		self._variant = None
 
 	@property
 	def color_formats(self) -> tuple[str, ...]:
@@ -341,6 +345,13 @@ class RenderPass:
 		return self.depth.format if self.depth else None
 
 	def __enter__(self) -> RenderPass:
+		if self.handle is not None:
+			raise RuntimeError("RenderPass is already active")
+
+		self._variant = None
+		self._bound_bind_groups.clear()
+		self.vertex_buffers.clear()
+
 		self.handle = self.commands.handle.begin_render_pass(
 			label=self.label or "",
 			color_attachments=[attachment.descriptor() for attachment in self.color],
@@ -349,24 +360,16 @@ class RenderPass:
 		return self
 
 	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
-		self.end()
-
-	def end(self) -> None:
-		if self.handle is not None:
-			self.handle.end()
-			self.handle = None
+		self.handle.end()
+		self.handle = None
 
 	def set_pipeline(self, pipeline: RenderPipeline) -> None:
 		self.pipeline = pipeline
 		self._variant = None
 
-	def set_bind_group(
-		self,
-		index: int,
-		bindings: BindGroup | wgpu.GPUBindGroup,
-	) -> None:
+	def set_bind_group(self, index: int, bindings: BindGroup | wgpu.GPUBindGroup) -> None:
 		if isinstance(bindings, BindGroup) and bindings.group != index:
-			raise ValueError( f"BindGroup belongs to group {bindings.group}, not group {index}" )
+			raise ValueError(f"BindGroup belongs to group {bindings.group}, not group {index}")
 		self.bind_groups[index] = bindings
 
 	def set_vertex_buffer(
@@ -376,7 +379,9 @@ class RenderPass:
 		*,
 		offset: int = 0,
 		size: int | None = None,
+		step_mode: str = wgpu.VertexStepMode.vertex,
 	) -> None:
+		self.vertex_buffers[slot] = (buffer.content.dtype, step_mode)
 		self._require_handle().set_vertex_buffer(slot, buffer.handle, offset, size)
 
 	def set_index_buffer(
@@ -397,8 +402,8 @@ class RenderPass:
 		first_vertex: int = 0,
 		first_instance: int = 0,
 	) -> None:
-		self._prepare_pipeline(())
-		self._require_handle().draw(
+		self._prepare_pipeline()
+		self.handle.draw(
 			vertex_count,
 			instance_count,
 			first_vertex,
@@ -414,8 +419,8 @@ class RenderPass:
 		base_vertex: int = 0,
 		first_instance: int = 0,
 	) -> None:
-		self._prepare_pipeline(())
-		self._require_handle().draw_indexed(
+		self._prepare_pipeline()
+		self.handle.draw_indexed(
 			index_count,
 			instance_count,
 			first_index,
@@ -430,46 +435,48 @@ class RenderPass:
 		instances: GpuBuffer | None = None,
 		instance_count: int | None = None,
 	) -> None:
-		buffers = [(mesh.vertex_dtype, wgpu.VertexStepMode.vertex)]
-		if instances is not None:
-			buffers.append((instances.content.dtype, wgpu.VertexStepMode.instance))
-
-		self._prepare_pipeline(buffers)
-		handle = self._require_handle()
+		self.vertex_buffers.clear()
 
 		vertex_start, vertex_count = mesh.vertex_range
-		handle.set_vertex_buffer(
+		self.set_vertex_buffer(
 			0,
-			mesh.vertex_buffer.handle,
-			vertex_start * mesh.vertex_dtype.itemsize,
-			vertex_count * mesh.vertex_dtype.itemsize,
+			mesh.vertex_buffer,
+			offset=vertex_start * mesh.vertex_dtype.itemsize,
+			size=vertex_count * mesh.vertex_dtype.itemsize,
 		)
 
 		if instances is not None:
-			handle.set_vertex_buffer(1, instances.handle)
+			self.set_vertex_buffer(
+				1,
+				instances,
+				step_mode=wgpu.VertexStepMode.instance,
+			)
 
 		index_start, index_count = mesh.index_range
-		handle.set_index_buffer(
-			mesh.index_buffer.handle,
-			mesh.index_format,
-			index_start * mesh.index_dtype.itemsize,
-			index_count * mesh.index_dtype.itemsize,
+		self.set_index_buffer(
+			mesh.index_buffer,
+			format=mesh.index_format,
+			offset=index_start * mesh.index_dtype.itemsize,
+			size=index_count * mesh.index_dtype.itemsize,
 		)
 
 		if instance_count is None:
 			instance_count = instances.content.size if instances is not None else 1
-		handle.draw_indexed(mesh.index_count, instance_count, 0, 0, 0)
 
-	
-	def _prepare_pipeline(
-		self,
-		buffers: Sequence[tuple[np.dtype, str]],
-	) -> None:
+		self._prepare_pipeline()
+		self.handle.draw_indexed(index_count, instance_count, 0, 0, 0)
+
+	def _prepare_pipeline(self) -> None:
 		if self.pipeline is None:
 			raise RuntimeError("No RenderPipeline has been set on this pass")
 
-		variant = self.pipeline.get_variant(self, buffers)
+		slots = sorted(self.vertex_buffers)
+		if slots != list(range(len(slots))):
+			raise RuntimeError("Vertex buffer slots must be contiguous starting at 0")
+
 		handle = self._require_handle()
+		buffers = [self.vertex_buffers[i] for i in slots]
+		variant = self.pipeline.get_variant(self, buffers)
 
 		if variant is not self._variant:
 			handle.set_pipeline(variant.handle)
@@ -479,11 +486,12 @@ class RenderPass:
 			if isinstance(bindings, BindGroup):
 				bindings = variant.bind_group(bindings)
 
-			handle.set_bind_group(index, bindings)
+			if self._bound_bind_groups.get(index) is not bindings:
+				handle.set_bind_group(index, bindings)
+				self._bound_bind_groups[index] = bindings
 
 	def _require_handle(self) -> wgpu.GPURenderPassEncoder:
-		if self.handle is None:
-			raise RuntimeError("RenderPass is not active")
+		if self.handle is None: raise RuntimeError("RenderPass is not active")
 		return self.handle
 
 
@@ -737,7 +745,6 @@ class GpuBufferPool:
 
 
 class Mesh:
-	# Cache geometry with the same dtype in shared pools, as in the original implementation.
 	vertex_buffers: dict[np.dtype, GpuBufferPool] = {}
 	index_buffers: dict[np.dtype, GpuBufferPool] = {}
 
