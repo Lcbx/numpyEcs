@@ -1,8 +1,8 @@
 
-<Uniforms> view: mat4x4<f32>;
-<Uniforms> proj: mat4x4<f32>;
-<Uniforms> light_dir: vec4<f32>;
-<Uniforms> light_view_proj: mat4x4<f32>;
+<Uniforms> view: mat4x4f;
+<Uniforms> proj: mat4x4f;
+<Uniforms> light_dir: vec4f;
+<Uniforms> light_view_proj: mat4x4f;
 
 @group(0) @binding(0)
 var<uniform> uniforms: Uniforms;
@@ -13,30 +13,30 @@ var shadow_map: texture_depth_2d;
 @group(1) @binding(1)
 var shadow_sampler: sampler_comparison;
 
-<VertexInput> position: vec3<f32>;
-<VertexInput> normal: vec3<f32>;
-<VertexInput> uv: vec2<f32>;
-<VertexInput> iPosition: vec3<f32>;
-<VertexInput> iRotation: vec4<f32>;
-<VertexInput> iScale: vec4<f32>;
+<VertexInput> position: vec3f;
+<VertexInput> normal: vec3f;
+<VertexInput> uv: vec2f;
+<VertexInput> iPosition: vec3f;
+<VertexInput> iRotation: vec4f;
+<VertexInput> iScale: vec4f;
 <VertexInput> iTint: u32;
 
-<VertexOutput> @builtin(position) position: vec4<f32>;
-<VertexOutput> normal: vec3<f32>;
+<VertexOutput> @builtin(position) position: vec4f;
+<VertexOutput> normal: vec3f;
 <VertexOutput> @interpolate(flat) tint: u32;
-<VertexOutput> shadow_pos: vec3<f32>;
+<VertexOutput> shadow_pos: vec3f;
 
-fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
+fn quat_rotate(q: vec4f, v: vec3f) -> vec3f {
 	let t = cross(q.xyz, v) * 2.0;
 	return v + q.w * t + cross(q.xyz, t);
 }
 
 fn world_position(
-	position: vec3<f32>,
-	iPosition: vec3<f32>,
-	iRotation: vec4<f32>,
-	iScale: vec3<f32>,
-) -> vec3<f32> {
+	position: vec3f,
+	iPosition: vec3f,
+	iRotation: vec4f,
+	iScale: vec3f,
+) -> vec3f {
 	return iPosition + quat_rotate(iRotation, position * iScale);
 }
 
@@ -50,12 +50,12 @@ fn vertex(input: VertexInput) -> VertexOutput {
 	);
 
 	var normal = input.normal;
-	if any(input.iScale.xyz != vec3<f32>(1.0)) {
+	if any(input.iScale.xyz != vec3f(1.0)) {
 		normal /= input.iScale.xyz;
 	}
 
 	let normal_ws = normalize(quat_rotate(input.iRotation, normal));
-	let world = vec4<f32>(world_pos, 1.0);
+	let world = vec4f(world_pos, 1.0);
 	let view_pos = uniforms.view * world;
 	let shadow_clip = uniforms.light_view_proj * world;
 	let shadow_ndc = shadow_clip.xyz / shadow_clip.w;
@@ -64,7 +64,7 @@ fn vertex(input: VertexInput) -> VertexOutput {
 	output.position = uniforms.proj * view_pos;
 	output.normal = normal_ws;
 	output.tint = input.iTint;
-	output.shadow_pos = vec3<f32>(
+	output.shadow_pos = vec3f(
 		shadow_ndc.x * 0.5 + 0.5,
 		0.5 - shadow_ndc.y * 0.5,
 		shadow_ndc.z,
@@ -73,14 +73,14 @@ fn vertex(input: VertexInput) -> VertexOutput {
 }
 
 @vertex
-fn shadow_vertex(input: VertexInput) -> @builtin(position) vec4<f32> {
+fn shadow_vertex(input: VertexInput) -> @builtin(position) vec4f {
 	let world_pos = world_position(
 		input.position,
 		input.iPosition,
 		input.iRotation,
 		input.iScale.xyz,
 	);
-	return uniforms.light_view_proj * vec4<f32>(world_pos, 1.0);
+	return uniforms.light_view_proj * vec4f(world_pos, 1.0);
 }
 
 fn srgb_to_linear_channel(c: f32) -> f32 {
@@ -90,15 +90,15 @@ fn srgb_to_linear_channel(c: f32) -> f32 {
 	return pow((c + 0.055) / 1.055, 2.4);
 }
 
-fn unpack_rgba8_srgb(c: u32) -> vec4<f32> {
-	let rgba = vec4<f32>(
+fn unpack_rgba8_srgb(c: u32) -> vec4f {
+	let rgba = vec4f(
 		f32(c & 255u),
 		f32((c >> 8u) & 255u),
 		f32((c >> 16u) & 255u),
 		f32((c >> 24u) & 255u),
 	) / 255.0;
 
-	return vec4<f32>(
+	return vec4f(
 		srgb_to_linear_channel(rgba.r),
 		srgb_to_linear_channel(rgba.g),
 		srgb_to_linear_channel(rgba.b),
@@ -106,9 +106,9 @@ fn unpack_rgba8_srgb(c: u32) -> vec4<f32> {
 	);
 }
 
-fn sample_shadow(position: vec3<f32>) -> f32 {
-	let in_bounds = all(position.xy >= vec2<f32>(0.0)) &&
-		all(position.xy <= vec2<f32>(1.0)) &&
+fn sample_shadow(position: vec3f) -> f32 {
+	let in_bounds = all(position.xy >= vec2f(0.0)) &&
+		all(position.xy <= vec2f(1.0)) &&
 		position.z >= 0.0 && position.z <= 1.0;
 
 	if !in_bounds {
@@ -124,10 +124,10 @@ fn sample_shadow(position: vec3<f32>) -> f32 {
 }
 
 @fragment
-fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragment(input: VertexOutput) -> @location(0) vec4f {
 	let color = unpack_rgba8_srgb(input.tint);
 	let light = max(dot(input.normal, uniforms.light_dir.xyz), 0.0);
 	let shadow = sample_shadow(input.shadow_pos);
 	let lighting = mix(0.35, 1.0, light) * mix(0.45, 1.0, shadow);
-	return vec4<f32>(color.rgb * lighting, color.a);
+	return vec4f(color.rgb * lighting, color.a);
 }
