@@ -129,13 +129,13 @@ shadow_pipeline = RenderPipeline(
 vertices, indices = load_gltf_first_mesh_interleaved(
 	"scenes/resources/rooftop_utility_pole.glb"
 )
-scale = 10.0
 model_mesh = Mesh(vertices, indices)
-model_instances = np.zeros(2, mesh_instance_dtype)
+model_instances = np.zeros(1, mesh_instance_dtype)
 model_instances[0]["iPosition"] = Vec3([15.0, 0.0, 15.0])
-model_instances[0]["iRotation"] = pack_quaternion(Quaternion())
-model_instances[0]["iScale"] = pack_scale([scale] * 4)
 model_instances[0]["iTint"] = pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])
+model_instances[0]["iRotation"] = pack_quaternion(Quaternion())
+model_instances[0]["iScale"] = pack_scale([10.0] * 4)
+model_instances[0]["iPosition"] = Vec3([15.0, 0.0, 15.0])
 model_instance_buffer = GpuBuffer(
 	model_instances,
 	BufferUsage.VERTEX | BufferUsage.COPY_DST,
@@ -197,16 +197,6 @@ while RenderContext.window_loop():
 		print(f"fps {fps_frames}")
 		fps_frames = 0
 		fps_print_timestamp = now
-
-		model_instances[1]["iPosition"] = Vec3([
-			np.random.rand() * 15.0,
-			0.0,
-			np.random.rand() * 15.0,
-		])
-		model_instances[1]["iRotation"] = pack_quaternion(Quaternion())
-		model_instances[1]["iScale"] = pack_scale([scale] * 4)
-		model_instances[1]["iTint"] = pack_rgba8_srgb([0.6, 0.5, 0.4, 1.0])
-		model_instance_buffer.upload()
 
 	# orbit update
 	elapsed = now - start_t
