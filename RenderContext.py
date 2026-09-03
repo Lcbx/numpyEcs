@@ -533,8 +533,7 @@ class ComputePass:
 		self._require_handle().dispatch_workgroups_indirect(buffer.handle, offset)
 
 	def _require_handle(self) -> wgpu.GPUComputePassEncoder:
-		if self.handle is None:
-			raise RuntimeError("ComputePass is not active")
+		if self.handle is None: raise RuntimeError("ComputePass is not active")
 		return self.handle
 
 
@@ -939,12 +938,17 @@ def _strip_wgsl_comments(source: str) -> str:
 	return re.sub(r"//.*", "", source)
 
 def _normalise_wgsl_type(type_name: str) -> str:
-	if match := re.fullmatch(r"vec([234])([fiu])", type_name):
-		return f"vec{match.group(1)}<{_SCALAR_ALIAS[match.group(2)]}>"
-
-	if match := re.fullmatch(r"mat([234])x([234])f", type_name):
-		return f"mat{match.group(1)}x{match.group(2)}<f32>"
-
+	type_name = re.sub(r"\s+", "", type_name)
+	type_name = re.sub(
+		r"\bvec([234])([fiu])\b",
+		lambda m: f"vec{m.group(1)}<{_SCALAR_ALIAS[m.group(2)]}>",
+		type_name,
+	)
+	type_name = re.sub(
+		r"\bmat([234])x([234])f\b",
+		lambda m: f"mat{m.group(1)}x{m.group(2)}<f32>",
+		type_name,
+	)
 	return type_name
 
 

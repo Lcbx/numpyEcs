@@ -7,11 +7,6 @@ import numpy as np
 from pyrr import Matrix44 as Mat4, Vector3 as Vec3, Vector4 as Vec4, Quaternion
 from pygltflib import GLTF2, BufferView, Accessor
 
-Vec3_f32_type = np.dtype( (np.float32, (3,))  )
-Vec4_f32_type = np.dtype( (np.float32, (4,))  )
-Vec4_f16_type = np.dtype( (np.float16, (4,))  )
-Mat4_f32_type = np.dtype( (np.float32, (4,4)) )
-Color_type    = np.dtype( (np.uint32,  (1,))  )
 
 
 # caches last return value and retrieves it based on args
@@ -310,14 +305,27 @@ RenderContext.resources["cube"] = lambda : (
 	Mesh(interleave_mesh_position_normal_uv(CUBE_POSITIONS_24, CUBE_NORMALS_24, CUBE_UVS_24), CUBE_INDICES_36)
 )
 
-
 mesh_instance_dtype = np.dtype([
-	#("uModel", Mat4_type),
-	("iPosition", Vec3_f32_type),
-	("iRotation", Vec4_f16_type), # quaternion
-	("iScale",    Vec4_f16_type), # last float16 is unused
-	("iTint",     Color_type)
+    ("iPosition",  np.float32, 3), # 12 bytes
+    ("iTint",      np.uint32,  1), # 4 bytes  (fills align 16 gap)
+    ("iRotation",  np.uint32,  2), # 8 bytes  (snorm16 mapped to [-1, 1])
+    ("iScale",     np.uint32,  2), # 8 bytes  (4x float16: x, y, z, 0)
 ])
+
+
+# quantize quaternion to int16 snorm [-32767, 32767]
+def pack_quaternion(rot):
+	rot_arr = np.asarray(rot)
+	snorm16 = np.round(np.clip(rot_arr, -1.0, 1.0) * 32767.0).astype(np.int16)
+	u32_view = snorm16.view(np.uint32)
+	return u32_view #.reshape(-1, 2) if rot_arr.ndim > 1 else u32_view
+
+# put 4 f16 into 2 u32
+def pack_scale(scale):
+	scl_arr = np.asarray(scale)
+	f16 = scl_arr.astype(np.float16)
+	return f16.view(np.uint32)
+
 
 def make_instances(position, rotation, scale, tint):
 	n = len(position["x"])

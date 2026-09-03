@@ -17,14 +17,27 @@ var shadow_sampler: sampler_comparison;
 <VertexInput> normal: vec3f;
 <VertexInput> uv: vec2f;
 <VertexInput> iPosition: vec3f;
-<VertexInput> iRotation: vec4f;
-<VertexInput> iScale: vec4f;
 <VertexInput> iTint: u32;
+<VertexInput> iRotation: vec2u;
+<VertexInput> iScale: vec2u;
 
 <VertexOutput> @builtin(position) position: vec4f;
 <VertexOutput> normal: vec3f;
 <VertexOutput> @interpolate(flat) tint: u32;
 <VertexOutput> shadow_pos: vec3f;
+
+fn unpack_rotation(packed: vec2u) -> vec4f {
+    return vec4f(
+        unpack2x16snorm(packed.x),
+        unpack2x16snorm(packed.y)
+    );
+}
+
+fn unpack_scale(packed: vec2u) -> vec3f {
+    let xy = unpack2x16float(packed.x);
+    let z  = unpack2x16float(packed.y).x;
+    return vec3f(xy, z);
+}
 
 fn quat_rotate(q: vec4f, v: vec3f) -> vec3f {
 	let t = cross(q.xyz, v) * 2.0;
@@ -42,19 +55,23 @@ fn world_position(
 
 @vertex
 fn vertex(input: VertexInput) -> VertexOutput {
+
+	let rotation  = unpack_rotation(input.iRotation);
+	let scale     = unpack_scale(input.iScale);
+
 	let world_pos = world_position(
 		input.position,
 		input.iPosition,
-		input.iRotation,
-		input.iScale.xyz,
+		rotation,
+		scale,
 	);
 
 	var normal = input.normal;
-	if any(input.iScale.xyz != vec3f(1.0)) {
-		normal /= input.iScale.xyz;
+	if any(scale != vec3f(1.0)) {
+		normal /= scale;
 	}
 
-	let normal_ws = normalize(quat_rotate(input.iRotation, normal));
+	let normal_ws = normalize(quat_rotate(rotation, normal));
 	let world = vec4f(world_pos, 1.0);
 	let view_pos = uniforms.view * world;
 	let shadow_clip = uniforms.light_view_proj * world;
@@ -74,11 +91,12 @@ fn vertex(input: VertexInput) -> VertexOutput {
 
 @vertex
 fn shadow_vertex(input: VertexInput) -> @builtin(position) vec4f {
+
 	let world_pos = world_position(
 		input.position,
 		input.iPosition,
-		input.iRotation,
-		input.iScale.xyz,
+		unpack_rotation(input.iRotation),
+		unpack_scale(input.iScale),
 	);
 	return uniforms.light_view_proj * vec4f(world_pos, 1.0);
 }

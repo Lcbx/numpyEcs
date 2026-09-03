@@ -133,9 +133,9 @@ scale = 10.0
 model_mesh = Mesh(vertices, indices)
 model_instances = np.zeros(2, mesh_instance_dtype)
 model_instances[0]["iPosition"] = Vec3([15.0, 0.0, 15.0])
-model_instances[0]["iRotation"] = Quaternion()
-model_instances[0]["iScale"] = [scale] * 4
-model_instances[0]["iTint"] = pack_rgba8_srgb(Vec4([0.3, 0.5, 0.7, 1.0]))
+model_instances[0]["iRotation"] = pack_quaternion(Quaternion())
+model_instances[0]["iScale"] = pack_scale([scale] * 4)
+model_instances[0]["iTint"] = pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])
 model_instance_buffer = GpuBuffer(
 	model_instances,
 	BufferUsage.VERTEX | BufferUsage.COPY_DST,
@@ -144,37 +144,29 @@ model_instance_buffer = GpuBuffer(
 cube_mesh = RenderContext.resources["cube"]
 render_entities = world.where(Position, Rotation, Scale, Tint)
 
-
-def make_world_instances(entities):
-	position = positions[entities]
-	rotation = rotations[entities]
-	scale = scales[entities]
-	tint = tints[entities]
-
+def make_cube_instances(entities):
 	instances = np.empty(entities.size, dtype=mesh_instance_dtype)
-	instances["iPosition"] = position.vector()
-	instances["iRotation"] = rotation.vector()
-	instances["iScale"] = scale.vector()
-	instances["iTint"][:, 0] = tint.value
+	instances["iPosition"] = positions[entities].vector()
+	instances["iTint"][:, 0] = tints[entities].value
+	instances["iRotation"] = pack_quaternion(rotations[entities].vector())
+	instances["iScale"] = pack_scale(scales[entities].vector())
 	return instances
 
-
 cube_instance_buffer = GpuBuffer(
-	make_world_instances(render_entities),
+	make_cube_instances(render_entities),
 	BufferUsage.VERTEX | BufferUsage.COPY_DST,
 )
-#print(shader.info.uniforms)
+
 uniform_buffer = shader.UniformBuffer()
-#print(shader.info.vertex_dtype)
+
 shadow_texture = create_depth_framebuffer(1024, 1024)
 shadow_view = shadow_texture.view()
 shadow_sampler = create_depth_sampler()
 
-uniform_bindings = shader.bind_group(0, uniforms=uniform_buffer)
-shadow_bindings = shader.bind_group(
-	1,
-	shadow_map=shadow_view,
-	shadow_sampler=shadow_sampler,
+uniform_bindings = shader.bind_group( 0, uniforms=uniform_buffer)
+shadow_bindings  = shader.bind_group( 1,
+	shadow_map     = shadow_view,
+	shadow_sampler = shadow_sampler
 )
 
 
@@ -211,9 +203,9 @@ while RenderContext.window_loop():
 			0.0,
 			np.random.rand() * 15.0,
 		])
-		model_instances[1]["iRotation"] = Quaternion()
-		model_instances[1]["iScale"] = [scale] * 4
-		model_instances[1]["iTint"] = pack_rgba8_srgb(Vec4([0.6, 0.5, 0.4, 1.0]))
+		model_instances[1]["iRotation"] = pack_quaternion(Quaternion())
+		model_instances[1]["iScale"] = pack_scale([scale] * 4)
+		model_instances[1]["iTint"] = pack_rgba8_srgb([0.6, 0.5, 0.4, 1.0])
 		model_instance_buffer.upload()
 
 	# orbit update
@@ -242,7 +234,7 @@ while RenderContext.window_loop():
 	p.set_vector(p_vec)
 	v.set_vector(v_vec)
 
-	cube_instance_buffer.content = make_world_instances(render_entities)
+	cube_instance_buffer.content = make_cube_instances(render_entities)
 	cube_instance_buffer.resize(cube_instance_buffer.content.size)
 
 	view = camera.view()
@@ -258,10 +250,7 @@ while RenderContext.window_loop():
 	cube_instance_buffer.upload()
 	uniform_buffer.upload()
 
-	shadow_cmd = RenderContext.commands("shadow")
-	main_cmd = RenderContext.commands("main")
-
-	with shadow_cmd.render_pass(
+	with (shadow_cmd := RenderContext.commands("shadow")).render_pass(
 		depth=shadow_texture.depth_attachment(clear=1.0),
 		label="shadow",
 	) as rp:
@@ -271,7 +260,7 @@ while RenderContext.window_loop():
 		rp.draw_mesh(model_mesh, instances=model_instance_buffer)
 		rp.draw_mesh(cube_mesh, instances=cube_instance_buffer)
 
-	with main_cmd.render_pass(
+	with (main_cmd := RenderContext.commands("main")).render_pass(
 		color=RenderContext.screen(clear=(0.02, 0.02, 0.03, 1.0)),
 		depth=RenderContext.depth_attachment(clear=1.0),
 		label="main",
