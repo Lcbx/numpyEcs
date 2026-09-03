@@ -860,20 +860,29 @@ class ECS:
 		*component_types: type[Any],
 		allow_same_type_components_per_entity: bool = False,
 		capacity: int = INITIAL_CAPACITY,
-	) -> None:
+	) -> tuple[ComponentAccessor, ...]:
 		storage_cls: type[ComponentStorage] = (
 			MultiComponentStorage
 			if allow_same_type_components_per_entity
 			else ComponentStorage
 		)
+		res : list[ComponentAccessor] = []
+
 		for component_cls in component_types:
 			if component_cls in self._stores:
 				raise ValueError(f"{component_cls.__name__} is already registered")
+			
 			bit_index = len(self._comp_bits)
-			if bit_index >= 64:
-				raise ValueError("uint64 entity masks support at most 64 component types")
-			self._stores[component_cls] = storage_cls(component_cls, capacity)
+			if bit_index >= 64: raise ValueError("ECS supports at most 64 component types")
+			
+			store = storage_cls(component_cls, capacity)
+			self._stores[component_cls] = store
 			self._comp_bits[component_cls] = Mask(1 << bit_index)
+
+			res.append( ComponentAccessor(self, component_cls, store) )
+
+		return tuple(res)
+
 
 	# ---------- entities ----------
 

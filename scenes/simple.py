@@ -31,13 +31,9 @@ class Tint:
 
 
 world = ECS()
-world.register(Position, Velocity, Rotation, Scale, Tint)
-
-positions = world.get(Position)
-velocities = world.get(Velocity)
-rotations = world.get(Rotation)
-scales = world.get(Scale)
-tints = world.get(Tint)
+positions, velocities, rotations, scales, tints = world.register(
+	Position, Velocity, Rotation, Scale, Tint
+)
 
 SPACE_SIZE = 180
 CUBE_MAX_SIDE = 7
