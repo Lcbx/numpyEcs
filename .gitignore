@@ -5,8 +5,9 @@
 # mypy
 *.pyd
 
-# nuitka
+# nuitka & mypyc
 build/*
+*/build/*
 
 # blender
 *.blend1
