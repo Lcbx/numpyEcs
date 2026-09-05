@@ -434,6 +434,7 @@ class RenderPass:
 		*,
 		instances: GpuBuffer | None = None,
 		instance_count: int | None = None,
+		instance_offset: int = 0,
 	) -> None:
 		self.vertex_buffers.clear()
 
@@ -449,6 +450,7 @@ class RenderPass:
 			self.set_vertex_buffer(
 				1,
 				instances,
+				offset=instance_offset * instances.content.dtype.itemsize,
 				step_mode=wgpu.VertexStepMode.instance,
 			)
 
@@ -461,7 +463,7 @@ class RenderPass:
 		)
 
 		if instance_count is None:
-			instance_count = instances.content.size if instances is not None else 1
+			instance_count = (instances.content.size - instance_offset) if instances is not None else 1
 
 		self._prepare_pipeline()
 		self.handle.draw_indexed(index_count, instance_count, 0, 0, 0)
