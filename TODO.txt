@@ -7,6 +7,7 @@
 * implement shadow maps (perspective warping, cascaded shadow maps (3–4 splits)
 * add SSAO
 * implement grid-based ambient probes
+* experiment with a kuwahara material
 * add post-process depth/normal edge detection outlines
 * support msaa (NOTE: wgpu-py Canvas does not per default)
 * plug imGUI (see https://github.com/pygfx/wgpu-py/blob/main/wgpu/utils/imgui/imgui_renderer.py)
@@ -20,6 +21,7 @@
 * networking : use udp hole punching (users must exchange IP) or steamPeer
 * consider history buffer for TAA, DLSS/FSR upscaling
 
+not doing :
 - Meshlets / task shaders
 - Dynamic GI / radiance cascades
 - Inverted-hull outlines

@@ -69,10 +69,13 @@ cube_scales = np.column_stack((
 	np.random.randint(1, CUBE_MAX_SIDE, cube_count),
 	np.zeros(cube_count),
 ))
-cube_tints = np.asarray([
-	pack_rgba8_srgb([rd.random(), rd.random(), rd.random(), 1.0])
-	for _ in range(cube_count)
-], dtype=np.uint32)
+cube_meshrefs = np.column_stack((
+	np.full(cube_count, 1, dtype=np.uint32),
+	np.asarray([
+		pack_rgba8_srgb([rd.random(), rd.random(), rd.random(), 1.0])
+		for _ in range(cube_count)
+	], dtype=np.uint32)
+))
 
 world.add(
 	cube_entities,
@@ -80,7 +83,7 @@ world.add(
 	Velocity, cube_velocities,
 	Rotation, cube_rotations,
 	Scale, cube_scales,
-	MeshRef, np.column_stack((np.full(cube_count, 1, dtype=np.uint32), cube_tints)),
+	MeshRef, cube_meshrefs,
 )
 
 WINDOW_W, WINDOW_H = 1200, 1200
@@ -167,8 +170,15 @@ def movement_system(world, dt):
 
 
 def render_system(world, instances):
+
+	# NOTE: scale and tint are not modified often, so we could put them in a separated buffer
+	# might want to keep data packed in cpu arrays too to avoid needing to pack when uploading the buffer
+	# keeping as-is for now
 	for mesh, offset, count, sl, entities in draw_batches:
 		instances[sl]["iPosition"] = positions[entities].vector()
+		#instances[sl]["iTint"][:, 0] = mesh_refs[entities].tint
+		#instances[sl]["iRotation"] = pack_quaternion(rotations[entities].vector())
+		#instances[sl]["iScale"] = pack_scale(scales[entities].vector())
 	
 	instance_buffer.content = instances
 	instance_buffer.resize(instances.size)
@@ -208,7 +218,21 @@ def render_system(world, instances):
 
 
 all_renderables = world.where(Position, Rotation, Scale, MeshRef)
-instances = np.empty(all_renderables.size, dtype=mesh_instance_dtype)
+instances = np.empty(all_renderables.size,
+	dtype=mesh_instance_dtype
+)
+"""
+mesh_instance_dtype = np.dtype([
+    ("iPosition",  np.float32, 3), # 12 bytes
+    ("iTint",      np.uint32,  1), # 4 bytes  (fills align 16 gap)
+    ("iRotation",  np.uint32,  2), # 8 bytes  (snorm16 mapped to [-1, 1])
+    ("iScale",     np.uint32,  2), # 8 bytes  (4x float16: x, y, z, 0)
+])
+
+NOTE: we might want to put mesh id in the last unused 16 bits of iScale
+this would help for gpu frustum culling and indirect draw calls
+"""
+
 instance_buffer = GpuBuffer(instances, BufferUsage.VERTEX | BufferUsage.COPY_DST)
 
 uniform_buffer = shader.UniformBuffer()
@@ -228,15 +252,15 @@ offset = 0
 for mesh_id, mesh in meshes.items():
 	entities = all_renderables[mesh_refs[all_renderables].id == mesh_id]
 	count = entities.size
-	if count == 0:
-		continue
+	if count == 0: continue
 	sl = slice(offset, offset + count)
+	draw_batches.append((mesh, offset, count, sl, entities))
+	offset += count
+	# initialisation
 	instances[sl]["iPosition"] = positions[entities].vector()
 	instances[sl]["iTint"][:, 0] = mesh_refs[entities].tint
 	instances[sl]["iRotation"] = pack_quaternion(rotations[entities].vector())
 	instances[sl]["iScale"] = pack_scale(scales[entities].vector())
-	draw_batches.append((mesh, offset, count, sl, entities))
-	offset += count
 count
 
 def clamp(val, val_min, val_max):
