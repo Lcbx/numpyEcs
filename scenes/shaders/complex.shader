@@ -7,19 +7,26 @@
 @group(0) @binding(0)
 var<uniform> uniforms: Uniforms;
 
+<MeshInstance> iPosition: vec3f;
+<MeshInstance> iTint: u32;
+<MeshInstance> iRotation: vec2u;
+<MeshInstance> iScale: vec2u;
+
 @group(1) @binding(0)
-var shadow_map: texture_depth_2d;
+var<storage, read> instances: array<MeshInstance>;
 
 @group(1) @binding(1)
+var<storage, read> visible_instances: array<u32>;
+
+@group(2) @binding(0)
+var shadow_map: texture_depth_2d;
+
+@group(2) @binding(1)
 var shadow_sampler: sampler_comparison;
 
 <VertexInput> position: vec3f;
 <VertexInput> normal: vec3f;
 <VertexInput> uv: vec2f;
-<VertexInput> iPosition: vec3f;
-<VertexInput> iTint: u32;
-<VertexInput> iRotation: vec2u;
-<VertexInput> iScale: vec2u;
 
 <VertexOutput> @builtin(position) position: vec4f;
 <VertexOutput> normal: vec3f;
@@ -49,14 +56,15 @@ fn world_position(
 }
 
 @vertex
-fn vertex(input: VertexInput) -> VertexOutput {
-
-	let rotation  = unpack_rotation(input.iRotation);
-	let scale     = unpack_scale(input.iScale);
+fn vertex(input: VertexInput, @builtin(instance_index) instance_idx: u32) -> VertexOutput {
+	let real_id = visible_instances[instance_idx];
+	let inst = instances[real_id];
+	let rotation = unpack_rotation(inst.iRotation);
+	let scale = unpack_scale(inst.iScale);
 
 	let world_pos = world_position(
 		input.position,
-		input.iPosition,
+		inst.iPosition,
 		rotation,
 		scale,
 	);
@@ -75,7 +83,7 @@ fn vertex(input: VertexInput) -> VertexOutput {
 	var output: VertexOutput;
 	output.position = uniforms.proj * view_pos;
 	output.normal = normal_ws;
-	output.tint = input.iTint;
+	output.tint = inst.iTint;
 	output.shadow_pos = vec3f(
 		shadow_ndc.x * 0.5 + 0.5,
 		0.5 - shadow_ndc.y * 0.5,
@@ -85,13 +93,15 @@ fn vertex(input: VertexInput) -> VertexOutput {
 }
 
 @vertex
-fn shadow_vertex(input: VertexInput) -> @builtin(position) vec4f {
+fn shadow_vertex(input: VertexInput, @builtin(instance_index) instance_idx: u32) -> @builtin(position) vec4f {
+	let real_id = visible_instances[instance_idx];
+	let inst = instances[real_id];
 
 	let world_pos = world_position(
 		input.position,
-		input.iPosition,
-		unpack_rotation(input.iRotation),
-		unpack_scale(input.iScale),
+		inst.iPosition,
+		unpack_rotation(inst.iRotation),
+		unpack_scale(inst.iScale),
 	);
 	return uniforms.light_view_proj * vec4f(world_pos, 1.0);
 }

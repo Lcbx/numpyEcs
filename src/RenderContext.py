@@ -64,6 +64,7 @@ class _RenderContext:
 		title: str,
 		highpower_gpu: bool = True,
 		target_fps: int = 0,
+		required_gpu_features = []
 	) -> None:
 		"""Init a window and wgpu rendering context.
 
@@ -90,30 +91,30 @@ class _RenderContext:
 
 		self.window = glfw.create_window(w, h, title, None, None)
 		self.setup_callbacks()
-		self.setup_graphics(vsync=target_fps == 0, highpower_gpu=highpower_gpu)
+		self.setup_graphics(vsync=target_fps == 0, highpower_gpu=highpower_gpu, required_gpu_features=required_gpu_features)
 
 		for name, init in self.resources.items():
 			self.resources[name] = init()
 
 		self.frame_start = get_time()
 
-	def setup_graphics(self, *, vsync: bool, highpower_gpu: bool) -> None:
+	def setup_graphics(self, *, vsync: bool, highpower_gpu: bool, required_gpu_features:List=[]) -> None:
 		"""Setup gpu compute & render surface."""
 		present_info = get_glfw_present_info(self.window, vsync=vsync)
 		self.canvas = wgpu.gpu.get_canvas_context(present_info)
-		self.setup_graphics_backend(highpower_gpu=highpower_gpu)
+		self.setup_graphics_backend(highpower_gpu, required_gpu_features)
 		self.presentation_format = self.canvas.get_preferred_format(self.adapter)
 		self.canvas.configure(device=self.device, format=self.presentation_format)
 
-	def setup_graphics_backend(self, *, highpower_gpu: bool) -> None:
+	def setup_graphics_backend(self, highpower: bool, required_features:List) -> None:
 		"""Setup gpu compute, not necessarily with canvas output. Used notably for tests."""
 		request_params = {
-			"power_preference": "high-performance" if highpower_gpu else "low-power"
+			"power_preference": "high-performance" if highpower else "low-power"
 		}
 		if self.canvas:
 			request_params["canvas"] = self.canvas
 		self.adapter = wgpu.gpu.request_adapter_sync(**request_params)
-		self.device = self.adapter.request_device_sync()
+		self.device = self.adapter.request_device_sync(required_features=required_features)
 
 	def setup_callbacks(self) -> None:
 		glfw.set_key_callback(self.window, self.setup_event("key"))
@@ -333,8 +334,9 @@ class RenderPass:
 		self.bind_groups: dict[int, BindGroup | wgpu.GPUBindGroup] = {}
 		self.vertex_buffers: dict[int, tuple[np.dtype, str]] = {}
 
-		self._bound_bind_groups: dict[int, wgpu.GPUBindGroup] = {}
 		self._variant = None
+		self._variant_dirty = True
+		self._dirty_bind_groups: set[int] = set()
 
 	@property
 	def color_formats(self) -> tuple[str, ...]:
@@ -349,7 +351,6 @@ class RenderPass:
 			raise RuntimeError("RenderPass is already active")
 
 		self._variant = None
-		self._bound_bind_groups.clear()
 		self.vertex_buffers.clear()
 
 		self.handle = self.commands.handle.begin_render_pass(
@@ -364,13 +365,19 @@ class RenderPass:
 		self.handle = None
 
 	def set_pipeline(self, pipeline: RenderPipeline) -> None:
-		self.pipeline = pipeline
-		self._variant = None
+		if pipeline is not self.pipeline:
+			self.pipeline = pipeline
+			self._variant_dirty = True
 
 	def set_bind_group(self, index: int, bindings: BindGroup | wgpu.GPUBindGroup) -> None:
 		if isinstance(bindings, BindGroup) and bindings.group != index:
 			raise ValueError(f"BindGroup belongs to group {bindings.group}, not group {index}")
+		
+		if self.bind_groups.get(index) is bindings:
+			return
+
 		self.bind_groups[index] = bindings
+		self._dirty_bind_groups.add(index)
 
 	def set_vertex_buffer(
 		self,
@@ -381,7 +388,10 @@ class RenderPass:
 		size: int | None = None,
 		step_mode: str = wgpu.VertexStepMode.vertex,
 	) -> None:
-		self.vertex_buffers[slot] = (buffer.content.dtype, step_mode)
+		layout = (buffer.content.dtype, step_mode)
+		if self.vertex_buffers.get(slot) != layout:
+			self.vertex_buffers[slot] = layout
+			self._variant_dirty = True
 		self._require_handle().set_vertex_buffer(slot, buffer.handle, offset, size)
 
 	def set_index_buffer(
@@ -428,6 +438,14 @@ class RenderPass:
 			first_instance,
 		)
 
+	def draw_indexed_indirect(
+		self,
+		indirect_buffer: GpuBuffer | wgpu.GPUBuffer,
+		indirect_offset: int = 0,
+	) -> None:
+		self._prepare_pipeline()
+		self.handle.draw_indexed_indirect( indirect_buffer.handle, indirect_offset )
+
 	def draw_mesh(
 		self,
 		mesh: Mesh,
@@ -436,14 +454,16 @@ class RenderPass:
 		instance_count: int | None = None,
 		instance_offset: int = 0,
 	) -> None:
-		self.vertex_buffers.clear()
+		if self.vertex_buffers:
+			self.vertex_buffers.clear()
+			self._variant_dirty = True
 
-		vertex_start, vertex_count = mesh.vertex_range
+		vertex_start, vertex_count = mesh.vertex_range_bytes
 		self.set_vertex_buffer(
 			0,
 			mesh.vertex_buffer,
-			offset=vertex_start * mesh.vertex_dtype.itemsize,
-			size=vertex_count * mesh.vertex_dtype.itemsize,
+			offset=vertex_start,
+			size=vertex_count,
 		)
 
 		if instances is not None:
@@ -472,25 +492,29 @@ class RenderPass:
 		if self.pipeline is None:
 			raise RuntimeError("No RenderPipeline has been set on this pass")
 
-		slots = sorted(self.vertex_buffers)
-		if slots != list(range(len(slots))):
-			raise RuntimeError("Vertex buffer slots must be contiguous starting at 0")
+		if self._variant_dirty:
+			slots = sorted(self.vertex_buffers)
+			if slots != list(range(len(slots))):
+				raise RuntimeError("Vertex buffer slots must be contiguous starting at 0")
 
-		handle = self._require_handle()
-		buffers = [self.vertex_buffers[i] for i in slots]
-		variant = self.pipeline.get_variant(self, buffers)
+			buffers = [self.vertex_buffers[i] for i in slots]
+			variant = self.pipeline.get_variant(self, buffers)
 
-		if variant is not self._variant:
-			handle.set_pipeline(variant.handle)
-			self._variant = variant
+			if variant is not self._variant:
+				self.handle.set_pipeline(variant.handle)
+				self._variant = variant
+				self._dirty_bind_groups.update(self.bind_groups)
 
-		for index, bindings in self.bind_groups.items():
+			self._variant_dirty = False
+
+		for index in self._dirty_bind_groups:
+			bindings = self.bind_groups[index]
 			if isinstance(bindings, BindGroup):
-				bindings = variant.bind_group(bindings)
+				bindings = self._variant.bind_group(bindings)
+ 
+			self.handle.set_bind_group(index, bindings)
 
-			if self._bound_bind_groups.get(index) is not bindings:
-				handle.set_bind_group(index, bindings)
-				self._bound_bind_groups[index] = bindings
+		self._dirty_bind_groups.clear()
 
 	def _require_handle(self) -> wgpu.GPURenderPassEncoder:
 		if self.handle is None: raise RuntimeError("RenderPass is not active")
@@ -722,7 +746,7 @@ class GpuBufferPool:
 
 	def alloc(self, data: np.ndarray) -> tuple[int, int]:
 		start = self.used
-		count = data.size
+		count = len(data)
 		end = start + count
 
 		self._ensure_capacity(end)
@@ -778,6 +802,15 @@ class Mesh:
 		self.index_buffer = index_pool.buffer
 		self.index_range = index_pool.alloc(indices)
 		self.index_format = self.index_formats[self.index_dtype]
+
+	@property
+	def vertices(self) -> tuple[int,int]:
+		start, count = self.vertex_range
+		return self.vertex_buffer.content[start:start + count]
+
+	@property
+	def vertex_range_bytes(self) -> tuple[int,int]:
+		return tuple(np.asarray(self.vertex_range) * self.vertex_dtype.itemsize)
 
 
 # textures --------------------------------------------------------------------
@@ -1463,7 +1496,7 @@ class Shader:
 
 			name = next(iter(self.info.uniforms))
 
-		return UniformBuffer(self.info.uniforms[name])
+		return _UniformBuffer(self.info.uniforms[name], label=name)
 
 	def bind_group(self, group: int, **resources: Any) -> BindGroup:
 		return BindGroup(self, group, resources)
@@ -1543,13 +1576,14 @@ class DefaultFalseDict(dict):
 		return False
 
 
-class UniformBuffer(GpuBuffer):
-	def __init__(self, info: UniformInfo):
+class _UniformBuffer(GpuBuffer):
+	def __init__(self, info: UniformInfo, label="uniform"):
 		self.info = info
 
 		super().__init__(
 			np.zeros(1, dtype=info.dtype),
 			wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST,
+			label=label
 		)
 
 

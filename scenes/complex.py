@@ -37,6 +37,7 @@ positions, velocities, rotations, scales, mesh_refs = world.register(
 	Position, Velocity, Rotation, Scale, MeshRef
 )
 
+CUBE_COUNT = 1000
 SPACE_SIZE = 180
 CUBE_MAX_SIDE = 7
 
@@ -49,7 +50,7 @@ world.add(
 	MeshRef, MeshRef(1, pack_rgba8_srgb([0.5, 0.5, 0.5, 1.0])),
 )
 
-cube_entities = world.create(200)
+cube_entities = world.create(CUBE_COUNT)
 cube_count = cube_entities.size
 
 cube_positions = np.column_stack((
@@ -109,10 +110,10 @@ light_camera = Camera(
 	perspective=False,
 )
 
-RenderContext.init_window(WINDOW_W, WINDOW_H, TITLE, target_fps=-1)
+RenderContext.init_window(WINDOW_W, WINDOW_H, TITLE, target_fps=-1, required_gpu_features=["indirect-first-instance"])
 # RenderContext.capture_mouse()
 
-shader = Shader(filepath='scenes/shaders/simple.shader', label="simple")
+shader = Shader(filepath='scenes/shaders/complex.shader', label="complex")
 main_pipeline = RenderPipeline(
 	shader,
 	vertex_entry="vertex",
@@ -126,6 +127,25 @@ shadow_pipeline = RenderPipeline(
 	depth_bias_slope_scale=2.0,
 	label="shadow",
 )
+
+cull_shader = Shader(filepath='scenes/shaders/cull.shader', label="cull")
+cull_pipeline = ComputePipeline(cull_shader, entry="cull", label="cull")
+
+def compute_bounding_box(vertices):
+	pos = vertices["position"]
+	box_min, box_max = np.min(pos, axis=0), np.max(pos, axis=0)
+	return (box_min + box_max) * 0.5, (box_max - box_min) * 0.5
+
+def extract_frustum_planes(vp):
+	vp = np.asarray(vp)
+	planes = np.zeros((6, 4), dtype=np.float32)
+	planes[0], planes[1] = vp[:, 3] + vp[:, 0], vp[:, 3] - vp[:, 0]
+	planes[2], planes[3] = vp[:, 3] + vp[:, 1], vp[:, 3] - vp[:, 1]
+	planes[4], planes[5] = vp[:, 2], vp[:, 3] - vp[:, 2]
+	for i in range(6):
+		norm = np.linalg.norm(planes[i, :3])
+		if norm > 0: planes[i] /= norm
+	return planes
 
 vertices, indices = load_gltf_first_mesh_interleaved(
 	"scenes/resources/rooftop_utility_pole.glb"
@@ -146,10 +166,19 @@ cube_mesh = RenderContext.resources["cube"]
 meshes = {0: model_mesh, 1: cube_mesh}
 draw_batches = []
 
+mesh_metadata_dtype = np.dtype([("box_center", np.float32, 4), ("box_extents", np.float32, 4)])
+mesh_metadata = np.zeros(len(meshes), dtype=mesh_metadata_dtype)
+mesh_metadata[0]["box_center"][:3], mesh_metadata[0]["box_extents"][:3] = compute_bounding_box(vertices)
+mesh_metadata[1]["box_center"][:3], mesh_metadata[1]["box_extents"][:3] = compute_bounding_box(cube_mesh.vertices)
+mesh_metadata_buffer = GpuBuffer(mesh_metadata, BufferUsage.STORAGE | BufferUsage.COPY_DST)
+
+frustum_dtype = np.dtype([("planes", np.float32, (6, 4))])
+frustum_buffer = cull_shader.UniformBuffer("frustum")
+
 
 def camera_system(camera, elapsed, camera_dist):
 	cam_ang = elapsed * 0.5
-	camera.position = Vec3((cos(cam_ang) * camera_dist, camera.position.y, sin(cam_ang) * camera_dist))
+	camera.position = Vec3( cos(cam_ang) * camera_dist, camera.position.y, sin(cam_ang) * camera_dist )
 
 
 def movement_system(world, dt):
@@ -174,7 +203,7 @@ def render_system(world, instances):
 	# NOTE: scale and tint are not modified often, so we could put them in a separated buffer
 	# might want to keep data packed in cpu arrays too to avoid needing to pack when uploading the buffer
 	# keeping as-is for now
-	for mesh, offset, count, sl, entities in draw_batches:
+	for mesh, offset, count, sl, entities, indirect_buf, cull_param_buf, cull_bg in draw_batches:
 		instances[sl]["iPosition"] = positions[entities].vector()
 		#instances[sl]["iTint"][:, 0] = mesh_refs[entities].tint
 		#instances[sl]["iRotation"] = pack_quaternion(rotations[entities].vector())
@@ -186,10 +215,27 @@ def render_system(world, instances):
 	uniform_buffer.content["view"] = camera.view()
 	uniform_buffer.content["proj"] = camera.projection(RenderContext.aspect)
 	uniform_buffer.content["light_dir"] = [*light_camera.direction(), 0.0]
-	uniform_buffer.content["light_view_proj"] = light_camera.view() @ light_camera.projection(RenderContext.aspect)
+	uniform_buffer.content["light_view_proj"] = light_camera.view() @ light_camera.projection(RenderContext.aspect) 
 
 	instance_buffer.upload()
 	uniform_buffer.upload()
+
+	vp = camera.view() @ camera.projection(RenderContext.aspect)
+	frustum_buffer.content["planes"] = extract_frustum_planes(vp)
+	frustum_buffer.upload()
+	clear_cull_cmd = RenderContext.commands("clear_cull")
+	with (cull_cmd := RenderContext.commands("cull")).compute_pass(label="cull") as cp:
+		cp.set_pipeline(cull_pipeline)
+		for mesh, offset, count, sl, entities, indirect_buf, cull_param_buf, cull_bg in draw_batches:
+			index_start, _ = mesh.index_range
+			vertex_start, _ = mesh.vertex_range
+			clear_cull_cmd.clear_buffer(indirect_buf, offset=4, size=4)
+			#indirect_buf.write(np.array(
+			#	[mesh.index_count, 0, index_start, vertex_start, offset],
+			#	dtype=np.uint32,
+			#))
+			cp.set_bind_group(0, cull_bg)
+			cp.dispatch((count + 63) // 64)
 
 	with (shadow_cmd := RenderContext.commands("shadow")).render_pass(
 		depth=shadow_texture.depth_attachment(clear=1.0),
@@ -197,8 +243,11 @@ def render_system(world, instances):
 	) as rp:
 		rp.set_pipeline(shadow_pipeline)
 		rp.set_bind_group(0, uniform_bindings)
-		for mesh, offset, count, sl, entities in draw_batches:
-			rp.draw_mesh(mesh, instances=instance_buffer, instance_offset=offset, instance_count=count)
+		rp.set_bind_group(1, instance_bindings)
+		for mesh, offset, count, sl, entities, indirect_buf, cull_param_buf, cull_bg in draw_batches:
+			rp.set_vertex_buffer(0, mesh.vertex_buffer)
+			rp.set_index_buffer(mesh.index_buffer, format=mesh.index_format)
+			rp.draw_indexed_indirect(indirect_buf)
 
 	with (main_cmd := RenderContext.commands("main")).render_pass(
 		color=RenderContext.screen(clear=(0.02, 0.02, 0.03, 1.0)),
@@ -207,11 +256,16 @@ def render_system(world, instances):
 	) as rp:
 		rp.set_pipeline(main_pipeline)
 		rp.set_bind_group(0, uniform_bindings)
-		rp.set_bind_group(1, shadow_bindings)
-		for mesh, offset, count, sl, entities in draw_batches:
-			rp.draw_mesh(mesh, instances=instance_buffer, instance_offset=offset, instance_count=count)
+		rp.set_bind_group(1, instance_bindings)
+		rp.set_bind_group(2, shadow_bindings)
+		for mesh, offset, count, sl, entities, indirect_buf, cull_param_buf, cull_bg in draw_batches:
+			rp.set_vertex_buffer(0, mesh.vertex_buffer)
+			rp.set_index_buffer(mesh.index_buffer, format=mesh.index_format)
+			rp.draw_indexed_indirect(indirect_buf)
 
 	RenderContext.submit(
+		clear_cull_cmd.finish(),
+		cull_cmd.finish(),
 		shadow_cmd.finish(),
 		main_cmd.finish(),
 	)
@@ -221,19 +275,9 @@ all_renderables = world.where(Position, Rotation, Scale, MeshRef)
 instances = np.empty(all_renderables.size,
 	dtype=mesh_instance_dtype
 )
-"""
-mesh_instance_dtype = np.dtype([
-    ("iPosition",  np.float32, 3), # 12 bytes
-    ("iTint",      np.uint32,  1), # 4 bytes  (fills align 16 gap)
-    ("iRotation",  np.uint32,  2), # 8 bytes  (snorm16 mapped to [-1, 1])
-    ("iScale",     np.uint32,  2), # 8 bytes  (4x float16: x, y, z, 0)
-])
 
-NOTE: we might want to put mesh id in the last unused 16 bits of iScale
-this would help for gpu frustum culling and indirect draw calls
-"""
-
-instance_buffer = GpuBuffer(instances, BufferUsage.VERTEX | BufferUsage.COPY_DST)
+instance_buffer = GpuBuffer(instances, BufferUsage.VERTEX | BufferUsage.STORAGE | BufferUsage.COPY_DST, label='instances')
+visible_instances_buffer = GpuBuffer(np.zeros(all_renderables.size, dtype=np.uint32), BufferUsage.STORAGE | BufferUsage.COPY_DST, label='visible_instances')
 
 uniform_buffer = shader.UniformBuffer()
 
@@ -242,11 +286,16 @@ shadow_view = shadow_texture.view()
 shadow_sampler = create_depth_sampler()
 
 uniform_bindings = shader.bind_group(0, uniforms=uniform_buffer)
+instance_bindings = shader.bind_group(1,
+	instances=instance_buffer,
+	visible_instances=visible_instances_buffer
+)
 shadow_bindings = shader.bind_group(
-	1,
+	2,
 	shadow_map=shadow_view,
 	shadow_sampler=shadow_sampler,
 )
+
 
 offset = 0
 for mesh_id, mesh in meshes.items():
@@ -254,14 +303,35 @@ for mesh_id, mesh in meshes.items():
 	count = entities.size
 	if count == 0: continue
 	sl = slice(offset, offset + count)
-	draw_batches.append((mesh, offset, count, sl, entities))
+
+	index_start,  _ = mesh.index_range
+	vertex_start, _ = mesh.vertex_range
+	indirect_data = np.array(
+		[mesh.index_count, 0, index_start, vertex_start, offset],
+		dtype=np.uint32,
+	)
+	indirect_buf = GpuBuffer(indirect_data, BufferUsage.STORAGE  | BufferUsage.INDIRECT | BufferUsage.COPY_DST)
+	
+	cull_param_data = np.array([mesh_id, offset, count, 0], dtype=np.uint32)
+	cull_param_buf = GpuBuffer(cull_param_data, BufferUsage.UNIFORM | BufferUsage.COPY_DST)
+	
+	cull_bg = cull_shader.bind_group(
+		0,
+		instances=instance_buffer,
+		frustum=frustum_buffer,
+		draw_cmd=indirect_buf,
+		visible_instances=visible_instances_buffer,
+		mesh_metadata=mesh_metadata_buffer,
+		cull_params=cull_param_buf,
+	)
+	
+	draw_batches.append((mesh, offset, count, sl, entities, indirect_buf, cull_param_buf, cull_bg))
 	offset += count
 	# initialisation
 	instances[sl]["iPosition"] = positions[entities].vector()
 	instances[sl]["iTint"][:, 0] = mesh_refs[entities].tint
 	instances[sl]["iRotation"] = pack_quaternion(rotations[entities].vector())
 	instances[sl]["iScale"] = pack_scale(scales[entities].vector())
-count
 
 def clamp(val, val_min, val_max):
 	return min(max(val, val_min), val_max)
@@ -272,7 +342,7 @@ def scroll_callback(xoff, yoff):
 	camera_dist = clamp(camera_dist - 5.0 * yoff, 5.0, 100.0)
 	cp = camera.position
 	y_factor = 1.0 if cp.y < 15.0 else 3.0
-	camera.position = Vec3((cp.x, cp.y - y_factor * yoff, cp.z))
+	camera.position = Vec3(cp.x, cp.y - y_factor * yoff, cp.z)
 	return True
 
 

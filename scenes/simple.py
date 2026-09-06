@@ -35,6 +35,7 @@ positions, velocities, rotations, scales, tints = world.register(
 	Position, Velocity, Rotation, Scale, Tint
 )
 
+CUBE_COUNT = 1000
 SPACE_SIZE = 180
 CUBE_MAX_SIDE = 7
 
@@ -47,7 +48,7 @@ world.add(
 	Tint, Tint(pack_rgba8_srgb([0.5, 0.5, 0.5, 1.0])),
 )
 
-cube_entities = world.create(200)
+cube_entities = world.create(CUBE_COUNT)
 cube_count = cube_entities.size
 
 cube_positions = np.column_stack((
@@ -127,11 +128,11 @@ vertices, indices = load_gltf_first_mesh_interleaved(
 )
 model_mesh = Mesh(vertices, indices)
 model_instances = np.zeros(1, mesh_instance_dtype)
-model_instances[0]["iPosition"] = Vec3([15.0, 0.0, 15.0])
+model_instances[0]["iPosition"] = Vec3(15.0, 0.0, 15.0)
 model_instances[0]["iTint"] = pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])
 model_instances[0]["iRotation"] = pack_quaternion(Quaternion())
 model_instances[0]["iScale"] = pack_scale([10.0] * 4)
-model_instances[0]["iPosition"] = Vec3([15.0, 0.0, 15.0])
+model_instances[0]["iPosition"] = Vec3(15.0, 0.0, 15.0)
 model_instance_buffer = GpuBuffer(
 	model_instances,
 	BufferUsage.VERTEX | BufferUsage.COPY_DST,
@@ -175,7 +176,7 @@ def scroll_callback(xoff, yoff):
 	camera_dist = clamp(camera_dist - 5.0 * yoff, 5.0, 100.0)
 	cp = camera.position
 	y_factor = 1.0 if cp.y < 15.0 else 3.0
-	camera.position = Vec3((cp.x, cp.y - y_factor * yoff, cp.z))
+	camera.position = Vec3(cp.x, cp.y - y_factor * yoff, cp.z)
 	return True
 
 
@@ -197,11 +198,11 @@ while RenderContext.window_loop():
 	# orbit update
 	elapsed = now - start_t
 	cam_ang = elapsed * 0.5
-	camera.position = Vec3((
+	camera.position = Vec3(
 		cos(cam_ang) * camera_dist,
 		camera.position.y,
 		sin(cam_ang) * camera_dist,
-	))
+	)
 
 	# cubes movement
 	pv = world.where(Position, Velocity)

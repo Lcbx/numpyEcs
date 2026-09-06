@@ -4,9 +4,43 @@ from functools import wraps
 from typing import Any, Type, Sequence, Iterator, Iterable, List, Dict, Tuple, Callable, ParamSpec, TypeVar
 
 import numpy as np
-from pyrr import Matrix44 as Mat4, Vector3 as Vec3, Vector4 as Vec4, Quaternion
+from pyrr import Matrix44 as Mat4, Quaternion
 from pygltflib import GLTF2, BufferView, Accessor
 
+
+# pyrr-style Vector classes
+
+def _array_accessor(index:int=0):
+	return property(
+		lambda v: v[index],
+		lambda v, y: v.__setitem__(index, y),
+	)
+
+class _baseVector(np.ndarray):
+	def __new__(cls, *args):
+		first_arg = args[0]
+		values = first_arg if isinstance(first_arg, Sequence) else args 
+		if len(values) != cls._count:
+			raise ValueError(f'got passed {len(values)} when {cls._count} were expected')
+		return np.asarray(values, dtype=float).view(cls)
+
+class Vec2(_baseVector):
+	_count = 2
+	x = _array_accessor(0)
+	y = _array_accessor(1)
+
+class Vec3(_baseVector):
+	_count = 3
+	x = _array_accessor(0)
+	y = _array_accessor(1)
+	z = _array_accessor(2)
+
+class Vec4(_baseVector):
+	_count = 4
+	x = _array_accessor(0)
+	y = _array_accessor(1)
+	z = _array_accessor(2)
+	w = _array_accessor(3)
 
 
 # caches last return value and retrieves it based on args
@@ -281,12 +315,12 @@ CUBE_POSITIONS_24 = np.array((
 ), dtype=np.float32)
 
 CUBE_NORMALS_24 = np.array(
-	([ Vec3( ( 0.0, 0.0, 1.0) ) ] * 4) +   # +Z
-	([ Vec3( ( 0.0, 0.0,-1.0) ) ] * 4) +   # -Z
-	([ Vec3( ( 1.0, 0.0, 0.0) ) ] * 4) +   # +X
-	([ Vec3( (-1.0, 0.0, 0.0) ) ] * 4) +   # -X
-	([ Vec3( ( 0.0, 1.0, 0.0) ) ] * 4) +   # +Y
-	([ Vec3( ( 0.0,-1.0, 0.0) ) ] * 4),    # -Y
+	([ Vec3(  0.0, 0.0, 1.0 ) ] * 4) +   # +Z
+	([ Vec3(  0.0, 0.0,-1.0 ) ] * 4) +   # -Z
+	([ Vec3(  1.0, 0.0, 0.0 ) ] * 4) +   # +X
+	([ Vec3( -1.0, 0.0, 0.0 ) ] * 4) +   # -X
+	([ Vec3(  0.0, 1.0, 0.0 ) ] * 4) +   # +Y
+	([ Vec3(  0.0,-1.0, 0.0 ) ] * 4),    # -Y
 	dtype=np.float32
 )
 
