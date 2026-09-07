@@ -33,49 +33,26 @@ var shadow_sampler: sampler_comparison;
 <VertexOutput> @interpolate(flat) tint: u32;
 <VertexOutput> shadow_pos: vec3f;
 
-fn unpack_rotation(packed: vec2u) -> vec4f {
-	return vec4f( unpack2x16snorm(packed.x), unpack2x16snorm(packed.y) );
-}
 
-fn unpack_scale(packed: vec2u) -> vec3f {
-	return vec3f( unpack2x16float(packed.x).xy, unpack2x16float(packed.y).x );
-}
-
-fn quat_rotate(q: vec4f, v: vec3f) -> vec3f {
-	let t = cross(q.xyz, v) * 2.0;
-	return v + q.w * t + cross(q.xyz, t);
-}
-
-fn world_position(
-	position: vec3f,
-	iPosition: vec3f,
-	iRotation: vec4f,
-	iScale: vec3f,
-) -> vec3f {
-	return iPosition + quat_rotate(iRotation, position * iScale);
-}
+#include "utils.shaderlib"
+#from "utils.shaderlib" import instance_transform_unpacking, unpack_srgb_color
+{{ instance_transform_unpacking(InstanceType="MeshInstance") }}
+{{ unpack_srgb_color() }}
 
 @vertex
 fn vertex(input: VertexInput, @builtin(instance_index) instance_idx: u32) -> VertexOutput {
 	let real_id = visible_instances[instance_idx];
 	let inst = instances[real_id];
-	let rotation = unpack_rotation(inst.iRotation);
-	let scale = unpack_scale(inst.iScale);
 
-	let world_pos = world_position(
-		input.position,
-		inst.iPosition,
-		rotation,
-		scale,
-	);
+	let trans = unpack_instance_transform(input.position, inst);
 
 	var normal = input.normal;
-	if any(scale != vec3f(1.0)) {
-		normal /= scale;
+	if any(trans.scale != vec3f(1.0)) {
+		normal /= trans.scale;
 	}
 
-	let normal_ws = normalize(quat_rotate(rotation, normal));
-	let world = vec4f(world_pos, 1.0);
+	let normal_ws = normalize(quat_rotate(trans.rotation, normal));
+	let world = vec4f(trans.world_pos, 1.0);
 	let view_pos = uniforms.view * world;
 	let shadow_clip = uniforms.light_view_proj * world;
 	let shadow_ndc = shadow_clip.xyz / shadow_clip.w;
@@ -97,36 +74,8 @@ fn shadow_vertex(input: VertexInput, @builtin(instance_index) instance_idx: u32)
 	let real_id = visible_instances[instance_idx];
 	let inst = instances[real_id];
 
-	let world_pos = world_position(
-		input.position,
-		inst.iPosition,
-		unpack_rotation(inst.iRotation),
-		unpack_scale(inst.iScale),
-	);
-	return uniforms.light_view_proj * vec4f(world_pos, 1.0);
-}
-
-fn srgb_to_linear_channel(c: f32) -> f32 {
-	if c <= 0.04045 {
-		return c / 12.92;
-	}
-	return pow((c + 0.055) / 1.055, 2.4);
-}
-
-fn unpack_rgba8_srgb(c: u32) -> vec4f {
-	let rgba = vec4f(
-		f32(c & 255u),
-		f32((c >> 8u) & 255u),
-		f32((c >> 16u) & 255u),
-		f32((c >> 24u) & 255u),
-	) / 255.0;
-
-	return vec4f(
-		srgb_to_linear_channel(rgba.r),
-		srgb_to_linear_channel(rgba.g),
-		srgb_to_linear_channel(rgba.b),
-		rgba.a,
-	);
+	let trans = unpack_instance_transform(input.position, inst);
+	return uniforms.light_view_proj * vec4f(trans.world_pos, 1.0);
 }
 
 fn sample_shadow(position: vec3f) -> f32 {

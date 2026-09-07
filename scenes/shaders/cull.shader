@@ -30,20 +30,7 @@
 @group(0) @binding(4) var<storage, read> mesh_metadata: array<MeshMetadata>;
 @group(0) @binding(5) var<uniform> cull_params: CullParams;
 
-
-fn unpack_rotation(packed: vec2u) -> vec4f {
-	return vec4f( unpack2x16snorm(packed.x), unpack2x16snorm(packed.y) );
-}
-
-fn unpack_scale(packed: vec2u) -> vec3f {
-	return vec3f( unpack2x16float(packed.x).xy, unpack2x16float(packed.y).x );
-}
-
-
-fn quat_rotate(q: vec4f, v: vec3f) -> vec3f {
-	let t = cross(q.xyz, v) * 2.0;
-	return v + q.w * t + cross(q.xyz, t);
-}
+#include "utils.shaderlib"
 
 @compute @workgroup_size(64)
 fn cull(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -54,6 +41,7 @@ fn cull(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
 	let instance_id = cull_params.instance_offset + local_id;
 	let inst = instances[instance_id];
+	
 	let scale = unpack_scale(inst.iScale);
 	let rotation = unpack_rotation(inst.iRotation);
 
