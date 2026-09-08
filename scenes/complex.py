@@ -7,9 +7,10 @@ import random as rd
 
 
 @component
-class Position:
-	x: float; y: float; z: float
-
+class Transform:
+	position: Vec3
+	scale: Vec3
+	rotation: Vec4 # Quaternion
 
 @component
 class Velocity:
@@ -17,24 +18,13 @@ class Velocity:
 
 
 @component
-class Rotation:
-	x: float; y: float; z: float; w: float
-
-
-@component
-class Scale:
-	x: float; y: float; z: float; w: float # w is not used
-
-
-@component
 class MeshRef:
 	id: np.uint32
 	tint: np.uint32
 
-
 world = ECS()
-positions, velocities, rotations, scales, mesh_refs = world.register(
-	Position, Velocity, Rotation, Scale, MeshRef
+transforms, velocities, mesh_refs = world.register(
+	Transform, Velocity, MeshRef
 )
 
 CUBE_COUNT = 1000
@@ -44,9 +34,11 @@ CUBE_MAX_SIDE = 7
 ground = world.create()
 world.add(
 	ground,
-	Position, Position(0, -0.51, 0),
-	Rotation, Rotation(*Quaternion()),
-	Scale, Scale(2 * SPACE_SIZE, 1, 2 * SPACE_SIZE, 0),
+	Transform, Transform(
+		Vec3(0, -0.51, 0),
+		Vec3(2 * SPACE_SIZE, 1, 2 * SPACE_SIZE),
+		Quaternion(),
+	),
 	MeshRef, MeshRef(1, pack_rgba8_srgb([0.5, 0.5, 0.5, 1.0])),
 )
 
@@ -63,13 +55,17 @@ cube_velocities = np.column_stack((
 	np.zeros(cube_count),
 	np.random.randint(-4, 4, cube_count),
 ))
-cube_rotations = np.tile(np.asarray(Quaternion()), (cube_count, 1))
+cube_rotations = np.asarray([
+	Quaternion.from_axis_rotation( (0.0,1.0,0.0), rd.random() * 3.143 )
+	for _ in range(cube_count)
+], dtype=np.float32)
+
 cube_scales = np.column_stack((
 	np.random.randint(1, CUBE_MAX_SIDE, cube_count),
 	np.random.randint(1, CUBE_MAX_SIDE, cube_count),
 	np.random.randint(1, CUBE_MAX_SIDE, cube_count),
-	np.zeros(cube_count),
 ))
+
 cube_meshrefs = np.column_stack((
 	np.full(cube_count, 1, dtype=np.uint32),
 	np.asarray([
@@ -80,10 +76,8 @@ cube_meshrefs = np.column_stack((
 
 world.add(
 	cube_entities,
-	Position, cube_positions,
+	Transform, (cube_positions, cube_scales, cube_rotations),
 	Velocity, cube_velocities,
-	Rotation, cube_rotations,
-	Scale, cube_scales,
 	MeshRef, cube_meshrefs,
 )
 
@@ -155,9 +149,7 @@ model_mesh = Mesh(vertices, indices)
 model_entity = world.create()
 world.add(
 	model_entity,
-	Position, Position(15.0, 0.0, 15.0),
-	Rotation, Rotation(*Quaternion()),
-	Scale, Scale(10.0, 10.0, 10.0, 10.0),
+	Transform, Transform(Vec3(15.0, 0.0, 15.0), Vec3(10.0, 10.0, 10.0), Quaternion()),
 	MeshRef, MeshRef(0, pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])),
 )
 
@@ -182,9 +174,9 @@ def camera_system(camera, elapsed, camera_dist):
 
 
 def movement_system(world, dt):
-	pv = world.where(Position, Velocity)
-	p, v = positions[pv], velocities[pv]
-	p_vec, v_vec = p.vector(), v.vector()
+	pv = world.where(Transform, Velocity)
+	p, v = transforms[pv], velocities[pv]
+	p_vec, v_vec = p.position, v.vector()
 	p_vec += v_vec * dt
 
 	mask_x = np.abs(p_vec[:, 0]) > SPACE_SIZE
@@ -194,7 +186,7 @@ def movement_system(world, dt):
 	p_vec[mask_x, 0] = np.sign(p_vec[mask_x, 0]) * 0.99 * SPACE_SIZE
 	p_vec[mask_z, 2] = np.sign(p_vec[mask_z, 2]) * 0.99 * SPACE_SIZE
 
-	p.set_vector(p_vec)
+	p.position = p_vec
 	v.set_vector(v_vec)
 
 
@@ -204,7 +196,7 @@ def render_system(world, instances):
 	# might want to keep data packed in cpu arrays too to avoid needing to pack when uploading the buffer
 	# keeping as-is for now
 	for mesh, offset, count, sl, entities, indirect_buf, cull_param_buf, cull_bg in draw_batches:
-		instances[sl]["iPosition"] = positions[entities].vector()
+		instances[sl]["iPosition"] = transforms[entities].position
 		#instances[sl]["iTint"][:, 0] = mesh_refs[entities].tint
 		#instances[sl]["iRotation"] = pack_quaternion(rotations[entities].vector())
 		#instances[sl]["iScale"] = pack_scale(scales[entities].vector())
@@ -227,9 +219,9 @@ def render_system(world, instances):
 	with (cull_cmd := RenderContext.commands("cull")).compute_pass(label="cull") as cp:
 		cp.set_pipeline(cull_pipeline)
 		for mesh, offset, count, sl, entities, indirect_buf, cull_param_buf, cull_bg in draw_batches:
-			index_start, _ = mesh.index_range
-			vertex_start, _ = mesh.vertex_range
 			clear_cull_cmd.clear_buffer(indirect_buf, offset=4, size=4)
+			#index_start, _ = mesh.index_range
+			#vertex_start, _ = mesh.vertex_range
 			#indirect_buf.write(np.array(
 			#	[mesh.index_count, 0, index_start, vertex_start, offset],
 			#	dtype=np.uint32,
@@ -271,7 +263,7 @@ def render_system(world, instances):
 	)
 
 
-all_renderables = world.where(Position, Rotation, Scale, MeshRef)
+all_renderables = world.where(Transform, MeshRef)
 instances = np.empty(all_renderables.size,
 	dtype=mesh_instance_dtype
 )
@@ -328,10 +320,10 @@ for mesh_id, mesh in meshes.items():
 	draw_batches.append((mesh, offset, count, sl, entities, indirect_buf, cull_param_buf, cull_bg))
 	offset += count
 	# initialisation
-	instances[sl]["iPosition"] = positions[entities].vector()
+	instances[sl]["iPosition"] = transforms[entities].position
 	instances[sl]["iTint"][:, 0] = mesh_refs[entities].tint
-	instances[sl]["iRotation"] = pack_quaternion(rotations[entities].vector())
-	instances[sl]["iScale"] = pack_scale(scales[entities].vector())
+	instances[sl]["iRotation"] = pack_quaternion(transforms[entities].rotation)
+	instances[sl]["iScale"] = pack_scale(transforms[entities].scale)
 
 def clamp(val, val_min, val_max):
 	return min(max(val, val_min), val_max)

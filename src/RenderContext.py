@@ -6,6 +6,7 @@ from threading import Lock
 from dataclasses import dataclass
 from typing import Any, Sequence, Iterator, Iterable, Callable, ParamSpec, TypeVar
 from collections import defaultdict
+from gc import collect as gc_collect
 
 import glfw
 import atexit
@@ -187,6 +188,7 @@ class _RenderContext:
 		if wh != self.windowDimensions and wh[0] > 0 and wh[1] > 0:
 			self.update_window_size(wh)
 
+		gc_collect(0) # schedule collection before sleeping for frame pacing
 		self._frame_pacing()
 		glfw.poll_events()
 		return not glfw.window_should_close(self.window)

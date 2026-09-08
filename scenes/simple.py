@@ -22,7 +22,7 @@ class Rotation:
 
 @component
 class Scale:
-	x: float; y: float; z: float; w: float # w is not used
+	x: float; y: float; z: float
 
 
 @component
@@ -44,7 +44,7 @@ world.add(
 	ground,
 	Position, Position(0, -0.51, 0),
 	Rotation, Rotation(*Quaternion()),
-	Scale, Scale(2 * SPACE_SIZE, 1, 2 * SPACE_SIZE, 0),
+	Scale, Scale(2 * SPACE_SIZE, 1, 2 * SPACE_SIZE),
 	Tint, Tint(pack_rgba8_srgb([0.5, 0.5, 0.5, 1.0])),
 )
 
@@ -61,12 +61,16 @@ cube_velocities = np.column_stack((
 	np.zeros(cube_count),
 	np.random.randint(-4, 4, cube_count),
 ))
-cube_rotations = np.tile(np.asarray(Quaternion()), (cube_count, 1))
+cube_rotations = np.asarray([
+	Quaternion.from_axis_rotation( (0.0,1.0,0.0), rd.random() * 3.143 )
+	for _ in range(cube_count)
+], dtype=np.float32)
+
+
 cube_scales = np.column_stack((
 	np.random.randint(1, CUBE_MAX_SIDE, cube_count),
 	np.random.randint(1, CUBE_MAX_SIDE, cube_count),
 	np.random.randint(1, CUBE_MAX_SIDE, cube_count),
-	np.zeros(cube_count),
 ))
 cube_tints = np.asarray([
 	pack_rgba8_srgb([rd.random(), rd.random(), rd.random(), 1.0])
@@ -131,7 +135,7 @@ model_instances = np.zeros(1, mesh_instance_dtype)
 model_instances[0]["iPosition"] = Vec3(15.0, 0.0, 15.0)
 model_instances[0]["iTint"] = pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])
 model_instances[0]["iRotation"] = pack_quaternion(Quaternion())
-model_instances[0]["iScale"] = pack_scale([10.0] * 4)
+model_instances[0]["iScale"] = pack_scale([10.0] * 3)
 model_instances[0]["iPosition"] = Vec3(15.0, 0.0, 15.0)
 model_instance_buffer = GpuBuffer(
 	model_instances,

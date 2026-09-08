@@ -90,18 +90,18 @@ def _component_fields(component_cls: type[Any]) -> tuple[tuple[str, Any], ...]:
 
 
 def _dtype_for(annotation: Any) -> np.dtype[Any]:
-	if annotation is str or annotation is bytes:
-		return OBJECT_DTYPE
-	if isinstance(annotation, type) and issubclass(annotation, IntFlag):
-		return np.dtype(np.int64)
+	if isinstance(annotation, type):
+		if issubclass(annotation, IntFlag):
+			return np.dtype(np.int64)
+		if hasattr(annotation, "storage_dtype"):
+			return annotation.storage_dtype()
+		if issubclass(annotation, (str, bytes)):
+			return OBJECT_DTYPE
 	try:
-		dtype = np.dtype(annotation)
+		return np.dtype(annotation)
 	except TypeError:
-		return OBJECT_DTYPE
-	if dtype.kind in ("U", "S"):
-		return OBJECT_DTYPE
-	return dtype
-
+		...
+	return OBJECT_DTYPE
 
 class ComponentSelection:
 	__slots__ = ("_store", "_rows")
@@ -224,6 +224,7 @@ class ComponentStorage:
 
 		self._dense: dict[str, FieldArray] = {}
 		self._dense[_ENTITY_STR] = np.full(self._capacity, NO_ENTITY, dtype=Entity)
+		self._field_dtypes[_ENTITY_STR] = _dtype_for(Entity)
 
 		for name, dtype in self._field_dtypes.items():
 			array = np.empty(self._capacity, dtype=dtype)
@@ -270,7 +271,7 @@ class ComponentStorage:
 
 		new_capacity = higher_pow2(minimum_capacity)
 		for name, old in tuple(self._dense.items()):
-			new = np.empty(new_capacity, dtype=old.dtype)
+			new = np.empty(new_capacity , dtype=self._field_dtypes[name])
 			new[: self._capacity] = old
 			if name == _ENTITY_STR:
 				new[self._capacity :] = NO_ENTITY
@@ -303,103 +304,70 @@ class ComponentStorage:
 		value: Any,
 		quantity: int,
 		*,
-		scalar: bool = False,
+		single: bool = False,
 	) -> FieldArray:
 		dtype = self._field_dtypes[field]
 
-		if scalar:
-			if dtype == OBJECT_DTYPE:
-				array = np.empty(quantity, dtype=object)
-				array.fill(value)
-				return array
-			return np.full(quantity, value, dtype=dtype)
-
 		if dtype == OBJECT_DTYPE:
-			if isinstance(value, np.ndarray) and value.ndim == 1:
-				if value.size == quantity:
-					return value.astype(object, copy=False)
-				if value.size == 1:
-					array = np.empty(quantity, dtype=object)
-					array.fill(value[0])
-					return array
-			elif isinstance(value, (list, tuple)):
-				if len(value) == quantity:
-					return np.fromiter(value, dtype=object, count=quantity)
-				if len(value) == 1:
-					array = np.empty(quantity, dtype=object)
-					array.fill(value[0])
-					return array
-			else:
-				array = np.empty(quantity, dtype=object)
-				array.fill(value)
-				return array
 
-			raise ValueError(
-				f"field {field!r} has {len(value)} values for {quantity} entities"
-			)
+			if not single and isinstance(value, (np.ndarray, list, tuple)):
+				n = len(value) if isinstance(value, (list, tuple)) else value.size
+				if n == quantity:
+					return np.asarray(value, dtype=object)
+				if n == 1:
+					value = value[0]
+				else:
+					raise ValueError(f"field {field!r} has {n} values for {quantity} entities")
+			obj_array = np.empty(quantity, dtype=object)
+			obj_array.fill(value)
+			return obj_array
 
-		array = np.asarray(value, dtype=dtype)
-		if array.ndim == 0:
-			return np.full(quantity, array.item(), dtype=dtype)
-		if array.ndim != 1:
-			raise ValueError(f"field {field!r} must be scalar or 1-D")
-		if array.size == quantity:
+		base_dtype, subshape = dtype.subdtype or (dtype, ())
+
+		target_shape = (quantity,) + subshape
+		array = np.asarray(value, dtype=base_dtype)
+		arr_shape = array.shape
+
+		if single:
+			if arr_shape != subshape and arr_shape != (1,) + subshape:
+				raise ValueError(f"field {field!r} expects shape {subshape}, got {arr_shape}")
+			return np.broadcast_to(array, target_shape)
+
+		if arr_shape == target_shape:
 			return array
-		if array.size == 1:
-			return np.full(quantity, array[0], dtype=dtype)
-		raise ValueError(
-			f"field {field!r} has {array.size} values for {quantity} entities"
-		)
-	def _normalise_values(
-		self,
-		entities: EntityArray,
-		values: object,
-	) -> dict[str, FieldArray]:
+
+		if arr_shape == subshape or arr_shape == (1,) + subshape:
+			return np.broadcast_to(array, target_shape)
+
+		raise ValueError(f"field {field!r} expects shape {subshape} or {target_shape}, got {arr_shape}")
+
+	def _normalise_values(self, entities: EntityArray, values: object) -> dict[str, FieldArray]:
 		quantity = entities.size
+		n_fields = len(self.fields)
 		field_values: tuple[Any, ...]
 
 		if isinstance(values, self.component_cls):
-			return {
-				field: self._broadcast_field(
-					field, getattr(values, field), quantity, scalar=True
-				)
-				for field in self.fields
-			}
+			return {field: self._broadcast_field(field, getattr(values, field), quantity, single=True) for field in self.fields}
 
-		if len(self.fields) == 1:
-			field_values = (
-				values[0] if isinstance(values, tuple) and len(values) == 1
-				else values,
-			)
-
+		if n_fields == 1 and not (isinstance(values, tuple) and len(values) == 1):
+			field_values = (values,)
 		elif isinstance(values, tuple):
 			field_values = values
-
 		else:
+			if any(dtype.subdtype is not None for dtype in self._field_dtypes.values()):
+				raise ValueError(f"{self.component_cls.__name__} has shaped fields; values must be supplied as a tuple of fields")
 			packed = np.asarray(values)
-
-			if packed.shape == (len(self.fields),):
+			if packed.shape == (n_fields,):
 				field_values = tuple(packed)
-
-			elif packed.shape == (quantity, len(self.fields)):
+			elif packed.shape == (quantity, n_fields):
 				field_values = tuple(packed.T)
-
 			else:
-				raise ValueError(
-					f"cannot map values with shape {packed.shape} to "
-					f"{self.component_cls.__name__}{self.fields}"
-				)
+				raise ValueError(f"cannot map values with shape {packed.shape} to {self.component_cls.__name__}{self.fields}")
 
-		if len(field_values) != len(self.fields):
-			raise ValueError(
-				f"{self.component_cls.__name__} expects {len(self.fields)} fields, "
-				f"got {len(field_values)}"
-			)
+		if len(field_values) != n_fields:
+			raise ValueError(f"{self.component_cls.__name__} expects {n_fields} fields, got {len(field_values)}")
 
-		return {
-			field: self._broadcast_field(field, value, quantity)
-			for field, value in zip(self.fields, field_values)
-		}
+		return {field: self._broadcast_field(field, value, quantity) for field, value in zip(self.fields, field_values)}
 
 	# ---------- mutation ----------
 
@@ -493,6 +461,7 @@ class MultiComponentStorage(ComponentStorage):
 	) -> None:
 		super().__init__(component_cls, capacity)
 		self._dense[_COUNT_STR] = np.zeros( self._capacity, dtype=ComponentPerEntityCount )
+		self._field_dtypes[_COUNT_STR] = _dtype_for(ComponentPerEntityCount)
 		self._live_count = 0
 
 	@property
@@ -574,7 +543,7 @@ class MultiComponentStorage(ComponentStorage):
 			old = self._dense[name]
 
 			if grow:
-				new = np.empty(new_capacity, dtype=old.dtype)
+				new = np.empty(new_capacity , dtype=self._field_dtypes[name])
 			else:
 				new = old
 

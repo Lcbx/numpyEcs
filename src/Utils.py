@@ -17,12 +17,18 @@ def _array_accessor(index:int=0):
 	)
 
 class _baseVector(np.ndarray):
+	_count: int
+	_base_dtype = np.dtype(np.float32)
+
 	def __new__(cls, *args):
-		first_arg = args[0]
-		values = first_arg if isinstance(first_arg, Sequence) else args 
+		values = args[0] if len(args) == 1 and not np.isscalar(args[0]) else args
 		if len(values) != cls._count:
 			raise ValueError(f'got passed {len(values)} when {cls._count} were expected')
-		return np.asarray(values, dtype=float).view(cls)
+		return np.asarray(values, dtype=cls._base_dtype).view(cls)
+
+	@classmethod
+	def storage_dtype(cls) -> np.dtype:
+		return np.dtype((cls._base_dtype, (cls._count,)))
 
 class Vec2(_baseVector):
 	_count = 2
@@ -336,24 +342,27 @@ def make_cube_mesh():
 )
 
 mesh_instance_dtype = np.dtype([
-    ("iPosition",  np.float32, 3), # 12 bytes
-    ("iTint",      np.uint32,  1), # 4 bytes  (fills align 16 gap)
-    ("iRotation",  np.uint32,  2), # 8 bytes  (snorm16 mapped to [-1, 1])
-    ("iScale",     np.uint32,  2), # 8 bytes  (4x float16: x, y, z, 0)
+	("iPosition",  np.float32, 3), # 12 bytes
+	("iTint",      np.uint32,  1), # 4 bytes  (fills align 16 gap)
+	("iRotation",  np.uint32,  2), # 8 bytes  (snorm16 mapped to [-1, 1])
+	("iScale",     np.uint32,  2), # 8 bytes  (4x float16: x, y, z, 0)
 ])
 
 
 # quantize quaternion to int16 snorm [-32767, 32767]
 def pack_quaternion(rot):
 	rot_arr = np.asarray(rot)
+	#if rot_arr.dtype == object: rot_arr = np.stack(rot_arr)
 	snorm16 = np.round(np.clip(rot_arr, -1.0, 1.0) * 32767.0).astype(np.int16)
 	u32_view = snorm16.view(np.uint32)
-	return u32_view #.reshape(-1, 2) if rot_arr.ndim > 1 else u32_view
+	return u32_view
 
-# put 4 f16 into 2 u32
+# put 3 f16 into 2 u32
+# NOTE: could pack something else in last 16bits
 def pack_scale(scale):
-	scl_arr = np.asarray(scale)
-	f16 = scl_arr.astype(np.float16)
+	scl_arr = np.asarray(scale, dtype=np.float32)
+	f16 = np.zeros((*scl_arr.shape[:-1], 4), dtype=np.float16)
+	f16[..., :3] = scl_arr
 	return f16.view(np.uint32)
 
 
