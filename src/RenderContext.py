@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import time, os, re
+import time, os, re, gc
 from time import sleep, perf_counter as get_time
 from threading import Lock
 from dataclasses import dataclass
 from typing import Any, Sequence, Iterator, Iterable, Callable, ParamSpec, TypeVar
 from collections import defaultdict
-from gc import collect as gc_collect
 
 import glfw
 import atexit
@@ -49,6 +48,8 @@ class _RenderContext:
 		self.depth: wgpu.GPUTextureView
 		self._screen_view: wgpu.GPUTextureView | None = None
 
+		self.idle_hook : Callable = lambda : None
+
 		# event_name:[handlers]
 		# handlers return True if no need to propagate further
 		self.event_handlers: dict[str, list[Callable]] = {}
@@ -60,7 +61,8 @@ class _RenderContext:
 		title: str,
 		highpower_gpu: bool = True,
 		target_fps: int = 0,
-		required_gpu_features = []
+		required_gpu_features:list = [],
+		custom_gc:bool=True
 	) -> None:
 		"""Init a window and wgpu rendering context.
 
@@ -77,7 +79,6 @@ class _RenderContext:
 		glfw.window_hint(glfw.POSITION_X, monitor_w - w)
 		glfw.window_hint(glfw.POSITION_Y, 30)
 
-		# had weird case where vsync was not blocking
 		if target_fps == 0:
 			video_mode = glfw.get_video_mode(monitor)
 			target_fps = video_mode.refresh_rate
@@ -89,6 +90,7 @@ class _RenderContext:
 		self.setup_callbacks()
 		self.setup_graphics(vsync=target_fps == 0, highpower_gpu=highpower_gpu, required_gpu_features=required_gpu_features)
 
+		if custom_gc: self.idle_hook = GC_Manager()
 		self.frame_start = get_time()
 
 	def setup_graphics(self, *, vsync: bool, highpower_gpu: bool, required_gpu_features:List=[]) -> None:
@@ -188,7 +190,7 @@ class _RenderContext:
 		if wh != self.windowDimensions and wh[0] > 0 and wh[1] > 0:
 			self.update_window_size(wh)
 
-		gc_collect(0) # schedule collection before sleeping for frame pacing
+		self.idle_hook()
 		self._frame_pacing()
 		glfw.poll_events()
 		return not glfw.window_should_close(self.window)
@@ -248,6 +250,33 @@ class _RenderContext:
 
 
 RenderContext = _RenderContext()
+
+class GC_Manager:
+	def __init__(self):
+		gc.disable()
+		self.time_budgets: tuple[float, float, float] = (
+			0.0005, 0.002, 0.005 # sec
+		)
+
+	def __call__(self):
+		counts = gc.get_count()
+		thresholds = gc.get_threshold()
+
+		max_gen = 2 # there are 3 generations : 0, 1, 2
+		
+		if RenderContext.target_frame_time:
+			budget = RenderContext.target_frame_time - (get_time() - RenderContext.frame_start)
+			max_gen = -1
+			for i in range(2, -1, -1):
+				if budget >= self.time_budgets[i]:
+					max_gen = i
+					break
+
+		for gen in range(max_gen, -1, -1):
+			if counts[gen] >= thresholds[gen]:
+				gc.collect(gen)
+				#print("collected gen", gen)
+				break
 
 
 class CommandContext:
