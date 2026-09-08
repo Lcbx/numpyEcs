@@ -161,7 +161,7 @@ world.add(
 	MeshRef, MeshRef(0, pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])),
 )
 
-cube_mesh = RenderContext.resources["cube"]
+cube_mesh = make_cube_mesh()
 
 meshes = {0: model_mesh, 1: cube_mesh}
 draw_batches = []

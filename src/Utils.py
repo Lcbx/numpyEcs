@@ -211,7 +211,7 @@ def load_gltf_first_mesh_interleaved(glb_path: str) -> Tuple[np.ndarray,np.ndarr
 	verts = interleave_mesh_position_normal_uv(pos, nor, uv)
 	return verts, idx.astype(np.uint32).reshape(-1)
 
-def interleave_mesh_position_normal_uv(pos, nor, uv):
+def interleave_mesh_position_normal_uv(positions, normals, uvs):
 	vertex_dtype = np.dtype([
 			("position", np.float32, (3,)),
 			("normal",   np.float32, (3,)), # float16x3 does not exist in wgpu
@@ -221,10 +221,10 @@ def interleave_mesh_position_normal_uv(pos, nor, uv):
 	#print("stride:", vertex_dtype.itemsize)
 	#print("offsets:", {n: vertex_dtype.fields[n][1] for n in vertex_dtype.names})
 
-	verts = np.empty(pos.shape[0], dtype=vertex_dtype)
-	verts["position"] = pos
-	verts["normal"]   = nor
-	verts["uv"]		  = uv
+	verts = np.empty(len(positions), dtype=vertex_dtype)
+	verts["position"] = positions
+	verts["normal"]   = normals
+	verts["uv"]		  = uvs
 	return verts
 
 
@@ -299,44 +299,40 @@ class WatchTimer:
 	#	rl.DrawText(WatchTimer.report.encode(), x, y, size, color)
 
 
-CUBE_POSITIONS_24 = np.array((
-	# +Z (front)
-	(-0.5,-0.5,+0.5), (+0.5,-0.5,+0.5), (+0.5,+0.5,+0.5), (-0.5,+0.5,+0.5),
-	# -Z (back)
-	(+0.5,-0.5,-0.5), (-0.5,-0.5,-0.5), (-0.5,+0.5,-0.5), (+0.5,+0.5,-0.5),
-	# +X (right)
-	(+0.5,-0.5,+0.5), (+0.5,-0.5,-0.5), (+0.5,+0.5,-0.5), (+0.5,+0.5,+0.5),
-	# -X (left)
-	(-0.5,-0.5,-0.5), (-0.5,-0.5,+0.5), (-0.5,+0.5,+0.5), (-0.5,+0.5,-0.5),
-	# +Y (top)
-	(-0.5,+0.5,+0.5), (+0.5,+0.5,+0.5), (+0.5,+0.5,-0.5), (-0.5,+0.5,-0.5),
-	# -Y (bottom)
-	(-0.5,-0.5,-0.5), (+0.5,-0.5,-0.5), (+0.5,-0.5,+0.5), (-0.5,-0.5,+0.5),
-), dtype=np.float32)
-
-CUBE_NORMALS_24 = np.array(
-	([ Vec3(  0.0, 0.0, 1.0 ) ] * 4) +   # +Z
-	([ Vec3(  0.0, 0.0,-1.0 ) ] * 4) +   # -Z
-	([ Vec3(  1.0, 0.0, 0.0 ) ] * 4) +   # +X
-	([ Vec3( -1.0, 0.0, 0.0 ) ] * 4) +   # -X
-	([ Vec3(  0.0, 1.0, 0.0 ) ] * 4) +   # +Y
-	([ Vec3(  0.0,-1.0, 0.0 ) ] * 4),    # -Y
-	dtype=np.float32
-)
-
-CUBE_UVS_24 = np.array([ (0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] * 6, dtype=np.float32)
-
-CUBE_INDICES_36 = np.array([
-	0, 1, 2,  2, 3, 0,		 # +Z
-	4, 5, 6,  6, 7, 4,		 # -Z
-	8, 9, 10,  10, 11, 8,	 # +X
-	12, 13, 14,  14, 15, 12, # -X
-	16, 17, 18,  18, 19, 16, # +Y
-	20, 21, 22,  22, 23, 20, # -Y
-], dtype=np.uint32)
-
-RenderContext.resources["cube"] = lambda : (
-	Mesh(interleave_mesh_position_normal_uv(CUBE_POSITIONS_24, CUBE_NORMALS_24, CUBE_UVS_24), CUBE_INDICES_36)
+def make_cube_mesh():
+	return Mesh(interleave_mesh_position_normal_uv(
+		positions = np.array((
+		# +Z (front)
+		(-0.5,-0.5,+0.5), (+0.5,-0.5,+0.5), (+0.5,+0.5,+0.5), (-0.5,+0.5,+0.5),
+		# -Z (back)
+		(+0.5,-0.5,-0.5), (-0.5,-0.5,-0.5), (-0.5,+0.5,-0.5), (+0.5,+0.5,-0.5),
+		# +X (right)
+		(+0.5,-0.5,+0.5), (+0.5,-0.5,-0.5), (+0.5,+0.5,-0.5), (+0.5,+0.5,+0.5),
+		# -X (left)
+		(-0.5,-0.5,-0.5), (-0.5,-0.5,+0.5), (-0.5,+0.5,+0.5), (-0.5,+0.5,-0.5),
+		# +Y (top)
+		(-0.5,+0.5,+0.5), (+0.5,+0.5,+0.5), (+0.5,+0.5,-0.5), (-0.5,+0.5,-0.5),
+		# -Y (bottom)
+		(-0.5,-0.5,-0.5), (+0.5,-0.5,-0.5), (+0.5,-0.5,+0.5), (-0.5,-0.5,+0.5),
+	), dtype=np.float32),
+		normals=np.array(
+			([ Vec3(  0.0, 0.0, 1.0 ) ] * 4) +   # +Z
+			([ Vec3(  0.0, 0.0,-1.0 ) ] * 4) +   # -Z
+			([ Vec3(  1.0, 0.0, 0.0 ) ] * 4) +   # +X
+			([ Vec3( -1.0, 0.0, 0.0 ) ] * 4) +   # -X
+			([ Vec3(  0.0, 1.0, 0.0 ) ] * 4) +   # +Y
+			([ Vec3(  0.0,-1.0, 0.0 ) ] * 4),    # -Y
+			dtype=np.float32),
+		uvs = np.array([ (0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] * 6, dtype=np.float32)
+	),
+	indices =np.array([
+		0, 1, 2,  2, 3, 0,		 # +Z
+		4, 5, 6,  6, 7, 4,		 # -Z
+		8, 9, 10,  10, 11, 8,	 # +X
+		12, 13, 14,  14, 15, 12, # -X
+		16, 17, 18,  18, 19, 16, # +Y
+		20, 21, 22,  22, 23, 20, # -Y
+	], dtype=np.uint32)
 )
 
 mesh_instance_dtype = np.dtype([
@@ -403,32 +399,6 @@ def pack_rgba8_srgb(rgba):
 	rgba = np.array([ *linear_to_srgb(rgba[:3]), rgba[3]])
 	rgba8 = np.rint(rgba * 255).astype(np.uint32)
 	return np.uint32(np.sum(rgba8 << _RGBA_SHIFT))
-
-
-def flush_cubes(rp:"_RenderPass", shader:"_Shader", uniformBuffer:"_UniformBuffer"):
-	cube_mesh = RenderContext.resources["cube"]
-	
-	# draw
-	cube_mesh.instance_buffer.upload()
-	cube_mesh.draw(rp, shader, uniformBuffer)
-
-	# clear
-	cube_mesh.instance_buffer.clear(rp)
-	# NOTE: we keep reallocating numpy arrays on cpu
-	# optimally we'd reuse them but that complicates implementation
-	cube_mesh.instance_buffer.content = np.empty(0,mesh_instance_dtype)
-
-
-def draw_cube(position:Vec3, size:Vec3, color:Vec4, rotation:Quaternion = Quaternion()) -> None:
-	instance_data = np.empty(1, mesh_instance_dtype)
-	instance_data[0]["iPosition"] = position
-	instance_data[0]["iRotation"] = rotation
-	instance_data[0]["iScale"] = [*size, 0.0] # this is a vec3, shader expects a vec4 so we pad the numpy array
-	instance_data[0]["iTint"] = pack_rgba8_srgb(Vec4(color))
-	draw_cubes(instance_data)
-
-def draw_cubes(instance_data:np.ndarray) -> None:
-	RenderContext.resources["cube"].add_instances(instance_data)
 
 """
 import timeit

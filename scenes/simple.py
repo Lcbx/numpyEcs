@@ -138,7 +138,7 @@ model_instance_buffer = GpuBuffer(
 	BufferUsage.VERTEX | BufferUsage.COPY_DST,
 )
 
-cube_mesh = RenderContext.resources["cube"]
+cube_mesh = make_cube_mesh()
 render_entities = world.where(Position, Rotation, Scale, Tint)
 
 def make_cube_instances(entities):

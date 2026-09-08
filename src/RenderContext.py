@@ -52,11 +52,6 @@ class _RenderContext:
 		# handlers return True if no need to propagate further
 		self.event_handlers: dict[str, list[Callable]] = {}
 
-		# before startup -> resource_name:func
-		# after startup  -> resource_name:resource
-		# used to setup utils if imported
-		self.resources = {}
-
 	def init_window(
 		self,
 		w: float,
@@ -93,9 +88,6 @@ class _RenderContext:
 		self.setup_callbacks()
 		self.setup_graphics(vsync=target_fps == 0, highpower_gpu=highpower_gpu, required_gpu_features=required_gpu_features)
 
-		for name, init in self.resources.items():
-			self.resources[name] = init()
-
 		self.frame_start = get_time()
 
 	def setup_graphics(self, *, vsync: bool, highpower_gpu: bool, required_gpu_features:List=[]) -> None:
@@ -106,10 +98,10 @@ class _RenderContext:
 		self.presentation_format = self.canvas.get_preferred_format(self.adapter)
 		self.canvas.configure(device=self.device, format=self.presentation_format)
 
-	def setup_graphics_backend(self, highpower: bool, required_features:List) -> None:
+	def setup_graphics_backend(self, highpower_gpu: bool, required_features:List=[]) -> None:
 		"""Setup gpu compute, not necessarily with canvas output. Used notably for tests."""
 		request_params = {
-			"power_preference": "high-performance" if highpower else "low-power"
+			"power_preference": "high-performance" if highpower_gpu else "low-power"
 		}
 		if self.canvas:
 			request_params["canvas"] = self.canvas
