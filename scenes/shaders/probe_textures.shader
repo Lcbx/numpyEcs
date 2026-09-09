@@ -6,9 +6,9 @@
 <ProbeUniforms> update_count: u32;
 <ProbeUniforms> frame_index: u32;
 <ProbeUniforms> geometry_bias: f32;
-<ProbeUniforms> padding: u32;
+<ProbeUniforms> sample_bias: f32;
 
-<Probe> direct:   array<vec4f, 4>;
+<Probe> visibility: vec4f;
 <Probe> bounce:   array<vec4f, 4>;
 <Probe> metadata: vec4u;
 
@@ -30,17 +30,14 @@ fn probe_export(@builtin(global_invocation_id) gid: vec3u) {
 	var coefficients = array<vec4f, 4>();
 	if valid {
 		for (var band = 0u; band < 4u; band++) {
-			var value = vec3f(0.0);
-			if probe_uniforms.trace.w != 1u { value += probe.direct[band].rgb; }
-			if probe_uniforms.trace.w != 0u { value += probe.bounce[band].rgb; }
-			if probe_uniforms.trace.w >= 3u {
-				var debug = 1.0;
-				if probe_uniforms.trace.w == 4u { debug = min(log2(f32(probe.metadata.y) + 1.0) / 8.0, 1.0); }
-				value = vec3f(select(0.0, debug / 0.28209479, band == 0u));
-			}
-			coefficients[band] = vec4f(clamp(value, vec3f(-65504.0), vec3f(65504.0)), 1.0);
+			coefficients[band] = vec4f(clamp(probe.bounce[band].rgb, vec3f(-65504.0), vec3f(65504.0)), 0.0);
 		}
+		// All channels are validity-weighted; invalid probes export zero everywhere.
+		coefficients[0].a = 1.0;
+		coefficients[1].a = clamp(probe.visibility.x, 0.0, 1.0);
+		coefficients[2].a = min(log2(f32(probe.metadata.y) + 1.0) / 8.0, 1.0);
 	}
+
 	textureStore(probe_sh0, coord, coefficients[0]);
 	textureStore(probe_sh1, coord, coefficients[1]);
 	textureStore(probe_sh2, coord, coefficients[2]);

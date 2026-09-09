@@ -36,7 +36,7 @@ var<storage, read> visible_instances: array<u32>;
 <ProbeUniforms> update_count: u32;
 <ProbeUniforms> frame_index: u32;
 <ProbeUniforms> geometry_bias: f32;
-<ProbeUniforms> padding: u32;
+<ProbeUniforms> sample_bias: f32;
 
 
 @group(2) @binding(0)
@@ -96,7 +96,8 @@ fn fragment(input: VertexOutput) -> @location(0) vec4f {
 // Cubic B-spline pairs reduce 64 taps to eight hardware trilinear samples.
 fn sample_probe_irradiance(position: vec3f, normal: vec3f) -> vec3f {
 	let dims = vec3f(probe_uniforms.dimensions.xyz);
-	let grid = clamp((position - probe_uniforms.origin.xyz) / probe_uniforms.origin.w, vec3f(0.0), dims - 1.0);
+	let sample_position = position + normal * probe_uniforms.sample_bias;
+	let grid = clamp((sample_position - probe_uniforms.origin.xyz) / probe_uniforms.origin.w, vec3f(0.0), dims - 1.0);
 	let base = floor(grid);
 	let f = fract(grid);
 	let f2 = f * f;
@@ -124,7 +125,14 @@ fn sample_probe_irradiance(position: vec3f, normal: vec3f) -> vec3f {
 		c3 += textureSampleLevel(probe_sh3, probe_sampler, uv, 0.0) * weight;
 	}
 	if c0.a <= 0.0 { return vec3f(0.0); }
+	if probe_uniforms.trace.w == 3u { return vec3f(1.0); }
+	if probe_uniforms.trace.w == 4u { return vec3f(c2.a / c0.a); }
 	let basis = sh_basis(normal);
-	let result = c0.rgb * basis.x + c1.rgb * basis.y + c2.rgb * basis.z + c3.rgb * basis.w;
-	return max(result / c0.a, vec3f(0.0));
+	let bounce = max((c0.rgb * basis.x + c1.rgb * basis.y + c2.rgb * basis.z + c3.rgb * basis.w) / c0.a, vec3f(0.0));
+	let visibility = clamp(c1.a / c0.a, 0.0, 1.0);
+	let light_dir = normalize(probe_uniforms.light_direction.xyz);
+	let direct = visibility * probe_uniforms.light_radiance.rgb * max(dot(normal, light_dir), 0.0);
+	if probe_uniforms.trace.w == 0u { return direct; }
+	if probe_uniforms.trace.w == 1u { return bounce; }
+	return direct + bounce;
 }

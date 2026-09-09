@@ -8,9 +8,9 @@
 <ProbeUniforms> update_count: u32;
 <ProbeUniforms> frame_index: u32;
 <ProbeUniforms> geometry_bias: f32;
-<ProbeUniforms> padding: u32;
+<ProbeUniforms> sample_bias: f32;
 
-<Probe> direct:   array<vec4f, 4>;
+<Probe> visibility: vec4f;
 <Probe> bounce:   array<vec4f, 4>;
 <Probe> metadata: vec4u;
 
@@ -182,7 +182,6 @@ fn probe_update(@builtin(global_invocation_id) gid: vec3u) {
 	if gid.x >= probe_uniforms.update_count { return; }
 	let id = probe_update_ids[gid.x];
 	let position = probe_world_position(id);
-	var direct = array<vec4f, 4>();
 	var bounce = array<vec4f, 4>();
 	if !probe_is_valid(position) {
 		probes[id].metadata = vec4u(0u);
@@ -190,13 +189,7 @@ fn probe_update(@builtin(global_invocation_id) gid: vec3u) {
 	}
 
 	let light_dir = normalize(probe_uniforms.light_direction.xyz);
-	if visible_to_light(position, light_dir) {
-		let basis = sh_basis(light_dir);
-		for (var band = 0u; band < 4u; band++) {
-			let convolution = select(2.09439510, 3.14159265, band == 0u);
-			direct[band] = vec4f(probe_uniforms.light_radiance.rgb * basis[band] * convolution, 0.0);
-		}
-	}
+	let visibility = select(0.0, 1.0, visible_to_light(position, light_dir));
 
 	let ray_count = max(probe_uniforms.trace.y, 1u);
 	for (var sample = 0u; sample < ray_count; sample++) {
@@ -219,8 +212,8 @@ fn probe_update(@builtin(global_invocation_id) gid: vec3u) {
 	let old_count = probes[id].metadata.y;
 	let alpha = select(0.08, 1.0 / f32(old_count + 1u), old_count < 8u);
 	for (var band = 0u; band < 4u; band++) {
-		probes[id].direct[band] = direct[band];
 		probes[id].bounce[band] = mix(probes[id].bounce[band], bounce[band], alpha);
 	}
+	probes[id].visibility = vec4f(visibility, 0.0, 0.0, 0.0);
 	probes[id].metadata = vec4u(1u, old_count + 1u, probe_uniforms.frame_index, 0u);
 }

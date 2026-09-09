@@ -34,13 +34,14 @@ CUBE_MAX_SIDE = 7
 
 MAX_TRIANGLES = 100
 PROBE_SPACING = 0.5
-PROBES_HORIZONTAL = 200
+PROBES_HORIZONTAL = 150
 PROBE_DIMENSIONS = np.array([PROBES_HORIZONTAL, 8, PROBES_HORIZONTAL], dtype=np.uint32)
 PROBE_ORIGIN = Vec3(-PROBES_HORIZONTAL*PROBE_SPACING*0.5, 1.0, -PROBES_HORIZONTAL*PROBE_SPACING*0.5)
 PROBE_COUNT = int(np.prod(PROBE_DIMENSIONS))
-PROBES_PER_FRAME = (PROBE_COUNT + 15) // 10
-BOUNCE_RAYS = 4
+PROBES_PER_FRAME = (PROBE_COUNT + 15) // 8
+BOUNCE_RAYS = 3
 PROBE_GEOMETRY_BIAS = 0.08
+PROBE_SAMPLE_BIAS = 0.3 * PROBE_SPACING # World units; set to zero to disable
 # 0 direct, 1 bounce, 2 combined, 3 validity, 4 update count
 PROBE_DEBUG_MODE = 2
 
@@ -315,7 +316,7 @@ instance_bindings = shader.bind_group(1,
 )
 
 probe_dtype = np.dtype([
-	("direct", np.float32, (4, 4)),
+	("visibility", np.float32, 4), # Direct visibility in x; padding in yzw
 	("bounce", np.float32, (4, 4)),
 	("metadata", np.uint32, 4), # valid, sample count, last update frame, padding
 ])
@@ -383,6 +384,7 @@ probe_uniforms.content["light_direction"] = [*light_camera.direction(), 0.0]
 probe_uniforms.content["light_radiance"] = [4.0, 3.8, 3.5, 0.0]
 probe_uniforms.content["trace"] = [all_renderables.size, BOUNCE_RAYS, 0, PROBE_DEBUG_MODE]
 probe_uniforms.content["geometry_bias"] = PROBE_GEOMETRY_BIAS
+probe_uniforms.content["sample_bias"] = PROBE_SAMPLE_BIAS
 probe_update_bindings = probe_shader.bind_group(0,
 	probe_uniforms=probe_uniforms,
 	probes=probe_buffer,
@@ -390,7 +392,7 @@ probe_update_bindings = probe_shader.bind_group(0,
 	trace_instances=trace_instance_buffer,
 	trace_triangles=trace_triangle_buffer,
 )
-# Four coefficient volumes: RGB = selected irradiance SH, alpha = validity.
+# Four bounce SH volumes; alpha channels hold validity, direct visibility, and update count.
 # Accumulation stays in the float32 buffer; the render volumes use float16.
 probe_textures = [Texture(
 	tuple(int(value) for value in PROBE_DIMENSIONS),
