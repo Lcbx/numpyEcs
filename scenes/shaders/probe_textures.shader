@@ -7,6 +7,7 @@
 <ProbeUniforms> frame_index: u32;
 <ProbeUniforms> geometry_bias: f32;
 <ProbeUniforms> sample_bias: f32;
+<ProbeUniforms> light_sampling: vec4f; // cos(angular radius), visibility alpha, padding
 
 <Probe> visibility: vec4f;
 <Probe> bounce:   array<vec4f, 4>;

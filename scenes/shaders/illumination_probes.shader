@@ -9,6 +9,7 @@
 <ProbeUniforms> frame_index: u32;
 <ProbeUniforms> geometry_bias: f32;
 <ProbeUniforms> sample_bias: f32;
+<ProbeUniforms> light_sampling: vec4f; // cos(angular radius), visibility alpha, padding
 
 <Probe> visibility: vec4f;
 <Probe> bounce:   array<vec4f, 4>;
@@ -171,9 +172,30 @@ fn fibonacci_direction(sample: u32, count: u32, seed: u32) -> vec3f {
 	return vec3f(cos(angle) * radius, z, sin(angle) * radius);
 }
 
-fn visible_to_light(position: vec3f, normal: vec3f) -> bool {
+
+fn light_random(seed: u32) -> f32 {
+	var value = seed;
+	value = (value ^ (value >> 16u)) * 0x7feb352du;
+	value = (value ^ (value >> 15u)) * 0x846ca68bu;
+	value = value ^ (value >> 16u);
+	return f32(value >> 8u) * (1.0 / 16777216.0);
+}
+
+// Uniform solid-angle sampling, stratified along the cone's cosine coordinate.
+fn sample_light_direction(light_dir: vec3f, sample: u32, count: u32, seed: u32) -> vec3f {
+	let u = (f32(sample) + light_random(seed + sample * 0x9e3779b9u)) / f32(count);
+	let v = light_random(seed + sample * 0x85ebca6bu + 0x68bc21ebu);
+	let cosine = mix(1.0, probe_uniforms.light_sampling.x, u);
+	let sine = sqrt(max(0.0, 1.0 - cosine * cosine));
+	let axis = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(light_dir.y) > 0.9);
+	let tangent = normalize(cross(axis, light_dir));
+	let bitangent = cross(light_dir, tangent);
+	let angle = 6.28318531 * v;
+	return normalize(light_dir * cosine + (tangent * cos(angle) + bitangent * sin(angle)) * sine);
+}
+
+fn visible_to_light(position: vec3f, normal: vec3f, direction: vec3f) -> bool {
 	let origin = position + normal * probe_uniforms.geometry_bias;
-	let direction = normalize(probe_uniforms.light_direction.xyz);
 	return trace_scene(origin, direction, true).instance_id == 0xffffffffu;
 }
 
@@ -189,7 +211,14 @@ fn probe_update(@builtin(global_invocation_id) gid: vec3u) {
 	}
 
 	let light_dir = normalize(probe_uniforms.light_direction.xyz);
-	let visibility = select(0.0, 1.0, visible_to_light(position, light_dir));
+	let light_seed = id * 0x9e3779b9u + probe_uniforms.frame_index * 0x85ebca6bu;
+	let direct_count = max(probe_uniforms.trace.z, 1u);
+	var visibility = 0.0;
+	for (var sample = 0u; sample < direct_count; sample++) {
+		let direction = sample_light_direction(light_dir, sample, direct_count, light_seed);
+		visibility += select(0.0, 1.0, visible_to_light(position, direction, direction));
+	}
+	visibility /= f32(direct_count);
 
 	let ray_count = max(probe_uniforms.trace.y, 1u);
 	for (var sample = 0u; sample < ray_count; sample++) {
@@ -199,8 +228,11 @@ fn probe_update(@builtin(global_invocation_id) gid: vec3u) {
 		let hit_id = hit.instance_id;
 		let surface = position + direction * hit.distance;
 		let normal = hit.normal;
-		let n_dot_l = max(dot(normal, light_dir), 0.0);
-		if n_dot_l == 0.0 || !visible_to_light(surface, normal) { continue; }
+		
+		// One light sample per bounce hit keeps the same finite source without extra shadow rays.
+		let bounce_light_dir = sample_light_direction(light_dir, 0u, 1u, light_seed + sample * 0xc2b2ae35u + 0x27d4eb2fu);
+		let n_dot_l = max(dot(normal, bounce_light_dir), 0.0);
+		if n_dot_l == 0.0 || !visible_to_light(surface, normal, bounce_light_dir) { continue; }
 		let radiance = unpack_rgba8_srgb(trace_instances[hit_id].mesh.z).rgb * probe_uniforms.light_radiance.rgb * n_dot_l * (1.0 / 3.14159265);
 		let basis = sh_basis(direction);
 		for (var band = 0u; band < 4u; band++) {
@@ -214,6 +246,7 @@ fn probe_update(@builtin(global_invocation_id) gid: vec3u) {
 	for (var band = 0u; band < 4u; band++) {
 		probes[id].bounce[band] = mix(probes[id].bounce[band], bounce[band], alpha);
 	}
-	probes[id].visibility = vec4f(visibility, 0.0, 0.0, 0.0);
+	let visibility_alpha = max(clamp(probe_uniforms.light_sampling.y, 0.0, 1.0), 1.0 / f32(old_count + 1u));
+	probes[id].visibility = vec4f(mix(probes[id].visibility.x, visibility, visibility_alpha), 0.0, 0.0, 0.0);
 	probes[id].metadata = vec4u(1u, old_count + 1u, probe_uniforms.frame_index, 0u);
 }

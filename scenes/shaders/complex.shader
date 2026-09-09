@@ -37,6 +37,7 @@ var<storage, read> visible_instances: array<u32>;
 <ProbeUniforms> frame_index: u32;
 <ProbeUniforms> geometry_bias: f32;
 <ProbeUniforms> sample_bias: f32;
+<ProbeUniforms> light_sampling: vec4f; // cos(angular radius), visibility alpha, padding
 
 
 @group(2) @binding(0)

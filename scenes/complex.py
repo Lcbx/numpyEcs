@@ -34,14 +34,17 @@ CUBE_MAX_SIDE = 7
 
 MAX_TRIANGLES = 100
 PROBE_SPACING = 0.5
-PROBES_HORIZONTAL = 150
+PROBES_HORIZONTAL = 200
 PROBE_DIMENSIONS = np.array([PROBES_HORIZONTAL, 8, PROBES_HORIZONTAL], dtype=np.uint32)
 PROBE_ORIGIN = Vec3(-PROBES_HORIZONTAL*PROBE_SPACING*0.5, 1.0, -PROBES_HORIZONTAL*PROBE_SPACING*0.5)
 PROBE_COUNT = int(np.prod(PROBE_DIMENSIONS))
-PROBES_PER_FRAME = (PROBE_COUNT + 15) // 8
-BOUNCE_RAYS = 3
+PROBES_PER_FRAME = (PROBE_COUNT + 15) // 16
+BOUNCE_RAYS = 2
 PROBE_GEOMETRY_BIAS = 0.08
-PROBE_SAMPLE_BIAS = 0.3 * PROBE_SPACING # World units; set to zero to disable
+PROBE_SAMPLE_BIAS = 0.1 * PROBE_SPACING # World units; set to zero to disable
+DIRECT_RAYS = 4
+LIGHT_ANGULAR_RADIUS = 0.8 # Cone half-angle in degrees; zero restores a directional source
+DIRECT_VISIBILITY_ALPHA = 0.3 # New estimate weight per probe update; 1 disables history
 # 0 direct, 1 bounce, 2 combined, 3 validity, 4 update count
 PROBE_DEBUG_MODE = 2
 
@@ -382,9 +385,10 @@ probe_uniforms.content["origin"] = [*PROBE_ORIGIN, PROBE_SPACING]
 probe_uniforms.content["dimensions"] = [*PROBE_DIMENSIONS, PROBE_COUNT]
 probe_uniforms.content["light_direction"] = [*light_camera.direction(), 0.0]
 probe_uniforms.content["light_radiance"] = [4.0, 3.8, 3.5, 0.0]
-probe_uniforms.content["trace"] = [all_renderables.size, BOUNCE_RAYS, 0, PROBE_DEBUG_MODE]
+probe_uniforms.content["trace"] = [all_renderables.size, BOUNCE_RAYS, DIRECT_RAYS, PROBE_DEBUG_MODE]
 probe_uniforms.content["geometry_bias"] = PROBE_GEOMETRY_BIAS
 probe_uniforms.content["sample_bias"] = PROBE_SAMPLE_BIAS
+probe_uniforms.content["light_sampling"] = [np.cos(np.deg2rad(np.clip(LIGHT_ANGULAR_RADIUS, 0.0, 90.0))), np.clip(DIRECT_VISIBILITY_ALPHA, 0.0, 1.0), 0.0, 0.0]
 probe_update_bindings = probe_shader.bind_group(0,
 	probe_uniforms=probe_uniforms,
 	probes=probe_buffer,
