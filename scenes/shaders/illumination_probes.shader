@@ -7,7 +7,8 @@
 <ProbeUniforms> trace: vec4u;
 <ProbeUniforms> update_count: u32;
 <ProbeUniforms> frame_index: u32;
-<ProbeUniforms> padding: vec2u;
+<ProbeUniforms> geometry_bias: f32;
+<ProbeUniforms> padding: u32;
 
 <Probe> direct:   array<vec4f, 4>;
 <Probe> bounce:   array<vec4f, 4>;
@@ -16,6 +17,9 @@
 <TraceInstance> box_min: vec4f;
 <TraceInstance> box_max: vec4f;
 <TraceInstance> albedo:  u32;
+
+<TraceHit> distance: f32;
+<TraceHit> instance_id: u32;
 
 @group(0) @binding(0) var<uniform> probe_uniforms: ProbeUniforms;
 @group(0) @binding(1) var<storage, read_write> probes: array<Probe>;
@@ -43,22 +47,30 @@ fn probe_world_position(id: u32) -> vec3f {
 }
 
 fn ray_box(origin: vec3f, direction: vec3f, box_min: vec3f, box_max: vec3f) -> f32 {
-	let inv = 1.0 / direction;
-	let t0 = (box_min - origin) * inv;
-	let t1 = (box_max - origin) * inv;
-	let near = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
-	let far = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
-	return select(1e30, max(near, 0.0), far >= max(near, 0.0));
+	var near = 0.0;
+	var far = 1e30;
+	for (var axis = 0u; axis < 3u; axis++) {
+		if direction[axis] == 0.0 {
+			if origin[axis] < box_min[axis] || origin[axis] > box_max[axis] { return 1e30; }
+			continue;
+		}
+		let t0 = (box_min[axis] - origin[axis]) / direction[axis];
+		let t1 = (box_max[axis] - origin[axis]) / direction[axis];
+		near = max(near, min(t0, t1));
+		far = min(far, max(t0, t1));
+		if near > far { return 1e30; }
+	}
+	return near;
 }
 
-fn trace_scene(origin: vec3f, direction: vec3f) -> vec4f {
+fn trace_scene(origin: vec3f, direction: vec3f) -> TraceHit {
 	var best = 1e30;
 	var hit_id = 0xffffffffu;
 	for (var i = 0u; i < probe_uniforms.trace.x; i++) {
 		let hit = ray_box(origin, direction, trace_instances[i].box_min.xyz, trace_instances[i].box_max.xyz);
 		if hit < best { best = hit; hit_id = i; }
 	}
-	return vec4f(best, bitcast<f32>(hit_id), 0.0, 0.0);
+	return TraceHit(best, hit_id);
 }
 
 fn hit_normal(position: vec3f, instance: TraceInstance) -> vec3f {
@@ -79,8 +91,12 @@ fn fibonacci_direction(sample: u32, count: u32, seed: u32) -> vec3f {
 }
 
 fn visible_to_light(position: vec3f, normal: vec3f) -> bool {
-	let origin = position + normal * 0.08;
-	return trace_scene(origin, normalize(probe_uniforms.light_direction.xyz)).x == 1e30;
+	let origin = position + normal * probe_uniforms.geometry_bias;
+	let direction = normalize(probe_uniforms.light_direction.xyz);
+	for (var i = 0u; i < probe_uniforms.trace.x; i++) {
+		if ray_box(origin, direction, trace_instances[i].box_min.xyz, trace_instances[i].box_max.xyz) < 1e30 { return false; }
+	}
+	return true;
 }
 
 @compute @workgroup_size(64)
@@ -94,7 +110,11 @@ fn probe_update(@builtin(global_invocation_id) gid: vec3u) {
 
 	for (var i = 0u; i < probe_uniforms.trace.x; i++) {
 		let box = trace_instances[i];
-		if all(position >= box.box_min.xyz - vec3f(0.08)) && all(position <= box.box_max.xyz + vec3f(0.08)) { valid = false; }
+		let bias = vec3f(probe_uniforms.geometry_bias);
+		if all(position >= box.box_min.xyz - bias) && all(position <= box.box_max.xyz + bias) {
+			valid = false;
+			break;
+		}
 	}
 	if !valid {
 		probes[id].metadata = vec4u(0u);
@@ -114,9 +134,9 @@ fn probe_update(@builtin(global_invocation_id) gid: vec3u) {
 	for (var sample = 0u; sample < ray_count; sample++) {
 		let direction = fibonacci_direction(sample, ray_count, id + probe_uniforms.frame_index * 1664525u);
 		let hit = trace_scene(position, direction);
-		if hit.x == 1e30 { continue; }
-		let hit_id = bitcast<u32>(hit.y);
-		let surface = position + direction * hit.x;
+		if hit.distance == 1e30 { continue; }
+		let hit_id = hit.instance_id;
+		let surface = position + direction * hit.distance;
 		let normal = hit_normal(surface, trace_instances[hit_id]);
 		let n_dot_l = max(dot(normal, light_dir), 0.0);
 		if n_dot_l == 0.0 || !visible_to_light(surface, normal) { continue; }
@@ -131,7 +151,7 @@ fn probe_update(@builtin(global_invocation_id) gid: vec3u) {
 	let old_count = probes[id].metadata.y;
 	let alpha = select(0.08, 1.0 / f32(old_count + 1u), old_count < 8u);
 	for (var band = 0u; band < 4u; band++) {
-		probes[id].direct[band] = mix(probes[id].direct[band], direct[band], alpha);
+		probes[id].direct[band] = direct[band];
 		probes[id].bounce[band] = mix(probes[id].bounce[band], bounce[band], alpha);
 	}
 	probes[id].metadata = vec4u(1u, old_count + 1u, probe_uniforms.frame_index, 0u);

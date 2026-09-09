@@ -35,7 +35,8 @@ var<storage, read> visible_instances: array<u32>;
 <ProbeUniforms> trace: vec4u;
 <ProbeUniforms> update_count: u32;
 <ProbeUniforms> frame_index: u32;
-<ProbeUniforms> padding: vec2u;
+<ProbeUniforms> geometry_bias: f32;
+<ProbeUniforms> padding: u32;
 
 <Probe> direct:   array<vec4f, 4>;
 <Probe> bounce:   array<vec4f, 4>;
@@ -87,6 +88,7 @@ fn vertex(input: VertexInput, @builtin(instance_index) instance_idx: u32) -> Ver
 fn fragment(input: VertexOutput) -> @location(0) vec4f {
 	let color = unpack_rgba8_srgb(input.tint);
 	let irradiance = sample_probe_irradiance(input.world_position, normalize(input.normal));
+	if probe_uniforms.trace.w >= 3u { return vec4f(irradiance, 1.0); }
 	return vec4f(color.rgb * irradiance * (1.0 / 3.14159265), color.a);
 }
 
@@ -118,8 +120,9 @@ fn sample_probe_irradiance(position: vec3f, normal: vec3f) -> vec3f {
 		}
 		if probe_uniforms.trace.w == 3u { irradiance = vec3f(1.0); }
 		if probe_uniforms.trace.w == 4u { irradiance = vec3f(min(log2(f32(probe.metadata.y) + 1.0) / 8.0, 1.0)); }
-		result += max(irradiance, vec3f(0.0)) * weight;
+		result += irradiance * weight;
 		weight_sum += weight;
 	}
-	return select(vec3f(0.0), result / weight_sum, weight_sum > 0.0);
+	if weight_sum <= 0.0 { return vec3f(0.0); }
+	return max(result / weight_sum, vec3f(0.0));
 }

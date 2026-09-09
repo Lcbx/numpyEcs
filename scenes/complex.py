@@ -31,12 +31,13 @@ CUBE_COUNT = 1000
 SPACE_SIZE = 180
 CUBE_MAX_SIDE = 7
 
-PROBE_ORIGIN = Vec3(-32.0, 0.5, 32.0)
-PROBE_DIMENSIONS = np.array([32, 8, 32], dtype=np.uint32)
 PROBE_SPACING = 1.0
+PROBES_HORIZONTAL = 64
+PROBE_DIMENSIONS = np.array([PROBES_HORIZONTAL, 8, PROBES_HORIZONTAL], dtype=np.uint32)
+PROBE_ORIGIN = Vec3(-PROBES_HORIZONTAL*PROBE_SPACING*0.5, 1.0, -PROBES_HORIZONTAL*PROBE_SPACING*0.5)
 PROBE_COUNT = int(np.prod(PROBE_DIMENSIONS))
-PROBES_PER_FRAME = (PROBE_COUNT + 8) // 16
-BOUNCE_RAYS = 16
+PROBES_PER_FRAME = (PROBE_COUNT + 15) // 16
+BOUNCE_RAYS = 4
 PROBE_GEOMETRY_BIAS = 0.08
 # 0 direct, 1 bounce, 2 combined, 3 validity, 4 update count
 PROBE_DEBUG_MODE = 0
@@ -168,7 +169,7 @@ model_mesh = Mesh(vertices, indices)
 model_entity = world.create()
 world.add(
 	model_entity,
-	Transform(Vec3(0.0, 1.0, 0.0), Vec3(10.0, 10.0, 10.0), Quaternion()),
+	Transform(Vec3(25.0, 1.0, 25.0), Vec3(10.0, 10.0, 10.0), Quaternion()),
 	MeshRef(0, pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])),
 )
 
@@ -237,6 +238,7 @@ def render_system(world, instances):
 	probe_update_ids.upload()
 	probe_uniforms.content["update_count"] = probe_ids.size
 	probe_uniforms.content["frame_index"] = probe_frame
+	probe_uniforms.content["light_direction"] = [*light_camera.direction(), 0.0]
 	probe_uniforms.upload()
 	with (probe_cmd := RenderContext.commands("probe_update")).compute_pass(label="probe_update") as cp:
 		cp.set_pipeline(probe_pipeline)
@@ -306,9 +308,9 @@ trace_instance_dtype = np.dtype([
 	("box_min", np.float32, 4),
 	("box_max", np.float32, 4),
 	("albedo", np.uint32),
+	("padding", np.uint32, 3), # WGSL TraceInstance has a 48-byte stride
 ])
 probe_storage = np.zeros(PROBE_COUNT, dtype=probe_dtype)
-probe_storage["metadata"][:, 0] = 1
 probe_buffer = GpuBuffer(probe_storage, BufferUsage.STORAGE | BufferUsage.COPY_DST, label="probes")
 probe_update_ids = GpuBuffer(np.zeros(PROBES_PER_FRAME, dtype=np.uint32), BufferUsage.STORAGE | BufferUsage.COPY_DST, label="probe_update_ids")
 trace_instances = np.zeros(all_renderables.size, dtype=trace_instance_dtype)
@@ -319,6 +321,7 @@ probe_uniforms.content["dimensions"] = [*PROBE_DIMENSIONS, PROBE_COUNT]
 probe_uniforms.content["light_direction"] = [*light_camera.direction(), 0.0]
 probe_uniforms.content["light_radiance"] = [4.0, 3.8, 3.5, 0.0]
 probe_uniforms.content["trace"] = [all_renderables.size, BOUNCE_RAYS, 0, PROBE_DEBUG_MODE]
+probe_uniforms.content["geometry_bias"] = PROBE_GEOMETRY_BIAS
 probe_update_bindings = probe_shader.bind_group(0,
 	probe_uniforms=probe_uniforms,
 	probes=probe_buffer,
@@ -330,18 +333,44 @@ probe_bindings = shader.bind_group(2,
 	probes=probe_buffer,
 )
 
+trace_batches = []
+for mesh_id in meshes:
+	rows = np.flatnonzero(mesh_refs[all_renderables].id == mesh_id)
+	trace_batches.append((mesh_id, rows, all_renderables[rows]))
+
+
+def compute_world_bounding_box(center, extents, positions, scales, rotations):
+	rotations = np.asarray(rotations, dtype=np.float32)
+	rotations = rotations / np.maximum(np.linalg.norm(rotations, axis=1, keepdims=True), 1e-8)
+	x, y, z, w = rotations.T
+	rotation = np.empty((len(rotations), 3, 3), dtype=np.float32)
+	rotation[:, 0, 0] = 1 - 2 * (y*y + z*z)
+	rotation[:, 0, 1] = 2 * (x*y - z*w)
+	rotation[:, 0, 2] = 2 * (x*z + y*w)
+	rotation[:, 1, 0] = 2 * (x*y + z*w)
+	rotation[:, 1, 1] = 1 - 2 * (x*x + z*z)
+	rotation[:, 1, 2] = 2 * (y*z - x*w)
+	rotation[:, 2, 0] = 2 * (x*z - y*w)
+	rotation[:, 2, 1] = 2 * (y*z + x*w)
+	rotation[:, 2, 2] = 1 - 2 * (x*x + y*y)
+	center = positions + np.einsum("nij,nj->ni", rotation, center * scales)
+	extents = np.einsum("nij,nj->ni", np.abs(rotation), extents * np.abs(scales))
+	return center - extents, center + extents
+
+
 def update_trace_scene():
-	for mesh_id, mesh in meshes.items():
-		entities = all_renderables[mesh_refs[all_renderables].id == mesh_id]
-		rows = np.nonzero(mesh_refs[all_renderables].id == mesh_id)[0]
+	for mesh_id, rows, entities in trace_batches:
 		center = mesh_metadata[mesh_id]["box_center"][:3]
 		extents = mesh_metadata[mesh_id]["box_extents"][:3]
 		positions = transforms[entities].position
 		scales = transforms[entities].scale
-		# Conservative world AABBs; rotations are intentionally ignored for tracing.
-		trace_instances["box_min"][rows, :3] = positions + center * scales - extents * scales
-		trace_instances["box_max"][rows, :3] = positions + center * scales + extents * scales
-		trace_instances[rows]["albedo"] = mesh_refs[entities].tint
+		# Conservative world AABBs enclosing the rotated mesh bounds.
+		box_min, box_max = compute_world_bounding_box(
+			center, extents, positions, scales, transforms[entities].rotation,
+		)
+		trace_instances["box_min"][rows, :3] = box_min
+		trace_instances["box_max"][rows, :3] = box_max
+		trace_instances["albedo"][rows] = mesh_refs[entities].tint
 	trace_instance_buffer.content = trace_instances
 	trace_instance_buffer.upload()
 
