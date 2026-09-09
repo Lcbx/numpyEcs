@@ -28,8 +28,9 @@ def higher_pow2(n: int | np.uint32 | np.uint64) -> int:
 
 
 class _RenderContext:
-	# simple window loop on top of glfw
-	# inspired by https://github.com/pygfx/rendercanvas/blob/main/rendercanvas/glfw.py
+	"""Application loop singleton on top of glfw & wgpu
+	inspired by https://github.com/pygfx/rendercanvas/blob/main/rendercanvas/glfw.py
+	"""
 	def __init__(self):
 		self.canvas: wgpu.GPUCanvasContext | None = None
 		self.adapter: wgpu.GPUAdapter
@@ -68,6 +69,8 @@ class _RenderContext:
 
 		:param highpower_gpu: use the high performance gpu if there are multiple
 		:param target_fps: -1 is limitless, 0 is vsync, other values is fps limit
+		:param required_gpu_features: wgpu features requested
+		:param custom_gc: run the gc during idle time
 		"""
 		glfw.init()
 		atexit.register(self.cleanup)
@@ -183,7 +186,7 @@ class _RenderContext:
 		glfw.terminate()
 
 	def window_loop(self) -> bool:
-		""" Present the previous image, update window/input state, and continue the loop. """
+		"""Present the previous image, update window/input state, run gc, and continue the loop. """
 		self.present()
 
 		wh = glfw.get_framebuffer_size(self.window)
@@ -251,7 +254,9 @@ class _RenderContext:
 
 RenderContext = _RenderContext()
 
-class GC_Manager:
+class GC_Manager(Callable):
+	""" decides whether to run gc, called every frame """
+
 	def __init__(self):
 		gc.disable()
 		self.time_budgets: tuple[float, float, float] = (
@@ -793,6 +798,8 @@ class GpuBufferPool:
 
 
 class Mesh:
+	""" a specific mesh's data, gpu bugger pools are stored at class level for similar vertex layouts """
+
 	vertex_buffers: dict[np.dtype, GpuBufferPool] = {}
 	index_buffers: dict[np.dtype, GpuBufferPool] = {}
 

@@ -31,6 +31,16 @@ CUBE_COUNT = 1000
 SPACE_SIZE = 180
 CUBE_MAX_SIDE = 7
 
+PROBE_ORIGIN = Vec3(-32.0, 0.5, 32.0)
+PROBE_DIMENSIONS = np.array([32, 8, 32], dtype=np.uint32)
+PROBE_SPACING = 1.0
+PROBE_COUNT = int(np.prod(PROBE_DIMENSIONS))
+PROBES_PER_FRAME = (PROBE_COUNT + 8) // 16
+BOUNCE_RAYS = 16
+PROBE_GEOMETRY_BIAS = 0.08
+# 0 direct, 1 bounce, 2 combined, 3 validity, 4 update count
+PROBE_DEBUG_MODE = 0
+
 ground = world.create()
 world.add(
 	ground,
@@ -114,6 +124,8 @@ main_pipeline = RenderPipeline(
 	fragment_entry="fragment",
 	label="main",
 )
+probe_shader = Shader(filepath="scenes/shaders/illumination_probes.shader", label="probes")
+probe_pipeline = ComputePipeline(probe_shader, entry="probe_update", label="probe_update")
 
 cull_shader = Shader(filepath='scenes/shaders/cull.shader', label="cull")
 cull_pipeline = ComputePipeline(cull_shader, entry="cull", label="cull")
@@ -122,6 +134,20 @@ def compute_bounding_box(vertices):
 	pos = vertices["position"]
 	box_min, box_max = np.min(pos, axis=0), np.max(pos, axis=0)
 	return (box_min + box_max) * 0.5, (box_max - box_min) * 0.5
+
+def probe_index(position):
+	coord = np.floor((np.asarray(position) - PROBE_ORIGIN) / PROBE_SPACING + 0.5).astype(np.int32)
+	if np.any(coord < 0) or np.any(coord >= PROBE_DIMENSIONS): return None
+	return int(coord[0] + PROBE_DIMENSIONS[0] * (coord[1] + PROBE_DIMENSIONS[1] * coord[2]))
+
+def probe_position(index):
+	x = index % PROBE_DIMENSIONS[0]
+	y = (index // PROBE_DIMENSIONS[0]) % PROBE_DIMENSIONS[1]
+	z = index // (PROBE_DIMENSIONS[0] * PROBE_DIMENSIONS[1])
+	return PROBE_ORIGIN + PROBE_SPACING * np.array([x, y, z], dtype=np.float32)
+
+def selected_probe_ids(first, count):
+	return (np.arange(count, dtype=np.uint32) + first) % PROBE_COUNT
 
 def extract_frustum_planes(vp):
 	vp = np.asarray(vp)
@@ -142,7 +168,7 @@ model_mesh = Mesh(vertices, indices)
 model_entity = world.create()
 world.add(
 	model_entity,
-	Transform(Vec3(15.0, 0.0, 15.0), Vec3(10.0, 10.0, 10.0), Quaternion()),
+	Transform(Vec3(0.0, 1.0, 0.0), Vec3(10.0, 10.0, 10.0), Quaternion()),
 	MeshRef(0, pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])),
 )
 
@@ -204,6 +230,18 @@ def render_system(world, instances):
 
 	instance_buffer.upload()
 	uniform_buffer.upload()
+	update_trace_scene()
+
+	probe_ids = selected_probe_ids(probe_cursor, PROBES_PER_FRAME)
+	probe_update_ids.content[:] = probe_ids
+	probe_update_ids.upload()
+	probe_uniforms.content["update_count"] = probe_ids.size
+	probe_uniforms.content["frame_index"] = probe_frame
+	probe_uniforms.upload()
+	with (probe_cmd := RenderContext.commands("probe_update")).compute_pass(label="probe_update") as cp:
+		cp.set_pipeline(probe_pipeline)
+		cp.set_bind_group(0, probe_update_bindings)
+		cp.dispatch((probe_ids.size + 63) // 64)
 
 	vp = camera.view() @ camera.projection(RenderContext.aspect)
 	frustum_buffer.content["planes"] = extract_frustum_planes(vp)
@@ -230,12 +268,14 @@ def render_system(world, instances):
 		rp.set_pipeline(main_pipeline)
 		rp.set_bind_group(0, uniform_bindings)
 		rp.set_bind_group(1, instance_bindings)
+		rp.set_bind_group(2, probe_bindings)
 		for mesh, offset, count, sl, entities, indirect_buf, cull_param_buf, cull_bg in draw_batches:
 			rp.set_vertex_buffer(0, mesh.vertex_buffer)
 			rp.set_index_buffer(mesh.index_buffer, format=mesh.index_format)
 			rp.draw_indexed_indirect(indirect_buf)
 
 	RenderContext.submit(
+		probe_cmd.finish(),
 		clear_cull_cmd.finish(),
 		cull_cmd.finish(),
 		main_cmd.finish(),
@@ -250,13 +290,60 @@ instances = np.empty(all_renderables.size,
 instance_buffer = GpuBuffer(instances, BufferUsage.VERTEX | BufferUsage.STORAGE | BufferUsage.COPY_DST, label='instances')
 visible_instances_buffer = GpuBuffer(np.zeros(all_renderables.size, dtype=np.uint32), BufferUsage.STORAGE | BufferUsage.COPY_DST, label='visible_instances')
 
-uniform_buffer = shader.UniformBuffer()
-
+uniform_buffer = shader.UniformBuffer("uniforms")
 uniform_bindings = shader.bind_group(0, uniforms=uniform_buffer)
 instance_bindings = shader.bind_group(1,
 	instances=instance_buffer,
 	visible_instances=visible_instances_buffer
 )
+
+probe_dtype = np.dtype([
+	("direct", np.float32, (4, 4)),
+	("bounce", np.float32, (4, 4)),
+	("metadata", np.uint32, 4), # valid, sample count, last update frame, padding
+])
+trace_instance_dtype = np.dtype([
+	("box_min", np.float32, 4),
+	("box_max", np.float32, 4),
+	("albedo", np.uint32),
+])
+probe_storage = np.zeros(PROBE_COUNT, dtype=probe_dtype)
+probe_storage["metadata"][:, 0] = 1
+probe_buffer = GpuBuffer(probe_storage, BufferUsage.STORAGE | BufferUsage.COPY_DST, label="probes")
+probe_update_ids = GpuBuffer(np.zeros(PROBES_PER_FRAME, dtype=np.uint32), BufferUsage.STORAGE | BufferUsage.COPY_DST, label="probe_update_ids")
+trace_instances = np.zeros(all_renderables.size, dtype=trace_instance_dtype)
+trace_instance_buffer = GpuBuffer(trace_instances, BufferUsage.STORAGE | BufferUsage.COPY_DST, label="trace_instances")
+probe_uniforms = probe_shader.UniformBuffer("probe_uniforms")
+probe_uniforms.content["origin"] = [*PROBE_ORIGIN, PROBE_SPACING]
+probe_uniforms.content["dimensions"] = [*PROBE_DIMENSIONS, PROBE_COUNT]
+probe_uniforms.content["light_direction"] = [*light_camera.direction(), 0.0]
+probe_uniforms.content["light_radiance"] = [4.0, 3.8, 3.5, 0.0]
+probe_uniforms.content["trace"] = [all_renderables.size, BOUNCE_RAYS, 0, PROBE_DEBUG_MODE]
+probe_update_bindings = probe_shader.bind_group(0,
+	probe_uniforms=probe_uniforms,
+	probes=probe_buffer,
+	probe_update_ids=probe_update_ids,
+ 	trace_instances=trace_instance_buffer,
+ )
+probe_bindings = shader.bind_group(2,
+	probe_uniforms=probe_uniforms,
+	probes=probe_buffer,
+)
+
+def update_trace_scene():
+	for mesh_id, mesh in meshes.items():
+		entities = all_renderables[mesh_refs[all_renderables].id == mesh_id]
+		rows = np.nonzero(mesh_refs[all_renderables].id == mesh_id)[0]
+		center = mesh_metadata[mesh_id]["box_center"][:3]
+		extents = mesh_metadata[mesh_id]["box_extents"][:3]
+		positions = transforms[entities].position
+		scales = transforms[entities].scale
+		# Conservative world AABBs; rotations are intentionally ignored for tracing.
+		trace_instances["box_min"][rows, :3] = positions + center * scales - extents * scales
+		trace_instances["box_max"][rows, :3] = positions + center * scales + extents * scales
+		trace_instances[rows]["albedo"] = mesh_refs[entities].tint
+	trace_instance_buffer.content = trace_instances
+	trace_instance_buffer.upload()
 
 
 offset = 0
@@ -313,6 +400,8 @@ RenderContext.event_handlers["mouse_scroll"].append(scroll_callback)
 fps_frames = 0
 start_t = get_time()
 fps_print_timestamp = start_t
+probe_cursor = 0
+probe_frame = 0
 
 while RenderContext.window_loop():
 	now = RenderContext.frame_start
@@ -327,3 +416,5 @@ while RenderContext.window_loop():
 	camera_system(camera, elapsed, camera_dist)
 	movement_system(world, RenderContext.frame_time)
 	render_system(world, instances)
+	probe_cursor = (probe_cursor + PROBES_PER_FRAME) % PROBE_COUNT
+	probe_frame += 1
