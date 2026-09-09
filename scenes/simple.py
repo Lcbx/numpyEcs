@@ -42,10 +42,10 @@ CUBE_MAX_SIDE = 7
 ground = world.create()
 world.add(
 	ground,
-	Position, Position(0, -0.51, 0),
-	Rotation, Rotation(*Quaternion()),
-	Scale, Scale(2 * SPACE_SIZE, 1, 2 * SPACE_SIZE),
-	Tint, Tint(pack_rgba8_srgb([0.5, 0.5, 0.5, 1.0])),
+	Position(0, -0.51, 0),
+	Rotation(*Quaternion()),
+	Scale(2 * SPACE_SIZE, 1, 2 * SPACE_SIZE),
+	Tint(pack_rgba8_srgb([0.5, 0.5, 0.5, 1.0])),
 )
 
 cube_entities = world.create(CUBE_COUNT)

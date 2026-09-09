@@ -34,12 +34,12 @@ CUBE_MAX_SIDE = 7
 ground = world.create()
 world.add(
 	ground,
-	Transform, Transform(
+	Transform(
 		Vec3(0, -0.51, 0),
 		Vec3(2 * SPACE_SIZE, 1, 2 * SPACE_SIZE),
 		Quaternion(),
 	),
-	MeshRef, MeshRef(1, pack_rgba8_srgb([0.5, 0.5, 0.5, 1.0])),
+	MeshRef(1, pack_rgba8_srgb([0.5, 0.5, 0.5, 1.0])),
 )
 
 cube_entities = world.create(CUBE_COUNT)
@@ -149,8 +149,8 @@ model_mesh = Mesh(vertices, indices)
 model_entity = world.create()
 world.add(
 	model_entity,
-	Transform, Transform(Vec3(15.0, 0.0, 15.0), Vec3(10.0, 10.0, 10.0), Quaternion()),
-	MeshRef, MeshRef(0, pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])),
+	Transform(Vec3(15.0, 0.0, 15.0), Vec3(10.0, 10.0, 10.0), Quaternion()),
+	MeshRef(0, pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])),
 )
 
 cube_mesh = make_cube_mesh()
