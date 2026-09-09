@@ -114,13 +114,6 @@ main_pipeline = RenderPipeline(
 	fragment_entry="fragment",
 	label="main",
 )
-shadow_pipeline = RenderPipeline(
-	shader,
-	vertex_entry="shadow_vertex",
-	depth_bias=2,
-	depth_bias_slope_scale=2.0,
-	label="shadow",
-)
 
 cull_shader = Shader(filepath='scenes/shaders/cull.shader', label="cull")
 cull_pipeline = ComputePipeline(cull_shader, entry="cull", label="cull")
@@ -229,18 +222,6 @@ def render_system(world, instances):
 			cp.set_bind_group(0, cull_bg)
 			cp.dispatch((count + 63) // 64)
 
-	with (shadow_cmd := RenderContext.commands("shadow")).render_pass(
-		depth=shadow_texture.depth_attachment(clear=1.0),
-		label="shadow",
-	) as rp:
-		rp.set_pipeline(shadow_pipeline)
-		rp.set_bind_group(0, uniform_bindings)
-		rp.set_bind_group(1, instance_bindings)
-		for mesh, offset, count, sl, entities, indirect_buf, cull_param_buf, cull_bg in draw_batches:
-			rp.set_vertex_buffer(0, mesh.vertex_buffer)
-			rp.set_index_buffer(mesh.index_buffer, format=mesh.index_format)
-			rp.draw_indexed_indirect(indirect_buf)
-
 	with (main_cmd := RenderContext.commands("main")).render_pass(
 		color=RenderContext.screen(clear=(0.02, 0.02, 0.03, 1.0)),
 		depth=RenderContext.depth_attachment(clear=1.0),
@@ -249,7 +230,6 @@ def render_system(world, instances):
 		rp.set_pipeline(main_pipeline)
 		rp.set_bind_group(0, uniform_bindings)
 		rp.set_bind_group(1, instance_bindings)
-		rp.set_bind_group(2, shadow_bindings)
 		for mesh, offset, count, sl, entities, indirect_buf, cull_param_buf, cull_bg in draw_batches:
 			rp.set_vertex_buffer(0, mesh.vertex_buffer)
 			rp.set_index_buffer(mesh.index_buffer, format=mesh.index_format)
@@ -258,7 +238,6 @@ def render_system(world, instances):
 	RenderContext.submit(
 		clear_cull_cmd.finish(),
 		cull_cmd.finish(),
-		shadow_cmd.finish(),
 		main_cmd.finish(),
 	)
 
@@ -273,19 +252,10 @@ visible_instances_buffer = GpuBuffer(np.zeros(all_renderables.size, dtype=np.uin
 
 uniform_buffer = shader.UniformBuffer()
 
-shadow_texture = create_depth_framebuffer(1024, 1024)
-shadow_view = shadow_texture.view()
-shadow_sampler = create_depth_sampler()
-
 uniform_bindings = shader.bind_group(0, uniforms=uniform_buffer)
 instance_bindings = shader.bind_group(1,
 	instances=instance_buffer,
 	visible_instances=visible_instances_buffer
-)
-shadow_bindings = shader.bind_group(
-	2,
-	shadow_map=shadow_view,
-	shadow_sampler=shadow_sampler,
 )
 
 
