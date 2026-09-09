@@ -853,6 +853,7 @@ class Texture:
 		format: str,
 		usage: wgpu.TextureUsage,
 		mip_level_count: int = 1,
+		dimension: str = "2d",
 		label: str | None = None,
 	):
 		if len(size) == 2:
@@ -863,6 +864,7 @@ class Texture:
 		self.handle = RenderContext.device.create_texture(
 			label=label or "",
 			size=size,
+			dimension=dimension,
 			format=format,
 			usage=usage,
 			mip_level_count=mip_level_count,

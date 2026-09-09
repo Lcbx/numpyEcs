@@ -4,7 +4,7 @@ from ECS import *
 
 from math import cos, sin
 import random as rd
-
+import fast_simplification
 
 @component
 class Transform:
@@ -31,16 +31,18 @@ CUBE_COUNT = 1000
 SPACE_SIZE = 180
 CUBE_MAX_SIDE = 7
 
-PROBE_SPACING = 1.0
-PROBES_HORIZONTAL = 64
+
+MAX_TRIANGLES = 100
+PROBE_SPACING = 0.5
+PROBES_HORIZONTAL = 200
 PROBE_DIMENSIONS = np.array([PROBES_HORIZONTAL, 8, PROBES_HORIZONTAL], dtype=np.uint32)
 PROBE_ORIGIN = Vec3(-PROBES_HORIZONTAL*PROBE_SPACING*0.5, 1.0, -PROBES_HORIZONTAL*PROBE_SPACING*0.5)
 PROBE_COUNT = int(np.prod(PROBE_DIMENSIONS))
-PROBES_PER_FRAME = (PROBE_COUNT + 15) // 16
+PROBES_PER_FRAME = (PROBE_COUNT + 15) // 10
 BOUNCE_RAYS = 4
 PROBE_GEOMETRY_BIAS = 0.08
 # 0 direct, 1 bounce, 2 combined, 3 validity, 4 update count
-PROBE_DEBUG_MODE = 0
+PROBE_DEBUG_MODE = 2
 
 ground = world.create()
 world.add(
@@ -127,6 +129,8 @@ main_pipeline = RenderPipeline(
 )
 probe_shader = Shader(filepath="scenes/shaders/illumination_probes.shader", label="probes")
 probe_pipeline = ComputePipeline(probe_shader, entry="probe_update", label="probe_update")
+probe_texture_shader = Shader(filepath="scenes/shaders/probe_textures.shader", label="probe_textures")
+probe_texture_pipeline = ComputePipeline(probe_texture_shader, entry="probe_export", label="probe_export")
 
 cull_shader = Shader(filepath='scenes/shaders/cull.shader', label="cull")
 cull_pipeline = ComputePipeline(cull_shader, entry="cull", label="cull")
@@ -166,12 +170,12 @@ vertices, indices = load_gltf_first_mesh_interleaved(
 )
 model_mesh = Mesh(vertices, indices)
 
-model_entity = world.create()
-world.add(
-	model_entity,
-	Transform(Vec3(25.0, 1.0, 25.0), Vec3(10.0, 10.0, 10.0), Quaternion()),
-	MeshRef(0, pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])),
-)
+#model_entity = world.create()
+#world.add(
+#	model_entity,
+#	Transform(Vec3(25.0, 1.0, 25.0), Vec3(10.0, 10.0, 10.0), Quaternion()),
+#	MeshRef(0, pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])),
+#)
 
 cube_mesh = make_cube_mesh()
 
@@ -217,9 +221,13 @@ def render_system(world, instances):
 	# keeping as-is for now
 	for mesh, offset, count, sl, entities, indirect_buf, cull_param_buf, cull_bg in draw_batches:
 		instances[sl]["iPosition"] = transforms[entities].position
-		#instances[sl]["iTint"][:, 0] = mesh_refs[entities].tint
-		#instances[sl]["iRotation"] = pack_quaternion(rotations[entities].vector())
-		#instances[sl]["iScale"] = pack_scale(scales[entities].vector())
+		instances[sl]["iTint"][:, 0] = mesh_refs[entities].tint
+		rotations = np.asarray(transforms[entities].rotation, dtype=np.float32)
+		lengths = np.linalg.norm(rotations, axis=1, keepdims=True)
+		rotations = rotations / np.maximum(lengths, 1e-8)
+		rotations[lengths[:, 0] < 1e-8] = [0.0, 0.0, 0.0, 1.0]
+		instances[sl]["iRotation"] = pack_quaternion(rotations)
+		instances[sl]["iScale"] = pack_scale(transforms[entities].scale)
 	
 	instance_buffer.content = instances
 	instance_buffer.resize(instances.size)
@@ -244,6 +252,12 @@ def render_system(world, instances):
 		cp.set_pipeline(probe_pipeline)
 		cp.set_bind_group(0, probe_update_bindings)
 		cp.dispatch((probe_ids.size + 63) // 64)
+
+	# Export all probes so mode changes and invalidated probes are reflected immediately.
+	with (probe_texture_cmd := RenderContext.commands("probe_export")).compute_pass(label="probe_export") as cp:
+		cp.set_pipeline(probe_texture_pipeline)
+		cp.set_bind_group(0, probe_texture_bindings)
+		cp.dispatch((PROBE_COUNT + 63) // 64)
 
 	vp = camera.view() @ camera.projection(RenderContext.aspect)
 	frustum_buffer.content["planes"] = extract_frustum_planes(vp)
@@ -278,6 +292,7 @@ def render_system(world, instances):
 
 	RenderContext.submit(
 		probe_cmd.finish(),
+		probe_texture_cmd.finish(),
 		clear_cull_cmd.finish(),
 		cull_cmd.finish(),
 		main_cmd.finish(),
@@ -305,11 +320,57 @@ probe_dtype = np.dtype([
 	("metadata", np.uint32, 4), # valid, sample count, last update frame, padding
 ])
 trace_instance_dtype = np.dtype([
-	("box_min", np.float32, 4),
-	("box_max", np.float32, 4),
-	("albedo", np.uint32),
-	("padding", np.uint32, 3), # WGSL TraceInstance has a 48-byte stride
+	("position_radius", np.float32, 4),
+	("rotation", np.float32, 4),
+	("inverse_scale", np.float32, 4),
+	("mesh", np.uint32, 4), # first triangle, triangle count, albedo, padding
 ])
+trace_triangle_dtype = np.dtype([
+	("position", np.float32, 4),
+	("edge1", np.float32, 4),
+	("edge2", np.float32, 4),
+])
+
+
+def build_trace_geometry(meshes, reductions={}):
+	triangles = []
+	metadata = {}
+	offset = 0
+	for mesh_id, mesh in meshes.items():
+		positions = np.asarray(mesh.vertices["position"], dtype=np.float32)
+		start, count = mesh.index_range
+		indices = mesh.index_buffer.content[start:start + count]
+		if count % 3: raise ValueError("Tracing requires triangle-list meshes")
+		if indices.size and np.max(indices) >= len(positions): raise ValueError("Mesh index out of bounds")
+		faces = indices.reshape(-1, 3)
+		if mesh_id in reductions:
+			for _ in range(10):
+				old_face_count = len(faces)
+				# Weld rendering seams before simplifying the position-only tracing mesh.
+				positions, remap = np.unique(positions, axis=0, return_inverse=True)
+				positions, faces = fast_simplification.simplify(positions, remap[faces], target_count=MAX_TRIANGLES, agg=10.0)
+				positions = np.asarray(positions, dtype=np.float32)
+				if not len(faces): raise ValueError("Simplification removed the entire tracing mesh")
+				if old_face_count == len(faces): 
+					print(f"Trace mesh {mesh_id}: settled at {len(faces)} triangles")
+					break
+				print(f"Trace mesh {mesh_id}: {old_face_count} -> {len(faces)} triangles")
+		vertices = positions[faces]
+		data = np.zeros(len(vertices), dtype=trace_triangle_dtype)
+		data["position"][:, :3] = vertices[:, 0]
+		data["edge1"][:, :3] = vertices[:, 1] - vertices[:, 0]
+		data["edge2"][:, :3] = vertices[:, 2] - vertices[:, 0]
+		# Origin-centered bound: no rotation-dependent CPU work.
+		radius = float(np.max(np.linalg.norm(positions, axis=1))) if len(positions) else 0.0
+		metadata[mesh_id] = (offset, len(data), radius)
+		triangles.append(data)
+		offset += len(data)
+	# Keep an empty scene's storage binding nonempty.
+	return np.concatenate(triangles) if offset else np.zeros(1, dtype=trace_triangle_dtype), metadata
+
+
+trace_triangles, trace_metadata = build_trace_geometry(meshes, {0,})
+trace_triangle_buffer = GpuBuffer(trace_triangles, BufferUsage.STORAGE, label="trace_triangles")
 probe_storage = np.zeros(PROBE_COUNT, dtype=probe_dtype)
 probe_buffer = GpuBuffer(probe_storage, BufferUsage.STORAGE | BufferUsage.COPY_DST, label="probes")
 probe_update_ids = GpuBuffer(np.zeros(PROBES_PER_FRAME, dtype=np.uint32), BufferUsage.STORAGE | BufferUsage.COPY_DST, label="probe_update_ids")
@@ -326,11 +387,28 @@ probe_update_bindings = probe_shader.bind_group(0,
 	probe_uniforms=probe_uniforms,
 	probes=probe_buffer,
 	probe_update_ids=probe_update_ids,
- 	trace_instances=trace_instance_buffer,
- )
-probe_bindings = shader.bind_group(2,
+	trace_instances=trace_instance_buffer,
+	trace_triangles=trace_triangle_buffer,
+)
+# Four coefficient volumes: RGB = selected irradiance SH, alpha = validity.
+# Accumulation stays in the float32 buffer; the render volumes use float16.
+probe_textures = [Texture(
+	tuple(int(value) for value in PROBE_DIMENSIONS),
+	format="rgba16float",
+	usage=wgpu.TextureUsage.STORAGE_BINDING | wgpu.TextureUsage.TEXTURE_BINDING,
+	dimension="3d",
+	label=f"probe_sh{band}",
+) for band in range(4)]
+probe_sampler = Sampler(min_filter="linear", mag_filter="linear", address_mode_u="clamp-to-edge", address_mode_v="clamp-to-edge", address_mode_w="clamp-to-edge")
+probe_texture_bindings = probe_texture_shader.bind_group(0,
 	probe_uniforms=probe_uniforms,
 	probes=probe_buffer,
+	**{f"probe_sh{band}": texture for band, texture in enumerate(probe_textures)},
+)
+probe_bindings = shader.bind_group(2,
+	probe_uniforms=probe_uniforms,
+	probe_sampler=probe_sampler,
+	**{f"probe_sh{band}": texture for band, texture in enumerate(probe_textures)},
 )
 
 trace_batches = []
@@ -339,38 +417,25 @@ for mesh_id in meshes:
 	trace_batches.append((mesh_id, rows, all_renderables[rows]))
 
 
-def compute_world_bounding_box(center, extents, positions, scales, rotations):
-	rotations = np.asarray(rotations, dtype=np.float32)
-	rotations = rotations / np.maximum(np.linalg.norm(rotations, axis=1, keepdims=True), 1e-8)
-	x, y, z, w = rotations.T
-	rotation = np.empty((len(rotations), 3, 3), dtype=np.float32)
-	rotation[:, 0, 0] = 1 - 2 * (y*y + z*z)
-	rotation[:, 0, 1] = 2 * (x*y - z*w)
-	rotation[:, 0, 2] = 2 * (x*z + y*w)
-	rotation[:, 1, 0] = 2 * (x*y + z*w)
-	rotation[:, 1, 1] = 1 - 2 * (x*x + z*z)
-	rotation[:, 1, 2] = 2 * (y*z - x*w)
-	rotation[:, 2, 0] = 2 * (x*z - y*w)
-	rotation[:, 2, 1] = 2 * (y*z + x*w)
-	rotation[:, 2, 2] = 1 - 2 * (x*x + y*y)
-	center = positions + np.einsum("nij,nj->ni", rotation, center * scales)
-	extents = np.einsum("nij,nj->ni", np.abs(rotation), extents * np.abs(scales))
-	return center - extents, center + extents
-
-
 def update_trace_scene():
 	for mesh_id, rows, entities in trace_batches:
-		center = mesh_metadata[mesh_id]["box_center"][:3]
-		extents = mesh_metadata[mesh_id]["box_extents"][:3]
+		first, count, radius = trace_metadata[mesh_id]
 		positions = transforms[entities].position
 		scales = transforms[entities].scale
-		# Conservative world AABBs enclosing the rotated mesh bounds.
-		box_min, box_max = compute_world_bounding_box(
-			center, extents, positions, scales, transforms[entities].rotation,
-		)
-		trace_instances["box_min"][rows, :3] = box_min
-		trace_instances["box_max"][rows, :3] = box_max
-		trace_instances["albedo"][rows] = mesh_refs[entities].tint
+		rotations = np.asarray(transforms[entities].rotation, dtype=np.float32)
+		lengths = np.linalg.norm(rotations, axis=1, keepdims=True)
+		rotations = rotations / np.maximum(lengths, 1e-8)
+		rotations[lengths[:, 0] < 1e-8] = [0.0, 0.0, 0.0, 1.0]
+		valid = np.all(np.abs(scales) >= 1e-8, axis=1)
+		trace_instances["position_radius"][rows, :3] = positions
+		trace_instances["position_radius"][rows, 3] = radius * np.max(np.abs(scales), axis=1) * 1.00001
+		trace_instances["rotation"][rows] = rotations
+		inverse_scale = np.zeros_like(scales)
+		np.divide(1.0, scales, out=inverse_scale, where=np.abs(scales) >= 1e-8)
+		trace_instances["inverse_scale"][rows, :3] = inverse_scale
+		trace_instances["mesh"][rows, 0] = first
+		trace_instances["mesh"][rows, 1] = np.where(valid, count, 0)
+		trace_instances["mesh"][rows, 2] = mesh_refs[entities].tint
 	trace_instance_buffer.content = trace_instances
 	trace_instance_buffer.upload()
 

@@ -38,15 +38,15 @@ var<storage, read> visible_instances: array<u32>;
 <ProbeUniforms> geometry_bias: f32;
 <ProbeUniforms> padding: u32;
 
-<Probe> direct:   array<vec4f, 4>;
-<Probe> bounce:   array<vec4f, 4>;
-<Probe> metadata: vec4u;
 
 @group(2) @binding(0)
 var<uniform> probe_uniforms: ProbeUniforms;
 
-@group(2) @binding(1)
-var<storage, read> probes: array<Probe>;
+@group(2) @binding(1) var probe_sampler: sampler;
+@group(2) @binding(2) var probe_sh0: texture_3d<f32>;
+@group(2) @binding(3) var probe_sh1: texture_3d<f32>;
+@group(2) @binding(4) var probe_sh2: texture_3d<f32>;
+@group(2) @binding(5) var probe_sh3: texture_3d<f32>;
 
 const SH0 = 0.28209479;
 const SH1 = 0.48860251;
@@ -93,36 +93,38 @@ fn fragment(input: VertexOutput) -> @location(0) vec4f {
 }
 
 
-fn probe_linear_index(coord: vec3u) -> u32 {
-	let dims = probe_uniforms.dimensions.xyz;
-	return coord.x + dims.x * (coord.y + dims.y * coord.z);
-}
-
+// Cubic B-spline pairs reduce 64 taps to eight hardware trilinear samples.
 fn sample_probe_irradiance(position: vec3f, normal: vec3f) -> vec3f {
-	let grid = clamp((position - probe_uniforms.origin.xyz) / probe_uniforms.origin.w, vec3f(0.0), vec3f(probe_uniforms.dimensions.xyz) - 1.0001);
-	let base = vec3u(floor(grid));
-	let fraction = fract(grid);
-	let basis = sh_basis(normal);
-	var result = vec3f(0.0);
-	var weight_sum = 0.0;
+	let dims = vec3f(probe_uniforms.dimensions.xyz);
+	let grid = clamp((position - probe_uniforms.origin.xyz) / probe_uniforms.origin.w, vec3f(0.0), dims - 1.0);
+	let base = floor(grid);
+	let f = fract(grid);
+	let f2 = f * f;
+	let f3 = f2 * f;
+	let w0 = (1.0 - 3.0*f + 3.0*f2 - f3) / 6.0;
+	let w1 = (4.0 - 6.0*f2 + 3.0*f3) / 6.0;
+	let w2 = (1.0 + 3.0*f + 3.0*f2 - 3.0*f3) / 6.0;
+	let w3 = f3 / 6.0;
+	let g0 = w0 + w1;
+	let g1 = w2 + w3;
+	let uv0 = (base - 0.5 + w1 / g0) / dims;
+	let uv1 = (base + 1.5 + w3 / g1) / dims;
+	var c0 = vec4f(0.0);
+	var c1 = vec4f(0.0);
+	var c2 = vec4f(0.0);
+	var c3 = vec4f(0.0);
 	for (var corner = 0u; corner < 8u; corner++) {
-		let offset = vec3u(corner & 1u, (corner >> 1u) & 1u, (corner >> 2u) & 1u);
-		let coord = min(base + offset, probe_uniforms.dimensions.xyz - 1u);
-		let probe = probes[probe_linear_index(coord)];
-		if probe.metadata.x == 0u { continue; }
-		let selector = vec3f(offset);
-		let weights = select(vec3f(1.0) - fraction, fraction, selector == vec3f(1.0));
+		let upper = vec3u(corner & 1u, (corner >> 1u) & 1u, (corner >> 2u) & 1u) != vec3u(0u);
+		let uv = select(uv0, uv1, upper);
+		let weights = select(g0, g1, upper);
 		let weight = weights.x * weights.y * weights.z;
-		var irradiance = vec3f(0.0);
-		for (var band = 0u; band < 4u; band++) {
-			if probe_uniforms.trace.w != 1u { irradiance += probe.direct[band].rgb * basis[band]; }
-			if probe_uniforms.trace.w != 0u { irradiance += probe.bounce[band].rgb * basis[band]; }
-		}
-		if probe_uniforms.trace.w == 3u { irradiance = vec3f(1.0); }
-		if probe_uniforms.trace.w == 4u { irradiance = vec3f(min(log2(f32(probe.metadata.y) + 1.0) / 8.0, 1.0)); }
-		result += irradiance * weight;
-		weight_sum += weight;
+		c0 += textureSampleLevel(probe_sh0, probe_sampler, uv, 0.0) * weight;
+		c1 += textureSampleLevel(probe_sh1, probe_sampler, uv, 0.0) * weight;
+		c2 += textureSampleLevel(probe_sh2, probe_sampler, uv, 0.0) * weight;
+		c3 += textureSampleLevel(probe_sh3, probe_sampler, uv, 0.0) * weight;
 	}
-	if weight_sum <= 0.0 { return vec3f(0.0); }
-	return max(result / weight_sum, vec3f(0.0));
+	if c0.a <= 0.0 { return vec3f(0.0); }
+	let basis = sh_basis(normal);
+	let result = c0.rgb * basis.x + c1.rgb * basis.y + c2.rgb * basis.z + c3.rgb * basis.w;
+	return max(result / c0.a, vec3f(0.0));
 }
