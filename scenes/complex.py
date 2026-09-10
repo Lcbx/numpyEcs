@@ -104,14 +104,24 @@ light_camera = Camera(
 	perspective=False,
 )
 
-RenderContext.init_window(WINDOW_W, WINDOW_H, TITLE, target_fps=-1, required_gpu_features=["indirect-first-instance"])
+RenderContext.init_window(WINDOW_W, WINDOW_H, TITLE,
+	target_fps=-1, # fast as possible
+	required_gpu_features=["indirect-first-instance"]
+)
 # RenderContext.capture_mouse()
 
 shader = Shader(filepath='scenes/shaders/complex.shader', label="complex")
+prepass_pipeline = RenderPipeline(
+	shader,
+	vertex_entry="vertex",
+	fragment_entry=None,
+	label="prepass",
+)
 main_pipeline = RenderPipeline(
 	shader,
 	vertex_entry="vertex",
 	fragment_entry="fragment",
+	depth_test="less-equal",
 	label="main",
 )
 
@@ -208,8 +218,11 @@ def render_system(world, instances):
 	vp = camera.view() @ camera.projection(RenderContext.aspect)
 	frustum_buffer.content["planes"] = extract_frustum_planes(vp)
 	frustum_buffer.upload()
+
+	main_cmd = RenderContext.commands("main")
 	clear_cull_cmd = RenderContext.commands("clear_cull")
-	with (cull_cmd := RenderContext.commands("cull")).compute_pass(label="cull") as cp:
+
+	with main_cmd.compute_pass(label="cull") as cp:
 		cp.set_pipeline(cull_pipeline)
 		for mesh, offset, count, sl, entities, indirect_buf, cull_param_buf, cull_bg in draw_batches:
 			clear_cull_cmd.clear_buffer(indirect_buf, offset=4, size=4)
@@ -221,10 +234,23 @@ def render_system(world, instances):
 			#))
 			cp.set_bind_group(0, cull_bg)
 			cp.dispatch((count + 63) // 64)
-
-	with (main_cmd := RenderContext.commands("main")).render_pass(
-		color=RenderContext.screen(clear=(0.02, 0.02, 0.03, 1.0)),
+	
+	with main_cmd.render_pass(
+		color=(),
 		depth=RenderContext.depth_attachment(clear=1.0),
+		label="prepass",
+	) as rp:
+		rp.set_pipeline(prepass_pipeline)
+		rp.set_bind_group(0, uniform_bindings)
+		rp.set_bind_group(1, instance_bindings)
+		for mesh, offset, count, sl, entities, indirect_buf, cull_param_buf, cull_bg in draw_batches:
+			rp.set_vertex_buffer(0, mesh.vertex_buffer)
+			rp.set_index_buffer(mesh.index_buffer, format=mesh.index_format)
+			rp.draw_indexed_indirect(indirect_buf)
+
+	with main_cmd.render_pass(
+		color=RenderContext.screen(clear=(0.02, 0.02, 0.03, 1.0)),
+		depth=RenderContext.depth_attachment(clear=None),
 		label="main",
 	) as rp:
 		rp.set_pipeline(main_pipeline)
@@ -237,7 +263,6 @@ def render_system(world, instances):
 
 	RenderContext.submit(
 		clear_cull_cmd.finish(),
-		cull_cmd.finish(),
 		main_cmd.finish(),
 	)
 

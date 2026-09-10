@@ -271,10 +271,9 @@ class GC_Manager:
 		
 		if RenderContext.target_frame_time:
 			budget = RenderContext.target_frame_time - (get_time() - RenderContext.frame_start)
-			max_gen = -1
-			for i in range(2, -1, -1):
-				if budget >= self.time_budgets[i]:
-					max_gen = i
+			for gen in range(max_gen, -1, -1):
+				if budget >= self.time_budgets[gen]:
+					max_gen = gen
 					break
 
 		for gen in range(max_gen, -1, -1):
@@ -1540,7 +1539,7 @@ class Shader:
 	) -> str | None:
 		entries = [
 			entry.name for entry in self.info.entry_points.values()
-			if entry.stage == stage and (entry.name == name or name is None)
+			if entry.stage == stage and entry.name == name
 		]
 
 		if not entries:
@@ -1847,6 +1846,8 @@ class RenderPipeline:
 			)
 
 		fragment = None
+
+		#print(render_pass.handle.label, self.vertex_entry, self.fragment_entry)
 
 		if render_pass.color_formats:
 			if self.fragment_entry is None:
