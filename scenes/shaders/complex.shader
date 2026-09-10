@@ -25,12 +25,14 @@ var<storage, read> visible_instances: array<u32>;
 <VertexOutput> @builtin(position) position: vec4f;
 <VertexOutput> normal: vec3f;
 <VertexOutput> @interpolate(flat) tint: u32;
+<VertexOutput> depth: f32;
 
 
 #include "utils.shaderlib"
-#from "utils.shaderlib" import instance_transform_unpacking, unpack_srgb_color
+#from "utils.shaderlib" import instance_transform_unpacking, unpack_srgb_color, hsv_color
 {{ instance_transform_unpacking(InstanceType="MeshInstance") }}
 {{ unpack_srgb_color() }}
+{{ hsv_color() }}
 
 @vertex
 fn vertex(input: VertexInput, @builtin(instance_index) instance_idx: u32) -> VertexOutput {
@@ -52,6 +54,7 @@ fn vertex(input: VertexInput, @builtin(instance_index) instance_idx: u32) -> Ver
 	output.position = uniforms.proj * view_pos;
 	output.normal = normal_ws;
 	output.tint = inst.iTint;
+	output.depth = -view_pos.z;
 	return output;
 }
 @fragment
@@ -59,5 +62,7 @@ fn fragment(input: VertexOutput) -> @location(0) vec4f {
 	let color = unpack_rgba8_srgb(input.tint);
 	let light = max(dot(input.normal, uniforms.light_dir.xyz), 0.0);
 	let lighting = mix(0.35, 1.0, light);
-	return vec4f(color.rgb * lighting, color.a);
+	let distance_factor = pow(smoothstep(10.0, 500.0, input.depth), 0.4);
+	let saturation = mix(1.0, 0.1, distance_factor);
+	return vec4f(fastSaturation(color.rgb * lighting, saturation), color.a);
 }

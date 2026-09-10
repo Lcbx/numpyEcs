@@ -22,12 +22,9 @@ fn world_position(
 }
 
 #macro instance_transform_unpacking(InstanceType)
-
-struct InstanceTransform {
-	rotation:  vec4f,
-	scale:     vec3f,
-	world_pos: vec3f,
-};
+<InstanceTransform> rotation:  vec4f;
+<InstanceTransform> scale:	 vec3f;
+<InstanceTransform> world_pos: vec3f;
 
 fn unpack_instance_transform(vertex_position: vec3f, inst: {{ InstanceType }}) -> InstanceTransform {
 	let rotation = unpack_rotation(inst.iRotation);
@@ -59,5 +56,27 @@ fn unpack_rgba8_srgb(c: u32) -> vec4f {
 		srgb_to_linear_channel(rgba.b),
 		rgba.a,
 	);
+}
+#endmacro
+
+#macro hsv_color()
+fn rgb2hsv(c: vec3f) -> vec3f {
+	let K = vec4f(0.0, -0.33333333, 0.6666666, -1.0);
+	let p = mix(vec4f(c.bg, K.wz), vec4f(c.gb, K.xy), step(c.b, c.g));
+	let q = mix(vec4f(p.xyw, c.r), vec4f(c.r, p.yzx), step(p.x, c.r));
+
+	let d = q.x - min(q.w, q.y);
+	let e = 1.0e-10;
+	return vec3f(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+fn hsv2rgb(c: vec3f) -> vec3f {
+	let K = vec4f(1.0, 0.6666666, 0.33333333, 3.0);
+	let p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+	return c.z * mix(K.xxx, clamp(p - K.xxx, vec3f(0.0), vec3f(1.0)), c.y);
+}
+
+fn fastSaturation(c: vec3f, saturation: f32) -> vec3f {
+	return mix(vec3f(dot(c, vec3f(0.2126, 0.7152, 0.0722))), c, saturation);
 }
 #endmacro

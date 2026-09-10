@@ -27,7 +27,7 @@ transforms, velocities, mesh_refs = world.register(
 	Transform, Velocity, MeshRef
 )
 
-CUBE_COUNT = 1000
+CUBE_COUNT = 300
 SPACE_SIZE = 180
 CUBE_MAX_SIDE = 7
 
@@ -69,7 +69,7 @@ cube_scales = np.column_stack((
 cube_meshrefs = np.column_stack((
 	np.full(cube_count, 1, dtype=np.uint32),
 	np.asarray([
-		pack_rgba8_srgb([rd.random(), rd.random(), rd.random(), 1.0])
+		pack_hsva8_srgb([rd.random(), 1.0, 1.0, 1.0])
 		for _ in range(cube_count)
 	], dtype=np.uint32)
 ))
@@ -153,7 +153,7 @@ model_entity = world.create()
 world.add(
 	model_entity,
 	Transform(Vec3(15.0, 0.0, 15.0), Vec3(10.0, 10.0, 10.0), Quaternion()),
-	MeshRef(0, pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])),
+	MeshRef(0, pack_hsva8_srgb([0.3, 1.0, 1.0, 1.0])),
 )
 
 cube_mesh = make_cube_mesh()

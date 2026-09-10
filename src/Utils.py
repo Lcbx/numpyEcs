@@ -409,6 +409,16 @@ def pack_rgba8_srgb(rgba):
 	rgba8 = np.rint(rgba * 255).astype(np.uint32)
 	return np.uint32(np.sum(rgba8 << _RGBA_SHIFT))
 
+def pack_hsva8_srgb(hsva):
+	h, s, v, a = np.moveaxis(hsva, -1, 0)
+	k = (h[..., None] * 6 + np.array([0, 4, 2])) % 6
+	rgb = np.clip(np.minimum(k, 4 - k), 0, 1)
+	rgb = v[..., None] * (1 - s[..., None] * rgb)
+	rgba = np.concatenate((rgb, a[..., None]), axis=-1)
+	rgba8 = np.rint(np.clip(rgba, 0, 1) * 255).astype(np.uint32)
+	return np.bitwise_or.reduce(rgba8 << _RGBA_SHIFT, axis=-1)
+
+
 """
 import timeit
 import math
