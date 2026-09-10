@@ -226,12 +226,11 @@ def render_system(world, instances):
 		cp.set_pipeline(cull_pipeline)
 		for mesh, offset, count, sl, entities, indirect_buf, cull_param_buf, cull_bg in draw_batches:
 			clear_cull_cmd.clear_buffer(indirect_buf, offset=4, size=4)
-			#index_start, _ = mesh.index_range
-			#vertex_start, _ = mesh.vertex_range
+			# equivalent to :
 			#indirect_buf.write(np.array(
-			#	[mesh.index_count, 0, index_start, vertex_start, offset],
+			#	[mesh.index_count, instance_count := 0, mesh.index_range[0], mesh.vertex_range[0], offset],
 			#	dtype=np.uint32,
-			#))
+			#)) 
 			cp.set_bind_group(0, cull_bg)
 			cp.dispatch((count + 63) // 64)
 	
