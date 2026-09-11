@@ -363,7 +363,9 @@ class RenderPass:
 
 		self._variant = None
 		self._variant_dirty = True
-		self._dirty_bind_groups: set[int] = set()
+		self._bound_bind_groups: dict[int, tuple] = {}
+		self._bound_vertex_buffers: dict[int, tuple] = {}
+		self._bound_index_buffer: tuple | None = None
 
 	@property
 	def color_formats(self) -> tuple[str, ...]:
@@ -378,6 +380,10 @@ class RenderPass:
 			raise RuntimeError("RenderPass is already active")
 
 		self._variant = None
+		self._variant_dirty = True
+		self._bound_bind_groups.clear()
+		self._bound_vertex_buffers.clear()
+		self._bound_index_buffer = None
 		self.vertex_buffers.clear()
 
 		self.handle = self.commands.handle.begin_render_pass(
@@ -404,7 +410,6 @@ class RenderPass:
 			return
 
 		self.bind_groups[index] = bindings
-		self._dirty_bind_groups.add(index)
 
 	def set_vertex_buffer(
 		self,
@@ -419,7 +424,11 @@ class RenderPass:
 		if self.vertex_buffers.get(slot) != layout:
 			self.vertex_buffers[slot] = layout
 			self._variant_dirty = True
-		self._require_handle().set_vertex_buffer(slot, buffer.handle, offset, size)
+		handle = self._require_handle()
+		key = (buffer.handle, offset, size)
+		if self._bound_vertex_buffers.get(slot) != key:
+			handle.set_vertex_buffer(slot, buffer.handle, offset, size)
+			self._bound_vertex_buffers[slot] = key
 
 	def set_index_buffer(
 		self,
@@ -429,7 +438,11 @@ class RenderPass:
 		offset: int = 0,
 		size: int | None = None,
 	) -> None:
-		self._require_handle().set_index_buffer(buffer.handle, format, offset, size)
+		handle = self._require_handle()
+		key = (buffer.handle, format, offset, size)
+		if self._bound_index_buffer != key:
+			handle.set_index_buffer(buffer.handle, format, offset, size)
+			self._bound_index_buffer = key
 
 	def draw(
 		self,
@@ -481,9 +494,11 @@ class RenderPass:
 		instance_count: int | None = None,
 		instance_offset: int = 0,
 	) -> None:
-		if self.vertex_buffers:
-			self.vertex_buffers.clear()
-			self._variant_dirty = True
+		slot_count = 2 if instances is not None else 1
+		for slot in tuple(self.vertex_buffers):
+			if slot >= slot_count:
+				del self.vertex_buffers[slot]
+				self._variant_dirty = True
 
 		vertex_start, vertex_count = mesh.vertex_range_bytes
 		self.set_vertex_buffer(
@@ -530,18 +545,18 @@ class RenderPass:
 			if variant is not self._variant:
 				self.handle.set_pipeline(variant.handle)
 				self._variant = variant
-				self._dirty_bind_groups.update(self.bind_groups)
+				self._bound_bind_groups.clear()
 
 			self._variant_dirty = False
 
-		for index in self._dirty_bind_groups:
-			bindings = self.bind_groups[index]
+		# A retained BindGroup may refer to a resized buffer or replaced resource.
+		for index, bindings in self.bind_groups.items():
+			key = bindings.cache_key() if isinstance(bindings, BindGroup) else (bindings,)
+			if self._bound_bind_groups.get(index) == key: continue
 			if isinstance(bindings, BindGroup):
 				bindings = self._variant.bind_group(bindings)
- 
 			self.handle.set_bind_group(index, bindings)
-
-		self._dirty_bind_groups.clear()
+			self._bound_bind_groups[index] = key
 
 	def _require_handle(self) -> wgpu.GPURenderPassEncoder:
 		if self.handle is None: raise RuntimeError("RenderPass is not active")
@@ -576,7 +591,8 @@ class ComputePass:
 			raise RuntimeError("Set the ComputePipeline before its bind groups")
 		if isinstance(bindings, BindGroup) and bindings.group != index:
 			raise ValueError( f"BindGroup belongs to group {bindings.group}, not {index}" )
-		bindings = self.pipeline._variant.bind_group(bindings)
+		if isinstance(bindings, BindGroup):
+			bindings = self.pipeline._variant.bind_group(bindings)
 		self._require_handle().set_bind_group(index, bindings)
 
 	def dispatch(self, x: int, y: int = 1, z: int = 1) -> None:
@@ -722,7 +738,7 @@ class GpuBuffer:
 
 	@property
 	def resource_key(self):
-		return (id(self), self.generation)
+		return (self.handle, self.content.nbytes)
 	
 
 	def resize(self, count: int) -> bool:
@@ -860,6 +876,7 @@ class Texture:
 		self.size = size
 		self.format = format
 		self.usage = usage
+		self._view = None
 		self.handle = RenderContext.device.create_texture(
 			label=label or "",
 			size=size,
@@ -871,10 +888,14 @@ class Texture:
 
 	@property
 	def binding(self):
-		return self.handle.create_view()
+		return self.view().handle
 
 	def view(self, **kwargs) -> TextureView:
-		return TextureView(self, self.handle.create_view(**kwargs))
+		if kwargs:
+			return TextureView(self, self.handle.create_view(**kwargs))
+		if self._view is None:
+			self._view = TextureView(self, self.handle.create_view())
+		return self._view
 
 	def color_attachment(
 		self,
@@ -882,7 +903,7 @@ class Texture:
 		clear: Color | None = None,
 		store: bool = True,
 	) -> ColorAttachment:
-		return ColorAttachment(self.handle.create_view(), self.format, clear, store)
+		return ColorAttachment(self.binding, self.format, clear, store)
 
 	def depth_attachment(
 		self,
@@ -891,7 +912,7 @@ class Texture:
 		store: bool = True,
 		read_only: bool = False,
 	) -> DepthAttachment:
-		return DepthAttachment(self.handle.create_view(), self.format, clear, store, read_only)
+		return DepthAttachment(self.binding, self.format, clear, store, read_only)
 
 
 @dataclass(frozen=True)
@@ -1648,7 +1669,7 @@ class BindGroup:
 					self.shader.info.bindings[name].binding,
 					self._resource_key(resource),
 				)
-				for name, resource in self.resources.items()
+				for name, resource in sorted(self.resources.items(), key=lambda item: self.shader.info.bindings[item[0]].binding)
 			),
 		)
 
@@ -1661,10 +1682,14 @@ class BindGroup:
 			for name, resource in self.resources.items()
 		]
 
-	def _resource_key(self, resource: Any) -> tuple:
-		if key := getattr(resource, "resource_key", None):
-			return key
-		return (id(resource),)
+	def _resource_key(self, resource: Any) -> Any:
+		key = getattr(resource, "resource_key", None)
+		if key is not None: return key
+		resource = self._resource(resource)
+		if isinstance(resource, dict):
+			return tuple((name, self._resource_key(value)) for name, value in sorted(resource.items()))
+		# Retain the GPU object itself: Python ids may be reused after collection.
+		return resource
 
 	def _resource(self, resource: Any) -> Any:
 		if bind := getattr(resource, "binding", None):
@@ -1708,6 +1733,8 @@ class RenderPipeline:
 
 	A concrete GPURenderPipeline is cached for each combination of inferred vertex
 	layouts and render-target formats. The user never has to specify those layouts.
+	Shader and pipeline settings are construction-time values; create a new
+	RenderPipeline to change them. Do not mutate blend settings after construction.
 	"""
 
 	def __init__(
@@ -1766,7 +1793,7 @@ class RenderPipeline:
 	) -> _PipelineVariant:
 		key = (
 			tuple(
-				(repr(np.dtype(dtype).descr), step_mode)
+				(np.dtype(dtype), step_mode)
 				for dtype, step_mode in buffers
 			),
 			render_pass.color_formats,

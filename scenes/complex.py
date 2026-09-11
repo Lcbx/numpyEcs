@@ -137,19 +137,11 @@ main_pipeline = RenderPipeline(
 	label="main",
 )
 
-cull_shader = Shader(filepath='scenes/shaders/cull.shader', label="cull")
-reset_draw_pipeline = ComputePipeline(cull_shader, entry="reset_draw_counts", label="reset_draw_counts")
-cull_frustum_pipeline = ComputePipeline(cull_shader, entry="cull_frustum", label="cull_frustum")
-cull_hiz_pipeline = ComputePipeline(cull_shader, entry="cull_hiz", label="cull_hiz")
-
-hzb_shader = Shader(filepath='scenes/shaders/hzb.shader', label="hzb")
-hzb_depth_pipeline = ComputePipeline(hzb_shader, entry="reduce_depth", label="hzb_depth")
-hzb_pipeline = ComputePipeline(hzb_shader, entry="main", label="hzb")
-
 # --- Draw registries & HZB ---
-render_data = create_draw_data(cull_shader)
-register_shader(render_data, 0, RenderShader(ShaderPass(prepass_pipeline), ShaderPass(main_pipeline)))
+render_data = DrawBatches()
+render_data.register_shader(0, RenderShader(ShaderPass(prepass_pipeline), ShaderPass(main_pipeline)))
 hzb = HZB()
+instance_version = None
 
 
 def extract_frustum_planes(vp):
@@ -177,8 +169,8 @@ world.add(
 
 cube_mesh = make_cube_mesh()
 
-register_mesh(render_data, 0, model_mesh)
-register_mesh(render_data, 1, cube_mesh)
+render_data.register_mesh(0, model_mesh)
+render_data.register_mesh(1, cube_mesh)
 
 
 def camera_system(camera, elapsed, camera_dist):
@@ -204,11 +196,13 @@ def movement_system(world, dt):
 
 
 def update_instances(world, data):
-	sync_batches(data, world, Transform, MeshRef)
-	version = (transforms.version("position"), mesh_refs.version("tint"), transforms.version("rotation"), transforms.version("scale"))
-	if data.instance_version == version: return
-	previous = data.instance_version or (None,) * 4
-	changed = tuple(old != new for old, new in zip(previous, version))
+	global instance_version
+	data.sync_batches(world, Transform, MeshRef)
+	version = (world, data.instance_order_version, transforms.version("position"), mesh_refs.version("tint"), transforms.version("rotation"), transforms.version("scale"))
+	if instance_version == version: return
+	previous = instance_version or (None,) * 6
+	order_changed = previous[:2] != version[:2]
+	changed = tuple(order_changed or old != new for old, new in zip(previous[2:], version[2:]))
 	count = data.entities.size
 	if count:
 		buffer = data.buffers["instances"]
@@ -219,7 +213,7 @@ def update_instances(world, data):
 		if changed[2]: instances["iRotation"] = pack_quaternion(p.rotation)
 		if changed[3]: instances["iScale"] = pack_scale(p.scale)
 		buffer.upload_range(0, count)
-	data.instance_version = version
+	instance_version = version
 
 
 def update_cameras(data, culling_camera, rendering_camera, light_dir):
@@ -243,29 +237,30 @@ def render_system(world, culling_camera, rendering_camera):
 	width, height = RenderContext.windowDimensions
 	if width <= 0 or height <= 0: return
 	update_instances(world, render_data)
-	resize_hzb(hzb, (width, height), hzb_shader, (hzb_depth_pipeline, hzb_pipeline))
-	refresh_bindings(render_data, cull_shader, hzb)
+
+	hzb.resize((width, height))
+	render_data.refresh_bindings(hzb)
 	update_cameras(render_data, culling_camera, rendering_camera, light_camera.direction())
 	cmd = RenderContext.commands("frame_commands")
-	reset_draw_counts(cmd, render_data, reset_draw_pipeline)
+	render_data.reset_draw_counts(cmd)
 
 	# --- Step 1: Frustum Culling Pass ---
-	cull_instances(cmd, render_data, cull_frustum_pipeline, "frustum")
+	render_data.cull_instances(cmd, "frustum")
 
 	# --- Step 2: Depth Prepass ---
 	with cmd.render_pass(color=(), depth=hzb.depth_texture.depth_attachment(clear=1.0), label="depth_prepass") as rp:
-		draw_batches(rp, render_data, "prepass")
+		render_data.draw(rp, "prepass")
 
 	# --- Step 3: Compute Hi-Z Downsampling ---
-	build_hzb(cmd, hzb)
+	hzb.build(cmd)
 
 	# --- Step 4: Hi-Z Occlusion Culling Pass ---
-	cull_instances(cmd, render_data, cull_hiz_pipeline, "hiz")
+	render_data.cull_instances(cmd, "hiz")
 
 	# --- Step 5: Main Render Pass ---
 	depth = hzb.depth_texture.depth_attachment(clear=None if rendering_camera is culling_camera else 1.0)
 	with cmd.render_pass(color=RenderContext.screen(clear=(0.02, 0.02, 0.03, 1.0)), depth=depth, label="main_pass") as rp:
-		draw_batches(rp, render_data, "main")
+		render_data.draw(rp, "main")
 	RenderContext.submit(cmd.finish())
 
 
