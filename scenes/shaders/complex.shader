@@ -1,22 +1,6 @@
-
-<Uniforms> view: mat4x4f;
-<Uniforms> proj: mat4x4f;
-<Uniforms> light_dir: vec4f;
-<Uniforms> light_view_proj: mat4x4f;
-
-@group(0) @binding(0)
-var<uniform> uniforms: Uniforms;
-
-<MeshInstance> iPosition: vec3f;
-<MeshInstance> iTint: u32;
-<MeshInstance> iRotation: vec2u;
-<MeshInstance> iScale: vec2u;
-
-@group(1) @binding(0)
-var<storage, read> instances: array<MeshInstance>;
-
-@group(1) @binding(1)
-var<storage, read> visible_instances: array<u32>;
+#include "draw_common.shaderlib"
+#from "draw_common.shaderlib" import instance_bindings
+{{ instance_bindings() }}
 
 <VertexInput> position: vec3f;
 <VertexInput> normal: vec3f;

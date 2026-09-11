@@ -120,7 +120,7 @@ class ComponentSelection:
 	def set_vector(self, value : FieldArray, *field_names: str) -> None:
 		field_names = field_names or self._store.fields
 		for i, field in enumerate(field_names):
-			self._store._dense[field][self._rows] = value[:, i]
+			self[field] = value[:, i]
 
 	def __len__(self) -> int:
 		return int(self._rows.size)
@@ -129,7 +129,9 @@ class ComponentSelection:
 		return self._store._dense[field][self._rows]
 
 	def __setitem__(self, field: str, value: Any) -> None:
-		self._store._dense[field][self._rows] = value
+		array = self._store._dense[field]
+		if self._rows.size: self._store.touch(field)
+		array[self._rows] = value
 
 	def __getattr__(self, name: str) -> FieldArray:
 		try:
@@ -148,10 +150,22 @@ class ComponentSelection:
 		except KeyError:
 			raise AttributeError(name) from None
 
+		if self._rows.size: self._store.touch(name)
 		array[self._rows] = value
 
 
 class ComponentAccessor:
+	"""Selections copy numeric fields; assign edited arrays back to write them.
+	
+	You can monitor changes to array using membership / field version tokens.
+	Version tokens count writes, so assigning the same value still invalidates a token.
+	Token are affected by changes to number of owners.
+	Numeric array reads do not advance counters.
+	Modified objects fieds are not monitored, notify their in-place edits with touch().
+	Direct dense array writes likewise need touch().
+	Compare tokens only for the same accessor and ordered field names. 
+	Tokens do not provide thread synchronization.
+	"""
 	__slots__ = ("_ecs", "_component_cls", "_store")
 
 	def __init__(
@@ -163,6 +177,22 @@ class ComponentAccessor:
 		self._ecs = ecs
 		self._component_cls = component_cls
 		self._store = store
+
+	@property
+	def membership_version(self) -> int:
+		"""Conservative counter for nonempty component additions/removals."""
+		return self._store.membership_version
+
+	def version(self, *field_names: str) -> tuple[int, ...]:
+		"""Membership plus per-field writes, in argument order; default: all fields."""
+		fields = field_names or self._store.fields
+		return (self.membership_version, *(self._store.field_versions[name] for name in fields))
+
+	def touch(self, *field_names: str) -> None:
+		"""Invalidate named fields (default: all) after otherwise untracked writes.
+		Does not write arrays back, change membership, or compare field values.
+		"""
+		self._store.touch(*field_names)
 
 	def get_rows(self) -> IndexArray:
 		return self._store._active_rows()
@@ -213,6 +243,8 @@ class ComponentStorage:
 			raise TypeError(f"{component_cls.__name__} has no annotated component fields")
 
 		self.fields = tuple(name for name, _ in field_defs)
+		self.membership_version = 0
+		self.field_versions = {name: 0 for name in self.fields}
 		self._field_dtypes = {
 			name: _dtype_for(annotation)
 			for name, annotation in field_defs
@@ -231,6 +263,11 @@ class ComponentStorage:
 			if dtype == OBJECT_DTYPE:
 				array.fill(None)
 			self._dense[name] = array
+
+	def touch(self, *field_names: str) -> None:
+		fields = field_names or self.fields
+		for name in fields:
+			self.field_versions[name] += 1
 
 	@property
 	def _dense_entities(self) -> EntityArray:
@@ -376,6 +413,8 @@ class ComponentStorage:
 		entities: EntityArray,
 		field_values: Mapping[str, FieldArray],
 	) -> None:
+		if not entities.size: return
+		self.membership_version += 1
 		indices = _entity_indices(entities) 
 		self._ensure_sparse(indices)
 
@@ -402,6 +441,7 @@ class ComponentStorage:
 		if rows.size == 0:
 			return np.empty(0, dtype=Entity)
 
+		self.membership_version += 1
 		removed_entities = self._dense_entities[rows].astype(Entity, copy=True)
 		old_size = self._size
 		new_size = old_size - int(rows.size)
@@ -585,6 +625,8 @@ class MultiComponentStorage(ComponentStorage):
 		if entities.size == 0:
 			return
 
+		self.membership_version += 1
+
 		# Group incoming components by owner.
 		order = np.argsort(entities, kind="stable")
 		entities = entities[order]
@@ -671,6 +713,8 @@ class MultiComponentStorage(ComponentStorage):
 		)
 
 	def _remove_rows(self, rows: IndexArray) -> EntityArray:
+		if not rows.size: return np.empty(0, dtype=Entity)
+		self.membership_version += 1
 		removed_owners = self._dense_entities[rows]
 
 		owners, removed_counts_ = np.unique(

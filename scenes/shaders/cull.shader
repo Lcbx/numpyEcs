@@ -1,9 +1,4 @@
-<Frustum> planes: array<vec4f, 6>;
-
-<MeshInstance> iPosition: vec3f;
-<MeshInstance> iTint: u32;
-<MeshInstance> iRotation: vec2u;
-<MeshInstance> iScale: vec2u;
+#include "draw_common.shaderlib"
 
 <MeshMetadata> box_center: vec3f;
 <MeshMetadata> padding0: f32;
@@ -21,25 +16,38 @@
 <DrawIndexedIndirect> base_vertex: i32;
 <DrawIndexedIndirect> first_instance: u32;
 
+<CullWorkgroup> batch_id: u32;
+<CullWorkgroup> instance_offset: u32;
+
 <CameraUniforms> view_proj: mat4x4f;
+<CameraUniforms> planes: array<vec4f, 6>;
+<CameraUniforms> workgroup_count: u32;
+<CameraUniforms> batch_count: u32;
+<CameraUniforms> padding1: u32;
+<CameraUniforms> padding2: u32;
 
 @group(0) @binding(0) var<storage, read> instances: array<MeshInstance>;
-@group(1) @binding(5) var<uniform> frustum: Frustum;
-@group(0) @binding(2) var<storage, read_write> prepass_draw_cmd: DrawIndexedIndirect;
-@group(0) @binding(3) var<storage, read_write> frustum_visible_instances: array<u32>;
-@group(0) @binding(4) var<storage, read> mesh_metadata: array<MeshMetadata>;
-@group(0) @binding(5) var<uniform> cull_params: CullParams;
+@group(0) @binding(1) var<storage, read_write> prepass_draw_cmd: array<DrawIndexedIndirect>;
+@group(0) @binding(2) var<storage, read_write> frustum_visible_instances: array<u32>;
+@group(0) @binding(3) var<storage, read> mesh_metadata: array<MeshMetadata>;
+@group(0) @binding(4) var<storage, read> batches: array<CullParams>;
+@group(0) @binding(5) var<storage, read> workgroups: array<CullWorkgroup>;
 
 @group(1) @binding(0) var<uniform> camera_params: CameraUniforms;
 @group(1) @binding(1) var hzb_texture: texture_2d<f32>;
-@group(1) @binding(3) var<storage, read_write> main_draw_cmd: DrawIndexedIndirect;
-@group(1) @binding(4) var<storage, read_write> main_visible_instances: array<u32>;
+@group(1) @binding(2) var<storage, read_write> main_draw_cmd: array<DrawIndexedIndirect>;
+@group(1) @binding(3) var<storage, read_write> main_visible_instances: array<u32>;
 
 #include "utils.shaderlib"
 
 @compute @workgroup_size(64)
-fn cull_frustum(@builtin(global_invocation_id) global_id: vec3<u32>) {
-	let local_id = global_id.x;
+fn cull_frustum(@builtin(workgroup_id) group_id: vec3u, @builtin(num_workgroups) group_count: vec3u, @builtin(local_invocation_index) lane: u32) {
+	let group_index = group_id.x + group_id.y * group_count.x;
+	if group_index >= camera_params.workgroup_count { return; }
+	let work = workgroups[group_index];
+	let batch_id = work.batch_id;
+	let cull_params = batches[batch_id];
+	let local_id = work.instance_offset + lane;
 	if local_id >= cull_params.instance_count {
 		return;
 	}
@@ -57,7 +65,7 @@ fn cull_frustum(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
 	var visible = true;
 	for (var i = 0u; i < 6u; i = i + 1u) {
-		let plane = frustum.planes[i];
+		let plane = camera_params.planes[i];
 		let r = abs(dot(plane.xyz, axis_x)) + abs(dot(plane.xyz, axis_y)) + abs(dot(plane.xyz, axis_z));
 		if dot(plane.xyz, center_ws) + plane.w < -r {
 			visible = false;
@@ -66,15 +74,20 @@ fn cull_frustum(@builtin(global_invocation_id) global_id: vec3<u32>) {
 	}
 
 	if visible {
-		let slot = atomicAdd(&prepass_draw_cmd.instance_count, 1u);
+		let slot = atomicAdd(&prepass_draw_cmd[batch_id].instance_count, 1u);
 		frustum_visible_instances[cull_params.instance_offset + slot] = instance_id;
 	}
 }
 
 @compute @workgroup_size(64)
-fn cull_hiz(@builtin(global_invocation_id) global_id: vec3<u32>) {
-	let local_id = global_id.x;
-	let frustum_count = atomicLoad(&prepass_draw_cmd.instance_count);
+fn cull_hiz(@builtin(workgroup_id) group_id: vec3u, @builtin(num_workgroups) group_count: vec3u, @builtin(local_invocation_index) lane: u32) {
+	let group_index = group_id.x + group_id.y * group_count.x;
+	if group_index >= camera_params.workgroup_count { return; }
+	let work = workgroups[group_index];
+	let batch_id = work.batch_id;
+	let cull_params = batches[batch_id];
+	let local_id = work.instance_offset + lane;
+	let frustum_count = atomicLoad(&prepass_draw_cmd[batch_id].instance_count);
 	if local_id >= frustum_count {
 		return;
 	}
@@ -137,7 +150,16 @@ fn cull_hiz(@builtin(global_invocation_id) global_id: vec3<u32>) {
 	}
 
 	if visible {
-		let slot = atomicAdd(&main_draw_cmd.instance_count, 1u);
+		let slot = atomicAdd(&main_draw_cmd[batch_id].instance_count, 1u);
 		main_visible_instances[cull_params.instance_offset + slot] = instance_id;
 	}
+}
+
+// Separate dispatch: all counters must be reset before either culling stage.
+@compute @workgroup_size(64)
+fn reset_draw_counts(@builtin(workgroup_id) group_id: vec3u, @builtin(num_workgroups) group_count: vec3u, @builtin(local_invocation_index) lane: u32) {
+	let batch_id = (group_id.x + group_id.y * group_count.x) * 64u + lane;
+	if batch_id >= camera_params.batch_count { return; }
+	atomicStore(&prepass_draw_cmd[batch_id].instance_count, 0u);
+	atomicStore(&main_draw_cmd[batch_id].instance_count, 0u);
 }

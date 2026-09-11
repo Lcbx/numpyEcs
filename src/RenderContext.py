@@ -5,7 +5,7 @@ from time import sleep, perf_counter as get_time
 from threading import Lock
 from dataclasses import dataclass
 from typing import Any, Sequence, Iterator, Iterable, Callable, ParamSpec, TypeVar
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 
 import glfw
 import atexit
@@ -1674,30 +1674,33 @@ class BindGroup:
 		return resource
 
 class _PipelineVariant:
+	# Bound retained GPU resources across buffer growth and texture replacement.
+	_BIND_GROUP_CACHE_LIMIT = 128
+
 	def __init__(
 		self,
 		handle: wgpu.GPURenderPipeline | wgpu.GPUComputePipeline,
 	):
 		self.handle = handle
-		self._bind_groups: dict[tuple, wgpu.GPUBindGroup] = {}
+		self._bind_groups: OrderedDict[tuple, wgpu.GPUBindGroup] = OrderedDict()
 		self._lock = Lock()
 
 	def bind_group(self, bindings: BindGroup) -> wgpu.GPUBindGroup:
 		key = bindings.cache_key()
-		cached = self._bind_groups.get(key)
-		if cached is not None:
-			return cached
-
 		with self._lock:
 			cached = self._bind_groups.get(key)
-			if cached is None:
-				cached = RenderContext.device.create_bind_group(
-					layout=self.handle.get_bind_group_layout(bindings.group),
-					entries=bindings.entries(),
-				)
-				self._bind_groups[key] = cached
+			if cached is not None:
+				self._bind_groups.move_to_end(key)
+				return cached
+			cached = RenderContext.device.create_bind_group(
+				layout=self.handle.get_bind_group_layout(bindings.group),
+				entries=bindings.entries(),
+			)
+			self._bind_groups[key] = cached
+			if len(self._bind_groups) > self._BIND_GROUP_CACHE_LIMIT:
+				self._bind_groups.popitem(last=False)
+			return cached
 
-		return cached
 
 
 class RenderPipeline:
