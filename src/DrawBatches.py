@@ -7,7 +7,6 @@ from RenderContext import GpuBuffer, Texture, Shader, ComputePipeline, RenderPip
 from Utils import mesh_instance_dtype as instance_dtype, Camera, extract_frustum_planes
 
 
-uniform_dtype = np.dtype([("view", "<f4", (4, 4)), ("proj", "<f4", (4, 4)), ("light_dir", "<f4", 4)])
 mesh_metadata_dtype = np.dtype([
 	("box_center", "<f4", 4), ("box_extents", "<f4", 4),
 	("lod_offset", "<u4"), ("lod_count", "<u4"), ("padding", "<u4", 2),
@@ -48,7 +47,8 @@ class DrawBatch:
 
 @dataclass
 class ShaderPass:
-	"""Groups 0/1 follow draw_common.shaderlib; extra bindings use groups >= 2.
+	"""Group 1 follows draw_common.shaderlib and is owned by DrawBatches.
+	Supply rendering uniforms and extra resources through bindings in other groups.
 
 	Prepass and main must agree on positions, coverage, and rasterization.
 	Additional instance attributes can use storage in an extra group, indexed
@@ -62,7 +62,7 @@ class RenderShader:
 	main: ShaderPass
 	prepass: ShaderPass | None
 
-def standard_shader(shader:Shader, vertex_entry:str="vertex", fragment_entry:str="fragment") -> RenderShader:
+def standard_RenderShader(shader:Shader, uniform_buffer = None, vertex_entry:str="vertex", fragment_entry:str="fragment") -> RenderShader:
 	prepass_pipeline = RenderPipeline(
 		shader,
 		vertex_entry=vertex_entry,
@@ -76,7 +76,12 @@ def standard_shader(shader:Shader, vertex_entry:str="vertex", fragment_entry:str
 		depth_test="less-equal",
 		label="main",
 	)
-	return RenderShader(ShaderPass(main_pipeline), ShaderPass(prepass_pipeline))
+	uniforms_bg = shader.bind_group(0, uniforms= uniform_buffer or shader.UniformBuffer())
+	bindings_tup = ((0, uniforms_bg),)
+	return RenderShader(
+		ShaderPass(main_pipeline, bindings_tup),
+		ShaderPass(prepass_pipeline, bindings_tup)
+	)
 
 
 @dataclass
@@ -116,9 +121,6 @@ class DrawBatches:
 		):
 			usage = storage | (wgpu.BufferUsage.INDIRECT if dtype == indirect_dtype else 0)
 			self.buffers[name] = GpuBuffer(np.zeros(1, dtype=dtype), usage, upload=False, label=name)
-		usage = wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST
-		self.uniform_buffer = GpuBuffer(np.zeros(1, dtype=uniform_dtype), usage)
-		self.prepass_uniform_buffer = GpuBuffer(np.zeros(1, dtype=uniform_dtype), usage)
 		self.camera_params_buffer = self._cull_shader.UniformBuffer("camera_params")
 
 	def register_lod_group(self, group_id, mesh_ids, distances=()):
@@ -182,30 +184,26 @@ class DrawBatches:
 		self.meshes[mesh_id] = MeshInfo(mesh, center, extents)
 		self._dirty_meshes.add(mesh_id)
 
-	def register_shader(self, shader_id, shader:Shader|RenderShader):
+	def register_shader(self, shader_id, shader:RenderShader):
 		"""Replace bindings; rebuild destinations only when prepass participation changes."""
-		if isinstance(shader, Shader):
-			shader = standard_shader(shader)
 
-		"""Replace pipelines/bindings without invalidating entity grouping."""
 		for spec in (shader.prepass, shader.main):
-			if spec is not None and any(group < 2 for group, _ in spec.bindings):
-				raise ValueError("Groups 0 and 1 are reserved for frame and instance data")
+			if spec is not None and any(group == 1 for group, _ in spec.bindings):
+				raise ValueError("Group 1 is reserved for instance data")
+
 		had_prepass = (shader_id, "prepass") in self.bindings
 		if had_prepass != (shader.prepass is not None):
 			self.invalidate_batches()
+
 		self.shaders[shader_id] = shader
-		for name, spec, uniform, visible in (
-			("prepass", shader.prepass, self.prepass_uniform_buffer, "prepass_visible_instances"),
-			("main", shader.main, self.uniform_buffer, "main_visible_instances"),
+		for name, spec, visible in (
+			("prepass", shader.prepass, "prepass_visible_instances"),
+			("main", shader.main, "main_visible_instances"),
 		):
 			if spec is None:
 				self.bindings.pop((shader_id, name), None)
 				continue
-			self.bindings[shader_id, name] = (
-				spec.pipeline.shader.bind_group(0, uniforms=uniform),
-				spec.pipeline.shader.bind_group(1, instances=self.buffers["instances"], visible_instances=self.buffers[visible]),
-			)
+			self.bindings[shader_id, name] = spec.pipeline.shader.bind_group(1, instances=self.buffers["instances"], visible_instances=self.buffers[visible])
 
 
 	def _group_bounds(self, group_id):
@@ -318,7 +316,7 @@ class DrawBatches:
 		self._batch_version = version
 		return order_changed
 
-	def refresh_bindings(self, hzb):
+	def refresh_bindings(self, hzb_view):
 		cull_shader = self._cull_shader
 		buffers = self.buffers
 		if "cull_frustum" not in self.bindings:
@@ -330,8 +328,8 @@ class DrawBatches:
 			self.bindings["reset_prepass"] = cull_shader.bind_group(0, prepass_draw_cmd=buffers["prepass_draw_cmd"], batches=buffers["batches"])
 			self.bindings["reset_main"] = cull_shader.bind_group(1, camera_params=self.camera_params_buffer, main_draw_cmd=buffers["main_draw_cmd"])
 		bindings = self.bindings.get("hiz")
-		if bindings is None or bindings.resources["hzb_texture"] is not hzb.view:
-			self.bindings["hiz"] = cull_shader.bind_group(1, camera_params=self.camera_params_buffer, hzb_texture=hzb.view, main_draw_cmd=buffers["main_draw_cmd"], main_visible_instances=buffers["main_visible_instances"])
+		if bindings is None or bindings.resources["hzb_texture"] is not hzb_view:
+			self.bindings["hiz"] = cull_shader.bind_group(1, camera_params=self.camera_params_buffer, hzb_texture=hzb_view, main_draw_cmd=buffers["main_draw_cmd"], main_visible_instances=buffers["main_visible_instances"])
 
 	def reset_draw_counts(self, cmd, pipeline_name : str = "reset_draw_counts"):
 		# Reset instance counters for indirect draw targets
@@ -372,8 +370,7 @@ class DrawBatches:
 			spec = getattr(self.shaders[batch.shader_id], stage)
 			if spec is None: continue
 			rp.set_pipeline(spec.pipeline)
-			for index, bindings in enumerate(self.bindings[batch.shader_id, stage]):
-				rp.set_bind_group(index, bindings)
+			rp.set_bind_group(1, self.bindings[batch.shader_id, stage])
 			for index, bindings in spec.bindings:
 				rp.set_bind_group(index, bindings)
 			mesh = self.meshes[batch.mesh_id].mesh
@@ -386,6 +383,7 @@ class DrawBatches:
 		self._batch_version = None
 
 	def update_cull_camera(self, cameraPosition, viewProjectionMatrix):
+		"""Call after sync_batches and before reset/culling, even if the camera is unchanged."""
 		vp = np.asarray(viewProjectionMatrix)
 		buffer = self.camera_params_buffer
 		buffer.content["view_proj"] = vp

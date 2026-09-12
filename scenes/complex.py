@@ -123,10 +123,16 @@ RenderContext.init_window(
 
 # --- Shaders & Pipelines ---
 shader = Shader(filepath='scenes/shaders/complex.shader', label="complex")
+uniform_buffer = shader.UniformBuffer()
+render_shader = standard_RenderShader(shader, uniform_buffer)
+
+# used to split between observer camera and observer camera uniforms
+prepass_uniform_buffer = shader.UniformBuffer()
+render_shader.prepass.bindings = ((0, shader.bind_group(0, uniforms=prepass_uniform_buffer)),)
 
 # --- Draw registries & HZB ---
 render_data = DrawBatches()
-render_data.register_shader(0, shader)
+render_data.register_shader(0, render_shader)
 
 hzb = HZB()
 instance_version = None
@@ -198,8 +204,8 @@ def update_instances(world, data):
 
 def update_cameras(data, culling_camera, rendering_camera, light_dir):
 	for buffer, camera in (
-		(data.prepass_uniform_buffer, culling_camera),
-		(data.uniform_buffer, rendering_camera)
+		(prepass_uniform_buffer, culling_camera),
+		(uniform_buffer, rendering_camera)
 	):
 		view = camera.view()
 		proj = camera.projection(RenderContext.aspect)
@@ -219,7 +225,7 @@ def render_system(world, culling_camera, rendering_camera):
 	update_instances(world, render_data)
 
 	hzb.resize((width, height))
-	render_data.refresh_bindings(hzb)
+	render_data.refresh_bindings(hzb.view)
 	update_cameras(render_data, culling_camera, rendering_camera, light_camera.direction())
 	cmd = RenderContext.commands("frame_commands")
 	render_data.reset_draw_counts(cmd)
