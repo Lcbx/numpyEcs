@@ -108,6 +108,8 @@ class DrawBatches:
 		self.draw_batches = []
 		self.entities = np.empty(0, dtype=np.uint64)
 		self._batch_version = None
+		self._destinations_dirty = True
+		self._dirty_lod_distances = set()
 		self.instance_order_version = 0
 		self.bindings = {}
 		self.workgroup_count = 0
@@ -122,6 +124,7 @@ class DrawBatches:
 			usage = storage | (wgpu.BufferUsage.INDIRECT if dtype == indirect_dtype else 0)
 			self.buffers[name] = GpuBuffer(np.zeros(1, dtype=dtype), usage, upload=False, label=name)
 		self.camera_params_buffer = self._cull_shader.UniformBuffer("camera_params")
+		self._camera_params_dirty = False
 
 	def register_lod_group(self, group_id, mesh_ids, distances=()):
 		"""MeshRef.id names a group. Distances are increasing world-space switch distances.
@@ -141,9 +144,13 @@ class DrawBatches:
 		for mesh_id in mesh_ids:
 			if mesh_id not in self.meshes: raise KeyError(f"Unregistered mesh_id {mesh_id}")
 		group = LodGroup(mesh_ids, distances)
-		if self.lod_groups.get(group_id) != group:
+		previous = self.lod_groups.get(group_id)
+		if previous != group:
 			self.lod_groups[group_id] = group
-			self.invalidate_batches()
+			if previous is None or previous.mesh_ids != mesh_ids:
+				self._destinations_dirty = True
+			else:
+				self._dirty_lod_distances.add(group_id)
 
 	def get_cull_pipeline(self, pipeline_name : str):
 		if (pipeline := self._cull_pipelines.get(pipeline_name)) is None:
@@ -193,7 +200,7 @@ class DrawBatches:
 
 		had_prepass = (shader_id, "prepass") in self.bindings
 		if had_prepass != (shader.prepass is not None):
-			self.invalidate_batches()
+			self._destinations_dirty = True
 
 		self.shaders[shader_id] = shader
 		for name, spec, visible in (
@@ -245,12 +252,36 @@ class DrawBatches:
 		"""
 		transforms, mesh_refs = world.get(transform_type), world.get(mesh_ref_type)
 		version = (world, transform_type, mesh_ref_type, transforms.membership_version, mesh_refs.version("id", "shader_id"))
-		if self._batch_version == version:
+		regroup = self._batch_version != version
+		if regroup:
+			entities = world.where(transform_type, mesh_ref_type)
+			refs = mesh_refs[entities]
+			ordered_entities, batches = build_batches(entities, refs.id, refs.shader_id)
+		else:
+			ordered_entities, batches = self.entities, self.source_batches
+		order_changed = False
+		if regroup or self._destinations_dirty:
+			order_changed = self._rebuild_destinations(ordered_entities, batches)
+			self._batch_version = version
+		else:
+			self._sync_lod_distances()
 			self._sync_meshes()
-			return False
-		entities = world.where(transform_type, mesh_ref_type)
-		refs = mesh_refs[entities]
-		ordered_entities, batches = build_batches(entities, refs.id, refs.shader_id)
+		return order_changed
+
+	def _sync_lod_distances(self):
+		buffer = self.buffers["lod_distances"]
+		for group_id in self._dirty_lod_distances:
+			row = self.group_rows.get(group_id)
+			if row is None: continue
+			metadata = self.buffers["mesh_metadata"].content[row]
+			offset = int(metadata["lod_offset"]) + 1
+			distances = self.lod_groups[group_id].distances
+			if distances:
+				buffer.content[offset:offset + len(distances)] = distances
+				buffer.upload_range(offset, len(distances))
+		self._dirty_lod_distances.clear()
+
+	def _rebuild_destinations(self, ordered_entities, batches):
 		used_groups = sorted({batch.lod_group_id for batch in batches})
 		group_rows = {group_id: i for i, group_id in enumerate(used_groups)}
 		for batch in batches:
@@ -313,7 +344,13 @@ class DrawBatches:
 		self.group_rows = group_rows
 		self._dirty_meshes.clear()
 		self.workgroup_count = len(workgroups)
-		self._batch_version = version
+		buffer = self.camera_params_buffer
+		buffer.content["workgroup_count"] = self.workgroup_count
+		buffer.content["batch_count"] = len(self.source_batches)
+		buffer.content["command_count"] = len(self.draw_batches)
+		self._camera_params_dirty = True
+		self._destinations_dirty = False
+		self._dirty_lod_distances.clear()
 		return order_changed
 
 	def refresh_bindings(self, hzb_view):
@@ -342,6 +379,7 @@ class DrawBatches:
 
 		pipeline = self.get_cull_pipeline(pipeline_name)
 
+		self._upload_camera_params()
 		with cmd.compute_pass(label=pipeline_name) as cp:
 			cp.set_pipeline(pipeline)
 			cp.set_bind_group(0, self.bindings["reset_prepass"])
@@ -358,6 +396,7 @@ class DrawBatches:
 		pipeline_name = f"cull_{stage}"
 		pipeline = self.get_cull_pipeline(pipeline_name) 
 
+		self._upload_camera_params()
 		with cmd.compute_pass(label=pipeline_name) as cp:
 			cp.set_pipeline(pipeline)
 			cp.set_bind_group(0, self.bindings[f"cull_{stage}"])
@@ -383,16 +422,18 @@ class DrawBatches:
 		self._batch_version = None
 
 	def update_cull_camera(self, cameraPosition, viewProjectionMatrix):
-		"""Call after sync_batches and before reset/culling, even if the camera is unchanged."""
+		"""Update when the camera changes; upload before the next reset/culling operation."""
 		vp = np.asarray(viewProjectionMatrix)
 		buffer = self.camera_params_buffer
 		buffer.content["view_proj"] = vp
 		buffer.content["planes"] = extract_frustum_planes(vp)
-		buffer.content["workgroup_count"] = self.workgroup_count
-		buffer.content["batch_count"] = len(self.source_batches)
-		buffer.content["command_count"] = len(self.draw_batches)
 		buffer.content["camera_position"] = [*cameraPosition, 0.0]
-		buffer.upload()
+		self._camera_params_dirty = True
+
+	def _upload_camera_params(self):
+		if not self._camera_params_dirty: return
+		self.camera_params_buffer.upload()
+		self._camera_params_dirty = False
 
 
 
