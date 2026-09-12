@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import numpy as np
 import wgpu
 
-from RenderContext import GpuBuffer, Texture, Shader, ComputePipeline
+from RenderContext import GpuBuffer, Texture, Shader, ComputePipeline, RenderPipeline
 from Utils import mesh_instance_dtype as instance_dtype
 
 
@@ -37,11 +37,26 @@ class ShaderPass:
 	pipeline: object
 	bindings: tuple = ()
 
-
 @dataclass
 class RenderShader:
-	prepass: ShaderPass
 	main: ShaderPass
+	prepass: ShaderPass | None
+
+def standard_shader(shader:Shader, vertex_entry:str="vertex", fragment_entry:str="fragment") -> RenderShader:
+	prepass_pipeline = RenderPipeline(
+		shader,
+		vertex_entry=vertex_entry,
+		fragment_entry=None,
+		label="prepass",
+	)
+	main_pipeline = RenderPipeline(
+		shader,
+		vertex_entry=vertex_entry,
+		fragment_entry=fragment_entry,
+		depth_test="less-equal",
+		label="main",
+	)
+	return RenderShader(ShaderPass(main_pipeline), ShaderPass(prepass_pipeline))
 
 
 @dataclass
@@ -122,7 +137,10 @@ class DrawBatches:
 		self.meshes[mesh_id] = MeshInfo(mesh, center, extents)
 		self._dirty_meshes.add(mesh_id)
 
-	def register_shader(self, shader_id, shader):
+	def register_shader(self, shader_id, shader:Shader|RenderShader):
+		if isinstance(shader, Shader):
+			shader = standard_shader(shader)
+
 		"""Replace pipelines/bindings without invalidating entity grouping."""
 		for spec in (shader.prepass, shader.main):
 			if any(group < 2 for group, _ in spec.bindings):

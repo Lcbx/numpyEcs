@@ -123,23 +123,11 @@ RenderContext.init_window(
 
 # --- Shaders & Pipelines ---
 shader = Shader(filepath='scenes/shaders/complex.shader', label="complex")
-prepass_pipeline = RenderPipeline(
-	shader,
-	vertex_entry="vertex",
-	fragment_entry=None,
-	label="prepass",
-)
-main_pipeline = RenderPipeline(
-	shader,
-	vertex_entry="vertex",
-	fragment_entry="fragment",
-	depth_test="less-equal",
-	label="main",
-)
 
 # --- Draw registries & HZB ---
 render_data = DrawBatches()
-render_data.register_shader(0, RenderShader(ShaderPass(prepass_pipeline), ShaderPass(main_pipeline)))
+render_data.register_shader(0, shader)
+
 hzb = HZB()
 instance_version = None
 
