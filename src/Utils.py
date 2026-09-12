@@ -141,6 +141,17 @@ class Camera:
 
 		return mat
 
+def extract_frustum_planes(viewProjectionMatrix):
+	vp = np.asarray(viewProjectionMatrix)
+	planes = np.zeros((6, 4), dtype=np.float32)
+	planes[0], planes[1] = vp[:, 3] + vp[:, 0], vp[:, 3] - vp[:, 0]
+	planes[2], planes[3] = vp[:, 3] + vp[:, 1], vp[:, 3] - vp[:, 1]
+	planes[4], planes[5] = vp[:, 2], vp[:, 3] - vp[:, 2]
+	for i in range(6):
+		norm = np.linalg.norm(planes[i, :3])
+		if norm > 0: planes[i] /= norm
+	return planes
+
 
 
 def _get_data_from_accessor(gltf: GLTF2, accessor_index: int) -> np.ndarray:

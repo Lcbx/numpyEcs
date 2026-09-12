@@ -4,11 +4,19 @@
 <MeshMetadata> padding0: f32;
 <MeshMetadata> box_extents: vec3f;
 <MeshMetadata> padding1: f32;
+<MeshMetadata> lod_offset: u32;
+<MeshMetadata> lod_count: u32;
+<MeshMetadata> padding2: vec2u;
 
-<CullParams> mesh_id: u32;
+<FrustumCandidate> instance_id: u32;
+<FrustumCandidate> command_id: u32;
+
+<CullParams> group_id: u32;
 <CullParams> instance_offset: u32;
 <CullParams> instance_count: u32;
-<CullParams> padding: u32;
+<CullParams> command_offset: u32;
+<CullParams> prepass: u32;
+<CullParams> frustum_count: atomic<u32>;
 
 <DrawIndexedIndirect> index_count: u32;
 <DrawIndexedIndirect> instance_count: atomic<u32>;
@@ -23,15 +31,18 @@
 <CameraUniforms> planes: array<vec4f, 6>;
 <CameraUniforms> workgroup_count: u32;
 <CameraUniforms> batch_count: u32;
-<CameraUniforms> padding1: u32;
-<CameraUniforms> padding2: u32;
+<CameraUniforms> command_count: u32;
+<CameraUniforms> padding: u32;
+<CameraUniforms> camera_position: vec4f;
 
 @group(0) @binding(0) var<storage, read> instances: array<MeshInstance>;
 @group(0) @binding(1) var<storage, read_write> prepass_draw_cmd: array<DrawIndexedIndirect>;
-@group(0) @binding(2) var<storage, read_write> frustum_visible_instances: array<u32>;
+@group(0) @binding(2) var<storage, read_write> frustum_candidates: array<FrustumCandidate>;
 @group(0) @binding(3) var<storage, read> mesh_metadata: array<MeshMetadata>;
-@group(0) @binding(4) var<storage, read> batches: array<CullParams>;
+@group(0) @binding(4) var<storage, read_write> batches: array<CullParams>;
 @group(0) @binding(5) var<storage, read> workgroups: array<CullWorkgroup>;
+@group(0) @binding(6) var<storage, read_write> prepass_visible_instances: array<u32>;
+@group(0) @binding(7) var<storage, read> lod_distances: array<f32>;
 
 @group(1) @binding(0) var<uniform> camera_params: CameraUniforms;
 @group(1) @binding(1) var hzb_texture: texture_2d<f32>;
@@ -46,17 +57,17 @@ fn cull_frustum(@builtin(workgroup_id) group_id: vec3u, @builtin(num_workgroups)
 	if group_index >= camera_params.workgroup_count { return; }
 	let work = workgroups[group_index];
 	let batch_id = work.batch_id;
-	let cull_params = batches[batch_id];
+	let instance_offset = batches[batch_id].instance_offset;
 	let local_id = work.instance_offset + lane;
-	if local_id >= cull_params.instance_count {
+	if local_id >= batches[batch_id].instance_count {
 		return;
 	}
 
-	let instance_id = cull_params.instance_offset + local_id;
+	let instance_id = instance_offset + local_id;
 	let inst = instances[instance_id];
 	let scale = unpack_scale(inst.iScale);
 	let rotation = unpack_rotation(inst.iRotation);
-	let metadata = mesh_metadata[cull_params.mesh_id];
+	let metadata = mesh_metadata[batches[batch_id].group_id];
 
 	let center_ws = inst.iPosition + quat_rotate(rotation, metadata.box_center * scale);
 	let axis_x = quat_rotate(rotation, vec3f(metadata.box_extents.x * scale.x, 0.0, 0.0));
@@ -74,8 +85,19 @@ fn cull_frustum(@builtin(workgroup_id) group_id: vec3u, @builtin(num_workgroups)
 	}
 
 	if visible {
-		let slot = atomicAdd(&prepass_draw_cmd[batch_id].instance_count, 1u);
-		frustum_visible_instances[cull_params.instance_offset + slot] = instance_id;
+		let distance = length(center_ws - camera_params.camera_position.xyz);
+		var lod = 0u;
+		for (var i = 1u; i < metadata.lod_count; i += 1u) {
+			if distance < lod_distances[metadata.lod_offset + i] { break; }
+			lod = i;
+		}
+		let command_id = batches[batch_id].command_offset + lod;
+		let slot = atomicAdd(&batches[batch_id].frustum_count, 1u);
+		frustum_candidates[instance_offset + slot] = FrustumCandidate(instance_id, command_id);
+		if batches[batch_id].prepass != 0u {
+			let draw_slot = atomicAdd(&prepass_draw_cmd[command_id].instance_count, 1u);
+			prepass_visible_instances[prepass_draw_cmd[command_id].first_instance + draw_slot] = instance_id;
+		}
 	}
 }
 
@@ -85,18 +107,19 @@ fn cull_hiz(@builtin(workgroup_id) group_id: vec3u, @builtin(num_workgroups) gro
 	if group_index >= camera_params.workgroup_count { return; }
 	let work = workgroups[group_index];
 	let batch_id = work.batch_id;
-	let cull_params = batches[batch_id];
+	let instance_offset = batches[batch_id].instance_offset;
 	let local_id = work.instance_offset + lane;
-	let frustum_count = atomicLoad(&prepass_draw_cmd[batch_id].instance_count);
+	let frustum_count = atomicLoad(&batches[batch_id].frustum_count);
 	if local_id >= frustum_count {
 		return;
 	}
 
-	let instance_id = frustum_visible_instances[cull_params.instance_offset + local_id];
+	let candidate = frustum_candidates[instance_offset + local_id];
+	let instance_id = candidate.instance_id;
 	let inst = instances[instance_id];
 	let scale = unpack_scale(inst.iScale);
 	let rotation = unpack_rotation(inst.iRotation);
-	let metadata = mesh_metadata[cull_params.mesh_id];
+	let metadata = mesh_metadata[batches[batch_id].group_id];
 
 	let ext = metadata.box_extents * scale;
 	var near_plane = false;
@@ -150,8 +173,9 @@ fn cull_hiz(@builtin(workgroup_id) group_id: vec3u, @builtin(num_workgroups) gro
 	}
 
 	if visible {
-		let slot = atomicAdd(&main_draw_cmd[batch_id].instance_count, 1u);
-		main_visible_instances[cull_params.instance_offset + slot] = instance_id;
+		let command_id = candidate.command_id;
+		let slot = atomicAdd(&main_draw_cmd[command_id].instance_count, 1u);
+		main_visible_instances[main_draw_cmd[command_id].first_instance + slot] = instance_id;
 	}
 }
 
@@ -159,7 +183,11 @@ fn cull_hiz(@builtin(workgroup_id) group_id: vec3u, @builtin(num_workgroups) gro
 @compute @workgroup_size(64)
 fn reset_draw_counts(@builtin(workgroup_id) group_id: vec3u, @builtin(num_workgroups) group_count: vec3u, @builtin(local_invocation_index) lane: u32) {
 	let batch_id = (group_id.x + group_id.y * group_count.x) * 64u + lane;
-	if batch_id >= camera_params.batch_count { return; }
-	atomicStore(&prepass_draw_cmd[batch_id].instance_count, 0u);
-	atomicStore(&main_draw_cmd[batch_id].instance_count, 0u);
+	if batch_id < camera_params.batch_count {
+		atomicStore(&batches[batch_id].frustum_count, 0u);
+	}
+	if batch_id < camera_params.command_count {
+		atomicStore(&prepass_draw_cmd[batch_id].instance_count, 0u);
+		atomicStore(&main_draw_cmd[batch_id].instance_count, 0u);
+	}
 }

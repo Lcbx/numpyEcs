@@ -4,12 +4,19 @@ import numpy as np
 import wgpu
 
 from RenderContext import GpuBuffer, Texture, Shader, ComputePipeline, RenderPipeline
-from Utils import mesh_instance_dtype as instance_dtype
+from Utils import mesh_instance_dtype as instance_dtype, Camera, extract_frustum_planes
 
 
 uniform_dtype = np.dtype([("view", "<f4", (4, 4)), ("proj", "<f4", (4, 4)), ("light_dir", "<f4", 4)])
-mesh_metadata_dtype = np.dtype([("box_center", "<f4", 4), ("box_extents", "<f4", 4)])
-batch_dtype = np.dtype([("mesh_id", "<u4"), ("instance_offset", "<u4"), ("instance_count", "<u4"), ("padding", "<u4")])
+mesh_metadata_dtype = np.dtype([
+	("box_center", "<f4", 4), ("box_extents", "<f4", 4),
+	("lod_offset", "<u4"), ("lod_count", "<u4"), ("padding", "<u4", 2),
+])
+frustum_candidate_dtype = np.dtype([("instance_id", "<u4"), ("command_id", "<u4")])
+batch_dtype = np.dtype([
+	("group_id", "<u4"), ("instance_offset", "<u4"), ("instance_count", "<u4"),
+	("command_offset", "<u4"), ("prepass", "<u4"), ("frustum_count", "<u4"),
+])
 workgroup_dtype = np.dtype([("batch_id", "<u4"), ("instance_offset", "<u4")])
 indirect_dtype = np.dtype([
 	("index_count", "<u4"), ("instance_count", "<u4"), ("first_index", "<u4"),
@@ -18,7 +25,20 @@ indirect_dtype = np.dtype([
 
 
 @dataclass
+class SourceBatch:
+	lod_group_id: int
+	shader_id: int
+	offset: int
+	count: int
+
+@dataclass(frozen=True)
+class LodGroup:
+	mesh_ids: tuple[int, ...]
+	distances: tuple[float, ...]
+
+@dataclass
 class DrawBatch:
+	"""Main-pass destination; offset/count describe its reserved index region."""
 	mesh_id: int
 	shader_id: int
 	offset: int
@@ -73,7 +93,9 @@ class DrawBatches:
 		self._cull_shader = cull_shader or Shader(filepath='scenes/shaders/cull.shader', label="cull")
 		self._cull_pipelines = {}
 		self.meshes = {}
-		self.mesh_rows = {}
+		self.group_rows = {}
+		self.lod_groups = {}
+		self.source_batches = []
 		self._mesh_commands = {}
 		self._dirty_meshes = set()
 		self.shaders = {}
@@ -86,7 +108,8 @@ class DrawBatches:
 		self.workgroup_count = 0
 		storage = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST
 		for name, dtype in (
-			("instances", instance_dtype), ("frustum_visible_instances", np.dtype("<u4")),
+			("instances", instance_dtype), ("frustum_candidates", frustum_candidate_dtype),
+			("prepass_visible_instances", np.dtype("<u4")), ("lod_distances", np.dtype("<f4")),
 			("main_visible_instances", np.dtype("<u4")), ("mesh_metadata", mesh_metadata_dtype),
 			("batches", batch_dtype), ("workgroups", workgroup_dtype),
 			("prepass_draw_cmd", indirect_dtype), ("main_draw_cmd", indirect_dtype),
@@ -94,9 +117,31 @@ class DrawBatches:
 			usage = storage | (wgpu.BufferUsage.INDIRECT if dtype == indirect_dtype else 0)
 			self.buffers[name] = GpuBuffer(np.zeros(1, dtype=dtype), usage, upload=False, label=name)
 		usage = wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST
-		self.prepass_uniform_buffer = GpuBuffer(np.zeros(1, dtype=uniform_dtype), usage)
 		self.uniform_buffer = GpuBuffer(np.zeros(1, dtype=uniform_dtype), usage)
+		self.prepass_uniform_buffer = GpuBuffer(np.zeros(1, dtype=uniform_dtype), usage)
 		self.camera_params_buffer = self._cull_shader.UniformBuffer("camera_params")
+
+	def register_lod_group(self, group_id, mesh_ids, distances=()):
+		"""MeshRef.id names a group. Distances are increasing world-space switch distances.
+
+		Supply one fewer distance than meshes; equality selects the coarser LoD.
+		Distances are measured from the culling camera to the transformed group bounds center.
+		All variants must use the same local coordinate system and compatible shaders.
+		Example: register_lod_group(10, (100, 101, 102), (30.0, 100.0)).
+		"""
+		mesh_ids = tuple(mesh_ids)
+		distances = tuple(float(value) for value in distances)
+		if not mesh_ids or len(distances) != len(mesh_ids) - 1:
+			raise ValueError("Expected at least one mesh and one fewer LoD distance")
+		values = np.asarray(distances, dtype=np.float32)
+		if not np.all(np.isfinite(values)) or np.any(values <= 0) or np.any(np.diff(values) <= 0):
+			raise ValueError("LoD distances must be finite, positive and strictly increasing in float32")
+		for mesh_id in mesh_ids:
+			if mesh_id not in self.meshes: raise KeyError(f"Unregistered mesh_id {mesh_id}")
+		group = LodGroup(mesh_ids, distances)
+		if self.lod_groups.get(group_id) != group:
+			self.lod_groups[group_id] = group
+			self.invalidate_batches()
 
 	def get_cull_pipeline(self, pipeline_name : str):
 		if (pipeline := self._cull_pipelines.get(pipeline_name)) is None:
@@ -138,38 +183,53 @@ class DrawBatches:
 		self._dirty_meshes.add(mesh_id)
 
 	def register_shader(self, shader_id, shader:Shader|RenderShader):
+		"""Replace bindings; rebuild destinations only when prepass participation changes."""
 		if isinstance(shader, Shader):
 			shader = standard_shader(shader)
 
 		"""Replace pipelines/bindings without invalidating entity grouping."""
 		for spec in (shader.prepass, shader.main):
-			if any(group < 2 for group, _ in spec.bindings):
+			if spec is not None and any(group < 2 for group, _ in spec.bindings):
 				raise ValueError("Groups 0 and 1 are reserved for frame and instance data")
+		had_prepass = (shader_id, "prepass") in self.bindings
+		if had_prepass != (shader.prepass is not None):
+			self.invalidate_batches()
 		self.shaders[shader_id] = shader
 		for name, spec, uniform, visible in (
-			("prepass", shader.prepass, self.prepass_uniform_buffer, "frustum_visible_instances"),
+			("prepass", shader.prepass, self.prepass_uniform_buffer, "prepass_visible_instances"),
 			("main", shader.main, self.uniform_buffer, "main_visible_instances"),
 		):
+			if spec is None:
+				self.bindings.pop((shader_id, name), None)
+				continue
 			self.bindings[shader_id, name] = (
 				spec.pipeline.shader.bind_group(0, uniforms=uniform),
 				spec.pipeline.shader.bind_group(1, instances=self.buffers["instances"], visible_instances=self.buffers[visible]),
 			)
 
+
+	def _group_bounds(self, group_id):
+		infos = [self.meshes[mesh_id] for mesh_id in self.lod_groups[group_id].mesh_ids]
+		box_min = np.min([info.box_center - info.box_extents for info in infos], axis=0)
+		box_max = np.max([info.box_center + info.box_extents for info in infos], axis=0)
+		return (box_min + box_max) * 0.5, (box_max - box_min) * 0.5
+
 	def _sync_meshes(self):
-		"""Refresh registered meshes before recording reset/culling commands."""
-		for mesh_id in self._dirty_meshes:
-			if mesh_id not in self.mesh_rows: continue
-			info = self.meshes[mesh_id]
-			row = self.mesh_rows[mesh_id]
+		"""Refresh group bounds and every destination using changed geometry."""
+		if not self._dirty_meshes: return
+		for group_id, row in self.group_rows.items():
+			if self._dirty_meshes.isdisjoint(self.lod_groups[group_id].mesh_ids): continue
+			center, extents = self._group_bounds(group_id)
 			buffer = self.buffers["mesh_metadata"]
 			metadata = buffer.content[row]
-			if not (np.array_equal(metadata["box_center"][:3], info.box_center) and np.array_equal(metadata["box_extents"][:3], info.box_extents)):
-				metadata["box_center"][:3], metadata["box_extents"][:3] = info.box_center, info.box_extents
+			if not (np.array_equal(metadata["box_center"][:3], center) and np.array_equal(metadata["box_extents"][:3], extents)):
+				metadata["box_center"][:3], metadata["box_extents"][:3] = center, extents
 				buffer.upload_range(row, 1)
-			mesh = info.mesh
+		for mesh_id in self._dirty_meshes:
+			mesh = self.meshes[mesh_id].mesh
 			fields = ("index_count", "first_index", "base_vertex")
 			values = (mesh.index_count, mesh.index_range[0], mesh.vertex_range[0])
-			for command_index in self._mesh_commands[mesh_id]:
+			for command_index in self._mesh_commands.get(mesh_id, ()):
 				for name in ("prepass_draw_cmd", "main_draw_cmd"):
 					buffer = self.buffers[name]
 					command = buffer.content[command_index]
@@ -179,10 +239,11 @@ class DrawBatches:
 		self._dirty_meshes.clear()
 
 	def sync_batches(self, world, transform_type, mesh_ref_type):
-		"""Rebuild on membership or mesh/shader writes; return whether order changed.
+		"""Group by LoD group/shader; reserve one source-count region per draw destination.
 
-		Custom per-instance buffers must follow self.entities when instance_order_version changes.
-		Render components must each have one instance per entity.
+		MeshRef.id references lod group id, not mesh id.
+		GPU LoD changes never reorder entities. Custom attributes follow entities
+		when instance_order_version changes. Render components are single-instance.
 		"""
 		transforms, mesh_refs = world.get(transform_type), world.get(mesh_ref_type)
 		version = (world, transform_type, mesh_ref_type, transforms.membership_version, mesh_refs.version("id", "shader_id"))
@@ -191,40 +252,67 @@ class DrawBatches:
 			return False
 		entities = world.where(transform_type, mesh_ref_type)
 		refs = mesh_refs[entities]
-		ordered, batches = build_batches(entities, refs.id, refs.shader_id)
-		used_meshes = sorted({batch.mesh_id for batch in batches})
-		mesh_rows = {mesh_id: i for i, mesh_id in enumerate(used_meshes)}
+		ordered_entities, batches = build_batches(entities, refs.id, refs.shader_id)
+		used_groups = sorted({batch.lod_group_id for batch in batches})
+		group_rows = {group_id: i for i, group_id in enumerate(used_groups)}
 		for batch in batches:
-			if batch.mesh_id not in self.meshes: raise KeyError(f"Unregistered mesh_id {batch.mesh_id}")
+			if batch.lod_group_id not in self.lod_groups: raise KeyError(f"Unregistered LoD group {batch.lod_group_id}")
 			if batch.shader_id not in self.shaders: raise KeyError(f"Unregistered shader_id {batch.shader_id}")
-		metadata = np.zeros(len(used_meshes), dtype=mesh_metadata_dtype)
-		for mesh_id, row in mesh_rows.items():
-			info = self.meshes[mesh_id]
-			metadata[row]["box_center"][:3] = info.box_center
-			metadata[row]["box_extents"][:3] = info.box_extents
+		metadata = np.zeros(len(used_groups), dtype=mesh_metadata_dtype)
+		distances = []
+		for group_id, row in group_rows.items():
+			group = self.lod_groups[group_id]
+			center, extents = self._group_bounds(group_id)
+			metadata[row]["box_center"][:3], metadata[row]["box_extents"][:3] = center, extents
+			metadata[row]["lod_offset"] = len(distances)
+			metadata[row]["lod_count"] = len(group.mesh_ids)
+			distances.extend((0.0, *group.distances))
 		params = np.zeros(len(batches), dtype=batch_dtype)
-		commands = np.zeros(len(batches), dtype=indirect_dtype)
 		group_counts = np.array([(batch.count + 63) // 64 for batch in batches], dtype=np.int64)
 		workgroups = np.zeros(int(group_counts.sum()), dtype=workgroup_dtype)
 		if len(batches):
 			workgroups["batch_id"] = np.repeat(np.arange(len(batches)), group_counts)
 			starts = np.cumsum(group_counts) - group_counts
 			workgroups["instance_offset"] = (np.arange(len(workgroups)) - np.repeat(starts, group_counts)) * 64
-		for batch in batches:
-			mesh = self.meshes[batch.mesh_id].mesh
-			params[batch.command_index] = (mesh_rows[batch.mesh_id], batch.offset, batch.count, 0)
-			commands[batch.command_index] = (mesh.index_count, 0, mesh.index_range[0], mesh.vertex_range[0], batch.offset)
-		for name in ("instances", "frustum_visible_instances", "main_visible_instances"):
-			self._reserve_buffer(name, len(ordered))
-		for name, values in (("mesh_metadata", metadata), ("batches", params), ("workgroups", workgroups), ("prepass_draw_cmd", commands), ("main_draw_cmd", commands)):
+		draw_batches, commands, prepass_commands = [], [], []
+		main_count = prepass_count = 0
+		mesh_commands = {}
+		for batch_id, batch in enumerate(batches):
+			prepass = self.shaders[batch.shader_id].prepass is not None
+			params[batch_id] = (group_rows[batch.lod_group_id], batch.offset, batch.count, len(commands), prepass, 0)
+			for mesh_id in self.lod_groups[batch.lod_group_id].mesh_ids:
+				mesh = self.meshes[mesh_id].mesh
+				command_index = len(commands)
+				draw_batches.append(DrawBatch(mesh_id, batch.shader_id, main_count, batch.count, command_index))
+				command = (mesh.index_count, 0, mesh.index_range[0], mesh.vertex_range[0])
+				commands.append((*command, main_count))
+				prepass_commands.append((*command, prepass_count if prepass else 0))
+				mesh_commands.setdefault(mesh_id, []).append(command_index)
+				main_count += batch.count
+				if prepass: prepass_count += batch.count
+		if max(
+				main_count,
+				prepass_count,
+				len(commands),
+				entities_len := len(ordered_entities)
+			) > np.iinfo(np.uint32).max:
+			raise ValueError("Draw destinations exceed uint32 addressing")
+		self._reserve_buffer("instances", entities_len)
+		self._reserve_buffer("frustum_candidates", entities_len)
+		self._reserve_buffer("main_visible_instances", main_count)
+		self._reserve_buffer("prepass_visible_instances", prepass_count)
+		for name, values in (
+			("mesh_metadata", metadata), ("lod_distances", np.asarray(distances, dtype="<f4")),
+			("batches", params), ("workgroups", workgroups),
+			("prepass_draw_cmd", np.asarray(prepass_commands, dtype=indirect_dtype)),
+			("main_draw_cmd", np.asarray(commands, dtype=indirect_dtype)),
+		):
 			self._upload_array(name, values)
-		order_changed = not np.array_equal(self.entities, ordered)
+		order_changed = not np.array_equal(self.entities, ordered_entities)
 		if order_changed: self.instance_order_version += 1
-		self.entities, self.draw_batches = ordered, batches
-		self._mesh_commands = {mesh_id: [] for mesh_id in used_meshes}
-		for batch in batches:
-			self._mesh_commands[batch.mesh_id].append(batch.command_index)
-		self.mesh_rows = mesh_rows
+		self.entities, self.source_batches, self.draw_batches = ordered_entities, batches, draw_batches
+		self._mesh_commands = mesh_commands
+		self.group_rows = group_rows
 		self._dirty_meshes.clear()
 		self.workgroup_count = len(workgroups)
 		self._batch_version = version
@@ -233,11 +321,13 @@ class DrawBatches:
 	def refresh_bindings(self, hzb):
 		cull_shader = self._cull_shader
 		buffers = self.buffers
-		if "cull" not in self.bindings:
-			common = {name: buffers[name] for name in ("instances", "prepass_draw_cmd", "frustum_visible_instances", "mesh_metadata", "batches", "workgroups")}
-			self.bindings["cull"] = cull_shader.bind_group(0, **common)
+		if "cull_frustum" not in self.bindings:
+			common = {name: buffers[name] for name in ("instances", "prepass_draw_cmd", "frustum_candidates", "mesh_metadata", "batches", "workgroups", "prepass_visible_instances", "lod_distances")}
+			self.bindings["cull_frustum"] = cull_shader.bind_group(0, **common)
+			common = {name: buffers[name] for name in ("instances", "frustum_candidates", "mesh_metadata", "batches", "workgroups")}
+			self.bindings["cull_hiz"] = cull_shader.bind_group(0, **common)
 			self.bindings["frustum"] = cull_shader.bind_group(1, camera_params=self.camera_params_buffer)
-			self.bindings["reset_prepass"] = cull_shader.bind_group(0, prepass_draw_cmd=buffers["prepass_draw_cmd"])
+			self.bindings["reset_prepass"] = cull_shader.bind_group(0, prepass_draw_cmd=buffers["prepass_draw_cmd"], batches=buffers["batches"])
 			self.bindings["reset_main"] = cull_shader.bind_group(1, camera_params=self.camera_params_buffer, main_draw_cmd=buffers["main_draw_cmd"])
 		bindings = self.bindings.get("hiz")
 		if bindings is None or bindings.resources["hzb_texture"] is not hzb.view:
@@ -245,7 +335,7 @@ class DrawBatches:
 
 	def reset_draw_counts(self, cmd, pipeline_name : str = "reset_draw_counts"):
 		# Reset instance counters for indirect draw targets
-		count = len(self.draw_batches)
+		count = max(len(self.draw_batches), len(self.source_batches))
 		if not count: return
 		groups = (count + 63) // 64
 		x = min(groups, 65535)
@@ -272,7 +362,7 @@ class DrawBatches:
 
 		with cmd.compute_pass(label=pipeline_name) as cp:
 			cp.set_pipeline(pipeline)
-			cp.set_bind_group(0, self.bindings["cull"])
+			cp.set_bind_group(0, self.bindings[f"cull_{stage}"])
 			cp.set_bind_group(1, self.bindings[stage])
 			cp.dispatch(x, y)
 
@@ -280,6 +370,7 @@ class DrawBatches:
 		commands = self.buffers[f"{stage}_draw_cmd"]
 		for batch in self.draw_batches:
 			spec = getattr(self.shaders[batch.shader_id], stage)
+			if spec is None: continue
 			rp.set_pipeline(spec.pipeline)
 			for index, bindings in enumerate(self.bindings[batch.shader_id, stage]):
 				rp.set_bind_group(index, bindings)
@@ -293,6 +384,18 @@ class DrawBatches:
 	def invalidate_batches(self):
 		"""Force grouping/command rebuilding on the next sync_batches call."""
 		self._batch_version = None
+
+	def update_cull_camera(self, cameraPosition, viewProjectionMatrix):
+		vp = np.asarray(viewProjectionMatrix)
+		buffer = self.camera_params_buffer
+		buffer.content["view_proj"] = vp
+		buffer.content["planes"] = extract_frustum_planes(vp)
+		buffer.content["workgroup_count"] = self.workgroup_count
+		buffer.content["batch_count"] = len(self.source_batches)
+		buffer.content["command_count"] = len(self.draw_batches)
+		buffer.content["camera_position"] = [*cameraPosition, 0.0]
+		buffer.upload()
+
 
 
 class HZB:
@@ -341,7 +444,7 @@ class HZB:
 
 
 def build_batches(entities, mesh_ids, shader_ids):
-	"""Pure CPU grouping; preserve source order inside each mesh/shader pair."""
+	"""Pure CPU grouping; mesh_ids are LoD group IDs. Preserve order inside each pair."""
 	if not (entities.ndim == mesh_ids.ndim == shader_ids.ndim == 1 and len(entities) == len(mesh_ids) == len(shader_ids)):
 		raise ValueError("Expected equally sized 1D entity, mesh ID, and shader ID arrays")
 	order = np.lexsort((mesh_ids, shader_ids))
@@ -349,5 +452,5 @@ def build_batches(entities, mesh_ids, shader_ids):
 	changes = (mesh_ids[1:] != mesh_ids[:-1]) | (shader_ids[1:] != shader_ids[:-1])
 	starts = np.r_[0, np.flatnonzero(changes) + 1] if len(order) else np.empty(0, dtype=int)
 	ends = np.r_[starts[1:], len(order)] if len(order) else starts
-	batches = [DrawBatch(int(mesh_ids[start]), int(shader_ids[start]), int(start), int(end - start), i) for i, (start, end) in enumerate(zip(starts, ends))]
+	batches = [SourceBatch(int(mesh_ids[start]), int(shader_ids[start]), int(start), int(end - start)) for start, end in zip(starts, ends)]
 	return entities[order].copy(), batches

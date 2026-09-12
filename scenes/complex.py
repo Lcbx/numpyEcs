@@ -19,7 +19,7 @@ class Velocity:
 
 @component
 class MeshRef:
-	id: np.uint32
+	id: np.uint32 # LoD group ID
 	tint: np.uint32
 	shader_id: np.uint32
 
@@ -28,7 +28,7 @@ transforms, velocities, mesh_refs = world.register(
 	Transform, Velocity, MeshRef
 )
 
-CUBE_COUNT = 10000
+CUBE_COUNT = 1000
 SPACE_SIZE = 180
 CUBE_MAX_SIDE = 7
 
@@ -131,18 +131,6 @@ render_data.register_shader(0, shader)
 hzb = HZB()
 instance_version = None
 
-
-def extract_frustum_planes(vp):
-	vp = np.asarray(vp)
-	planes = np.zeros((6, 4), dtype=np.float32)
-	planes[0], planes[1] = vp[:, 3] + vp[:, 0], vp[:, 3] - vp[:, 0]
-	planes[2], planes[3] = vp[:, 3] + vp[:, 1], vp[:, 3] - vp[:, 1]
-	planes[4], planes[5] = vp[:, 2], vp[:, 3] - vp[:, 2]
-	for i in range(6):
-		norm = np.linalg.norm(planes[i, :3])
-		if norm > 0: planes[i] /= norm
-	return planes
-
 vertices, indices = load_gltf_first_mesh_interleaved(
 	"scenes/resources/rooftop_utility_pole.glb"
 )
@@ -159,6 +147,10 @@ cube_mesh = make_cube_mesh()
 
 render_data.register_mesh(0, model_mesh)
 render_data.register_mesh(1, cube_mesh)
+
+# to test LoD system, pole becomes box after some distance
+render_data.register_lod_group(0, (0,1), (100.0,))
+render_data.register_lod_group(1, (1,))
 
 
 def camera_system(camera, elapsed, camera_dist):
@@ -205,20 +197,20 @@ def update_instances(world, data):
 
 
 def update_cameras(data, culling_camera, rendering_camera, light_dir):
-	view = culling_camera.view()
-	proj = culling_camera.projection(RenderContext.aspect)
-	for buffer, camera in ((data.prepass_uniform_buffer, culling_camera), (data.uniform_buffer, rendering_camera)):
-		buffer.content["view"] = view if camera is culling_camera else camera.view()
-		buffer.content["proj"] = proj if camera is culling_camera else camera.projection(RenderContext.aspect)
+	for buffer, camera in (
+		(data.prepass_uniform_buffer, culling_camera),
+		(data.uniform_buffer, rendering_camera)
+	):
+		view = camera.view()
+		proj = camera.projection(RenderContext.aspect)
+		buffer.content["view"] = view
+		buffer.content["proj"] = proj
 		buffer.content["light_dir"] = [*light_dir, 0.0]
 		buffer.upload()
-	vp = view @ proj
-	buffer = data.camera_params_buffer
-	buffer.content["view_proj"] = vp
-	buffer.content["planes"] = extract_frustum_planes(vp)
-	buffer.content["workgroup_count"] = data.workgroup_count
-	buffer.content["batch_count"] = len(data.draw_batches)
-	buffer.upload()
+		if camera is culling_camera:
+			vp = view @ proj
+
+	data.update_cull_camera(culling_camera.position, vp)
 
 
 def render_system(world, culling_camera, rendering_camera):
