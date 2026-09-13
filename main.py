@@ -54,7 +54,11 @@ if __name__ == "__main__":
 		scene = args.scene
 		if args.compile:
 			from subprocess import run
-			run( f'py -m mypyc -m ECS', cwd=src.__path__[0])
+			cwd = src.__path__[0]
+			run( f'py -m mypyc -m ECS', cwd=cwd)
+			run( f'py -m mypyc -m RenderContext', cwd=cwd)
+			run( f'py -m mypyc -m Utils', cwd=cwd)
+			run( f'py -m mypyc -m RenderBatches', cwd=cwd)
 			if scene: run( f'py -m nuitka --output-dir=build --standalone {scene}'.split(' ') )
 		else:
 			import_module( to_module(scene) )

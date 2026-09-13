@@ -1,24 +1,32 @@
+from __future__ import annotations
+
 from RenderContext import *
+from RenderContext import Mesh, RenderContext
+
+import gc, os
+from time import perf_counter as get_time
 
 from functools import wraps
-from typing import Any, Type, Sequence, Iterator, Iterable, List, Dict, Tuple, Callable, ParamSpec, TypeVar
+from mypy_extensions import mypyc_attr
+from typing import Any, Type, Sequence, Iterator, Iterable, List, Dict, Tuple, Callable, ParamSpec, TypeVar, ClassVar
 
 import numpy as np
-from pyrr import Matrix44 as Mat4, Quaternion
-from pygltflib import GLTF2, BufferView, Accessor
+from pyrr import Matrix44 as Mat4, Quaternion  # type: ignore[import-untyped]
+from pygltflib import GLTF2, BufferView, Accessor  # type: ignore[import-untyped]
 
 
 # pyrr-style Vector classes
 
-def _array_accessor(index:int=0):
+def _array_accessor(index:int=0) -> property:
 	return property(
 		lambda v: v[index],
 		lambda v, y: v.__setitem__(index, y),
 	)
 
+@mypyc_attr(native_class=False)
 class _baseVector(np.ndarray):
-	_count: int
-	_base_dtype = np.dtype(np.float32)
+	_count: ClassVar[int]
+	_base_dtype: ClassVar[np.dtype] = np.dtype(np.float32)
 
 	def __new__(cls, *args):
 		values = args[0] if len(args) == 1 and not np.isscalar(args[0]) else args
@@ -30,17 +38,20 @@ class _baseVector(np.ndarray):
 	def storage_dtype(cls) -> np.dtype:
 		return np.dtype((cls._base_dtype, (cls._count,)))
 
+@mypyc_attr(native_class=False)
 class Vec2(_baseVector):
 	_count = 2
 	x = _array_accessor(0)
 	y = _array_accessor(1)
 
+@mypyc_attr(native_class=False)
 class Vec3(_baseVector):
 	_count = 3
 	x = _array_accessor(0)
 	y = _array_accessor(1)
 	z = _array_accessor(2)
 
+@mypyc_attr(native_class=False)
 class Vec4(_baseVector):
 	_count = 4
 	x = _array_accessor(0)
@@ -50,14 +61,14 @@ class Vec4(_baseVector):
 
 
 # caches last return value and retrieves it based on args
-def cache_last(key: Callable[..., object]):
-	P = ParamSpec("P")
-	R = TypeVar("R")
+P = ParamSpec("P")
+R = TypeVar("R")
+def cache_last(key: Callable[..., object]) -> Callable[[Callable[P, R]], Callable[P, R]]:
 	missing = object()
 
 	def decorator(fn: Callable[P, R]) -> Callable[P, R]:
-		cache_key = f"__cache_key_{fn.__name__}"
-		cache_val = f"__cache_val_{fn.__name__}"
+		cache_key = f"__cache_key_{id(fn)}"
+		cache_val = f"__cache_val_{id(fn)}"
 
 		@wraps(fn)
 		def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
@@ -77,6 +88,7 @@ def cache_last(key: Callable[..., object]):
 	return decorator
 
 
+@mypyc_attr(native_class=False)
 class Camera:
 	def __init__(self, position: tuple, target: tuple, up: tuple, fovy_deg:float, near:float=0.1, far:float=1000.0, perspective:bool=True):
 		self.position = Vec3(position)
@@ -91,6 +103,7 @@ class Camera:
 	def view(self) -> Mat4:
 		return Camera.calc_view(self.position, self.target, self.up)
 	
+	@staticmethod
 	def calc_view(position, target:Vec3, up:Vec3) -> Mat4:
 		return Mat4.look_at(position, target, up)
 	
@@ -112,6 +125,7 @@ class Camera:
 	# can't use pyrr projections since it follows opengl convetions
 	# opengl has ndc -1->1, wgpu is 0->1
 
+	@staticmethod
 	def perspective_projection(fovy_deg:float, aspect:float, near:float, far:float) -> Mat4:
 		f = 1.0/np.tan(fovy_deg*3.14159/180.0 *0.5)
 		far_factor = far/(near-far)
@@ -124,6 +138,7 @@ class Camera:
 		#return np.ascontiguousarray(mat, dtype=np.float32)
 		return mat
 
+	@staticmethod
 	def orthogonal_projection(left:float, right:float, bottom:float, top:float, near:float, far:float) -> Mat4:
 
 		rml = right - left
@@ -266,10 +281,10 @@ def load_gltf_meshes(program : Program, glb_path: str)-> IndexedVertexList:
 """
 
 class WatchTimer:
-	nesting : int = 0
-	timers: list = []
-	report = ''
-	print_region = None
+	nesting : ClassVar[int] = 0
+	timers: ClassVar[list[WatchTimer]] = []
+	report: ClassVar[str] = ''
+	print_region: ClassVar[WatchTimer | None] = None
 	
 	def __init__(self, region:str, print_:bool=False):
 		self.region = region
@@ -278,7 +293,7 @@ class WatchTimer:
 	
 	def __enter__(self) -> None:
 		self.start_time = get_time()
-		self.nesting = WatchTimer.nesting
+		self._nesting = WatchTimer.nesting
 		WatchTimer.nesting += 1
 		for i,t in enumerate(WatchTimer.timers):
 			if t.region == self.region:
@@ -294,8 +309,8 @@ class WatchTimer:
 			print(WatchTimer.capture())
 	
 	def get_message(self) -> str:
-		#return ('  ' * self.nesting + f'{self.region} : { self.elapsed_ms() :.1f}ms')	
-		return ('  ' * self.nesting + f'{self.region} : { self.elapsed_percent() :.0f}%')	
+		#return ('  ' * self._nesting + f'{self.region} : { self.elapsed_ms() :.1f}ms')	
+		return ('  ' * self._nesting + f'{self.region} : { self.elapsed_percent() :.0f}%')	
 	
 	def elapsed_ms(self) -> float:
 		return (get_time() - self.start_time) * 1000.0
@@ -304,6 +319,7 @@ class WatchTimer:
 		ft = RenderContext.frame_time + 0.00001
 		return (get_time() - self.start_time) / ft * 100.0
 	
+	@staticmethod
 	def capture() -> str:
 		WatchTimer.report = '\n'.join( list(map(
 			lambda t: t.message if hasattr(t, 'message') else t.get_message(),
@@ -435,13 +451,13 @@ def timetest(f):
 def setup_gc_monitor() -> None:
 	print(f'{gc.get_threshold()=}')
 	#gc.set_threshold(1000, 30, 2) # deflt 2000, 10, 10
-	_gc_start = None
+	_gc_start: float | None = None
 
 	def gc_probe(phase:str, info:dict) -> None:
 		nonlocal _gc_start
 		if phase == "start":
 			_gc_start = get_time()
-		elif phase == "stop":
+		elif phase == "stop" and _gc_start is not None:
 			dt_ms = (get_time() - _gc_start) * 1000
 			if not any(info.values()): return
 			print(
@@ -454,7 +470,7 @@ def setup_gc_monitor() -> None:
 	gc.callbacks.append(gc_probe)
 
 def setup_memory_monitor() -> Callable:
-	import psutil # NOTE: this is not a built-in lib
+	import psutil # type: ignore[import-untyped]  # NOTE: this is not a built-in lib
 	process = psutil.Process(os.getpid())
 
 	import tracemalloc

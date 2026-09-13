@@ -1,9 +1,9 @@
 from dataclasses import dataclass
+from typing import Any, Sequence
 
 import numpy as np
-import wgpu
 
-from RenderContext import GpuBuffer, Texture, Shader, ComputePipeline, RenderPipeline
+from RenderContext import GpuBuffer, Texture, Shader, Mesh, ComputePipeline, RenderPipeline, BufferUsage, TextureUsage
 from Utils import mesh_instance_dtype as instance_dtype, Camera, extract_frustum_planes
 
 
@@ -54,15 +54,15 @@ class ShaderPass:
 	Additional instance attributes can use storage in an extra group, indexed
 	by visible_instances[instance_idx] in the current DrawBatches.entities order.
 	"""
-	pipeline: object
-	bindings: tuple = ()
+	pipeline: RenderPipeline | ComputePipeline
+	bindings: tuple[tuple[int, Any], ...] = ()
 
 @dataclass
 class RenderShader:
 	main: ShaderPass
 	prepass: ShaderPass | None
 
-def standard_RenderShader(shader:Shader, uniform_buffer = None, vertex_entry:str="vertex", fragment_entry:str="fragment") -> RenderShader:
+def standard_RenderShader(shader: Shader, uniform_buffer: GpuBuffer | None = None, vertex_entry: str = "vertex", fragment_entry: str | None = "fragment") -> RenderShader:
 	prepass_pipeline = RenderPipeline(
 		shader,
 		vertex_entry=vertex_entry,
@@ -86,7 +86,7 @@ def standard_RenderShader(shader:Shader, uniform_buffer = None, vertex_entry:str
 
 @dataclass
 class MeshInfo:
-	mesh: object
+	mesh: Mesh
 	box_center: np.ndarray
 	box_extents: np.ndarray
 
@@ -94,26 +94,26 @@ class MeshInfo:
 class DrawBatches:
 	"""Persistent draw resources; record passes explicitly using the caller's commands."""
 
-	def __init__(self, cull_shader : Shader|None = None):
-		self._cull_shader = cull_shader or Shader(filepath='scenes/shaders/cull.shader', label="cull")
-		self._cull_pipelines = {}
-		self.meshes = {}
-		self.group_rows = {}
-		self.lod_groups = {}
-		self.source_batches = []
-		self._mesh_commands = {}
-		self._dirty_meshes = set()
-		self.shaders = {}
-		self.buffers = {}
-		self.draw_batches = []
-		self.entities = np.empty(0, dtype=np.uint64)
-		self._batch_version = None
-		self._destinations_dirty = True
-		self._dirty_lod_distances = set()
-		self.instance_order_version = 0
-		self.bindings = {}
-		self.workgroup_count = 0
-		storage = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST
+	def __init__(self, cull_shader: Shader | None = None) -> None:
+		self._cull_shader: Shader = cull_shader or Shader(filepath='scenes/shaders/cull.shader', label="cull")
+		self._cull_pipelines: dict[str, ComputePipeline] = {}
+		self.meshes: dict[int, MeshInfo] = {}
+		self.group_rows: dict[int, int] = {}
+		self.lod_groups: dict[int, LodGroup] = {}
+		self.source_batches: list[SourceBatch] = []
+		self._mesh_commands: dict[int, list[int]] = {}
+		self._dirty_meshes: set[int] = set()
+		self.shaders: dict[int, RenderShader] = {}
+		self.buffers: dict[str, GpuBuffer] = {}
+		self.draw_batches: list[DrawBatch] = []
+		self.entities: np.ndarray = np.empty(0, dtype=np.uint64)
+		self._batch_version: tuple[Any, ...] | None = None
+		self._destinations_dirty: bool = True
+		self._dirty_lod_distances: set[int] = set()
+		self.instance_order_version: int = 0
+		self.bindings: dict[str | tuple[int, str], Any] = {}
+		self.workgroup_count: int = 0
+		storage = BufferUsage.STORAGE | BufferUsage.COPY_DST
 		for name, dtype in (
 			("instances", instance_dtype), ("frustum_candidates", frustum_candidate_dtype),
 			("prepass_visible_instances", np.dtype("<u4")), ("lod_distances", np.dtype("<f4")),
@@ -121,12 +121,12 @@ class DrawBatches:
 			("batches", batch_dtype), ("workgroups", workgroup_dtype),
 			("prepass_draw_cmd", indirect_dtype), ("main_draw_cmd", indirect_dtype),
 		):
-			usage = storage | (wgpu.BufferUsage.INDIRECT if dtype == indirect_dtype else 0)
+			usage = storage | (BufferUsage.INDIRECT if dtype == indirect_dtype else 0)
 			self.buffers[name] = GpuBuffer(np.zeros(1, dtype=dtype), usage, upload=False, label=name)
 		self.camera_params_buffer = self._cull_shader.UniformBuffer("camera_params")
 		self._camera_params_dirty = False
 
-	def register_lod_group(self, group_id, mesh_ids, distances=()):
+	def register_lod_group(self, group_id: int, mesh_ids: Sequence[int], distances: Sequence[float] = ()) -> None:
 		"""MeshRef.id names a group. Distances are increasing world-space switch distances.
 
 		Supply one fewer distance than meshes; equality selects the coarser LoD.
@@ -152,12 +152,12 @@ class DrawBatches:
 			else:
 				self._dirty_lod_distances.add(group_id)
 
-	def get_cull_pipeline(self, pipeline_name : str):
+	def get_cull_pipeline(self, pipeline_name : str) -> ComputePipeline:
 		if (pipeline := self._cull_pipelines.get(pipeline_name)) is None:
 			pipeline = self._cull_pipelines[pipeline_name] = ComputePipeline(self._cull_shader, entry=pipeline_name, label=pipeline_name)
 		return pipeline
 
-	def _reserve_buffer(self, name, count):
+	def _reserve_buffer(self, name, count) -> np.ndarray:
 		"""Keep CPU capacity stable between growths; GpuBuffer owns GPU growth.
 
 		Callers replace active inputs after growth. GPU outputs are regenerated.
@@ -169,11 +169,11 @@ class DrawBatches:
 			buffer.resize(capacity)
 		return buffer.content[:count]
 
-	def _upload_array(self, name, values):
+	def _upload_array(self, name: str, values: np.ndarray | Sequence[Any]) -> None:
 		self._reserve_buffer(name, len(values))[:] = values
 		if len(values): self.buffers[name].upload_range(0, len(values))
 
-	def register_mesh(self, mesh_id, mesh, bounds=None):
+	def register_mesh(self, mesh_id: int, mesh: Any, bounds: tuple[Any, Any] | None = None) -> None:
 		"""Use explicit conservative local bounds for displaced geometry.
 
 		Re-register after changing mesh geometry, bounds, or pooled draw ranges.
@@ -191,7 +191,7 @@ class DrawBatches:
 		self.meshes[mesh_id] = MeshInfo(mesh, center, extents)
 		self._dirty_meshes.add(mesh_id)
 
-	def register_shader(self, shader_id, shader:RenderShader):
+	def register_shader(self, shader_id: int, shader: RenderShader) -> None:
 		"""Replace bindings; rebuild destinations only when prepass participation changes."""
 
 		for spec in (shader.prepass, shader.main):
@@ -213,13 +213,13 @@ class DrawBatches:
 			self.bindings[shader_id, name] = spec.pipeline.shader.bind_group(1, instances=self.buffers["instances"], visible_instances=self.buffers[visible])
 
 
-	def _group_bounds(self, group_id):
+	def _group_bounds(self, group_id: int) -> tuple[np.ndarray, np.ndarray]:
 		infos = [self.meshes[mesh_id] for mesh_id in self.lod_groups[group_id].mesh_ids]
 		box_min = np.min([info.box_center - info.box_extents for info in infos], axis=0)
 		box_max = np.max([info.box_center + info.box_extents for info in infos], axis=0)
 		return (box_min + box_max) * 0.5, (box_max - box_min) * 0.5
 
-	def _sync_meshes(self):
+	def _sync_meshes(self) -> None:
 		"""Refresh group bounds and every destination using changed geometry."""
 		if not self._dirty_meshes: return
 		for group_id, row in self.group_rows.items():
@@ -243,7 +243,7 @@ class DrawBatches:
 					buffer.upload_range(command_index, 1)
 		self._dirty_meshes.clear()
 
-	def sync_batches(self, world, transform_type, mesh_ref_type):
+	def sync_batches(self, world: Any, transform_type: Any, mesh_ref_type: Any) -> bool:
 		"""Group by LoD group/shader; reserve one source-count region per draw destination.
 
 		MeshRef.id references lod group id, not mesh id.
@@ -268,7 +268,7 @@ class DrawBatches:
 			self._sync_meshes()
 		return order_changed
 
-	def _sync_lod_distances(self):
+	def _sync_lod_distances(self) -> None:
 		buffer = self.buffers["lod_distances"]
 		for group_id in self._dirty_lod_distances:
 			row = self.group_rows.get(group_id)
@@ -281,14 +281,14 @@ class DrawBatches:
 				buffer.upload_range(offset, len(distances))
 		self._dirty_lod_distances.clear()
 
-	def _rebuild_destinations(self, ordered_entities, batches):
+	def _rebuild_destinations(self, ordered_entities: np.ndarray, batches: list[SourceBatch]) -> bool:
 		used_groups = sorted({batch.lod_group_id for batch in batches})
 		group_rows = {group_id: i for i, group_id in enumerate(used_groups)}
 		for batch in batches:
 			if batch.lod_group_id not in self.lod_groups: raise KeyError(f"Unregistered LoD group {batch.lod_group_id}")
 			if batch.shader_id not in self.shaders: raise KeyError(f"Unregistered shader_id {batch.shader_id}")
 		metadata = np.zeros(len(used_groups), dtype=mesh_metadata_dtype)
-		distances = []
+		distances : list[Any] = []
 		for group_id, row in group_rows.items():
 			group = self.lod_groups[group_id]
 			center, extents = self._group_bounds(group_id)
@@ -303,9 +303,11 @@ class DrawBatches:
 			workgroups["batch_id"] = np.repeat(np.arange(len(batches)), group_counts)
 			starts = np.cumsum(group_counts) - group_counts
 			workgroups["instance_offset"] = (np.arange(len(workgroups)) - np.repeat(starts, group_counts)) * 64
-		draw_batches, commands, prepass_commands = [], [], []
+		draw_batches     : list[DrawBatch]      = []
+		commands         : list[tuple[int,...]] = []
+		prepass_commands : list[tuple[int,...]] = []
 		main_count = prepass_count = 0
-		mesh_commands = {}
+		mesh_commands : dict[int, list[int]]= {}
 		for batch_id, batch in enumerate(batches):
 			prepass = self.shaders[batch.shader_id].prepass is not None
 			params[batch_id] = (group_rows[batch.lod_group_id], batch.offset, batch.count, len(commands), prepass, 0)
@@ -353,7 +355,7 @@ class DrawBatches:
 		self._dirty_lod_distances.clear()
 		return order_changed
 
-	def refresh_bindings(self, hzb_view):
+	def refresh_bindings(self, hzb_view: Any) -> None:
 		cull_shader = self._cull_shader
 		buffers = self.buffers
 		if "cull_frustum" not in self.bindings:
@@ -368,7 +370,7 @@ class DrawBatches:
 		if bindings is None or bindings.resources["hzb_texture"] is not hzb_view:
 			self.bindings["hiz"] = cull_shader.bind_group(1, camera_params=self.camera_params_buffer, hzb_texture=hzb_view, main_draw_cmd=buffers["main_draw_cmd"], main_visible_instances=buffers["main_visible_instances"])
 
-	def reset_draw_counts(self, cmd, pipeline_name : str = "reset_draw_counts"):
+	def reset_draw_counts(self, cmd: Any, pipeline_name: str = "reset_draw_counts") -> None:
 		# Reset instance counters for indirect draw targets
 		count = max(len(self.draw_batches), len(self.source_batches))
 		if not count: return
@@ -386,7 +388,7 @@ class DrawBatches:
 			cp.set_bind_group(1, self.bindings["reset_main"])
 			cp.dispatch(x, y)
 
-	def cull_instances(self, cmd, stage : str = "frustum"):
+	def cull_instances(self, cmd: Any, stage: str = "frustum") -> None:
 		if not self.workgroup_count: return
 		# Flatten a 2D dispatch so large scenes do not exceed the portable X limit.
 		x = min(self.workgroup_count, 65535)
@@ -403,7 +405,7 @@ class DrawBatches:
 			cp.set_bind_group(1, self.bindings[stage])
 			cp.dispatch(x, y)
 
-	def draw(self, rp, stage):
+	def draw(self, rp: Any, stage: str) -> None:
 		commands = self.buffers[f"{stage}_draw_cmd"]
 		for batch in self.draw_batches:
 			spec = getattr(self.shaders[batch.shader_id], stage)
@@ -417,11 +419,11 @@ class DrawBatches:
 			rp.set_index_buffer(mesh.index_buffer, format=mesh.index_format)
 			rp.draw_indexed_indirect(commands, batch.command_index * indirect_dtype.itemsize)
 
-	def invalidate_batches(self):
+	def invalidate_batches(self) -> None:
 		"""Force grouping/command rebuilding on the next sync_batches call."""
 		self._batch_version = None
 
-	def update_cull_camera(self, cameraPosition, viewProjectionMatrix):
+	def update_cull_camera(self, cameraPosition: Sequence[float], viewProjectionMatrix: Sequence[Sequence[float]] | np.ndarray) -> None:
 		"""Update when the camera changes; upload before the next reset/culling operation."""
 		vp = np.asarray(viewProjectionMatrix)
 		buffer = self.camera_params_buffer
@@ -430,7 +432,7 @@ class DrawBatches:
 		buffer.content["camera_position"] = [*cameraPosition, 0.0]
 		self._camera_params_dirty = True
 
-	def _upload_camera_params(self):
+	def _upload_camera_params(self) -> None:
 		if not self._camera_params_dirty: return
 		self.camera_params_buffer.upload()
 		self._camera_params_dirty = False
@@ -439,29 +441,29 @@ class DrawBatches:
 
 class HZB:
 	def __init__(self,
-		shader : Shader|None = None,
-		pipelines : tuple|None = None
-	):
+		shader: Shader | None = None,
+		pipelines: tuple[ComputePipeline, ComputePipeline] | None = None
+	) -> None:
 		self._shader = shader or Shader(filepath='scenes/shaders/hzb.shader', label="hzb")
 		self._pipelines = pipelines or (
 			ComputePipeline(self._shader, entry="reduce_depth", label="hzb_depth"),
 			ComputePipeline(self._shader, entry="main", label="hzb")
 		)
-		self.size = ()
-		self.depth_texture = None
-		self.texture = None
-		self.view = None
-		self.passes = []
+		self.size: tuple[int, int] | tuple[()] = ()
+		self.depth_texture: Texture | None = None
+		self.texture: Texture | None = None
+		self.view: Any = None
+		self.passes: list[tuple[ComputePipeline, Any, int, int]] = []
 
-	def resize(self, size):
+	def resize(self, size: tuple[int, int]) -> bool:
 		shader, pipelines = self._shader, self._pipelines
 		width, height = size
 		if width <= 0 or height <= 0 or self.size == size: return False
-		usage = wgpu.TextureUsage.RENDER_ATTACHMENT | wgpu.TextureUsage.TEXTURE_BINDING
+		usage = TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING
 		self.depth_texture = Texture(size, format="depth32float", usage=usage, label="prepass_depth")
 		width, height = max(1, width // 2), max(1, height // 2)
 		num_mips = max(width, height).bit_length()
-		usage = wgpu.TextureUsage.STORAGE_BINDING | wgpu.TextureUsage.TEXTURE_BINDING
+		usage = TextureUsage.STORAGE_BINDING | TextureUsage.TEXTURE_BINDING
 		self.texture = Texture((width, height), format="r32float", usage=usage, mip_level_count=num_mips, label="hzb_pyramid")
 		self.view = self.texture.view()
 		views = [self.texture.view(base_mip_level=i, mip_level_count=1) for i in range(num_mips)]
@@ -474,7 +476,7 @@ class HZB:
 		self.size = size
 		return True
 
-	def build(self, cmd):
+	def build(self, cmd: Any) -> None:
 		for mip, (pipeline, bindings, width, height) in enumerate(self.passes):
 			with cmd.compute_pass(label=f"hzb_mip_{mip}") as cp:
 				cp.set_pipeline(pipeline)
@@ -482,7 +484,7 @@ class HZB:
 				cp.dispatch((width + 15) // 16, (height + 15) // 16)
 
 
-def build_batches(entities, mesh_ids, shader_ids):
+def build_batches(entities: np.ndarray, mesh_ids: np.ndarray, shader_ids: np.ndarray) -> tuple[np.ndarray, list[SourceBatch]]:
 	"""Pure CPU grouping; mesh_ids are LoD group IDs. Preserve order inside each pair."""
 	if not (entities.ndim == mesh_ids.ndim == shader_ids.ndim == 1 and len(entities) == len(mesh_ids) == len(shader_ids)):
 		raise ValueError("Expected equally sized 1D entity, mesh ID, and shader ID arrays")
