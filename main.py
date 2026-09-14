@@ -9,9 +9,9 @@ if __name__ == "__main__":
 	import src
 
 	parser = ArgumentParser(
-		prog='python game engine',
-		description='WIP python game engine with custom ecs',
-		epilog='link: https://github.com/Lcbx/numpyEcs')
+		prog='main.py',
+		description='Graaaal, game engine on top of numpy and wgpu',
+		epilog='link: https://github.com/Lcbx/Graaaal')
 	parser.add_argument('scene', nargs='?', help='set scene script (to run or compile)')
 	parser.add_argument('-t', '--test', nargs='?', const=True, default=False, help='launches unit tests or a single test if specified by name')
 	parser.add_argument('-c', '--compile', action='store_true', help='compile scene into standalone executable')
