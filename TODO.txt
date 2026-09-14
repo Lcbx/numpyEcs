@@ -1,4 +1,4 @@
-* implement GPU indirect drawing with compute-based frustum culling
+* add proper monitoring and logging
 * add bindless materials
 * implement Forward+ / tiled shading
 * add depth pre-pass

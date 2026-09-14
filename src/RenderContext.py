@@ -91,9 +91,11 @@ class _RenderContext:
 
 		self.window = glfw.create_window(w, h, title, None, None)
 		self.setup_callbacks()
+		if custom_gc:
+			self.event_handlers["idle"].append(GC_Manager())
+
 		self.setup_graphics(vsync=target_fps == 0, highpower_gpu=highpower_gpu, required_gpu_features=required_gpu_features)
 
-		if custom_gc: self.idle_hook = GC_Manager()
 		self.frame_start = get_time()
 
 	def setup_graphics(self, *, vsync: bool, highpower_gpu: bool, required_gpu_features:list=[]) -> None:
@@ -115,12 +117,13 @@ class _RenderContext:
 		self.device = self.adapter.request_device_sync(required_features=required_features)
 
 	def setup_callbacks(self) -> None:
-		glfw.set_key_callback(self.window, self.setup_event("key"))
-		glfw.set_char_callback(self.window, self.setup_event("char"))
-		glfw.set_mouse_button_callback(self.window, self.setup_event("mouse_click"))
-		glfw.set_cursor_pos_callback(self.window, self.setup_event("mouse_move"))
-		glfw.set_cursor_enter_callback(self.window, self.setup_event("mouse_enter"))
-		glfw.set_scroll_callback(self.window, self.setup_event("mouse_scroll"))
+		glfw.set_key_callback(self.window, self.setup_glfw_event("key"))
+		glfw.set_char_callback(self.window, self.setup_glfw_event("char"))
+		glfw.set_mouse_button_callback(self.window, self.setup_glfw_event("mouse_click"))
+		glfw.set_cursor_pos_callback(self.window, self.setup_glfw_event("mouse_move"))
+		glfw.set_cursor_enter_callback(self.window, self.setup_glfw_event("mouse_enter"))
+		glfw.set_scroll_callback(self.window, self.setup_glfw_event("mouse_scroll"))
+		self.idle_hook = self.setup_event("idle")
 
 	def update_window_size(self, wh: tuple[int, int]) -> None:
 		w, h = wh
@@ -145,28 +148,34 @@ class _RenderContext:
 	def subscribe_event(self, channel_name: str, handler: Callable) -> None:
 		self.event_handlers[channel_name].append(handler)
 
+	def setup_glfw_event(
+		self,
+		channel_name: str,
+		mapper: Callable | None = None,
+	) -> Callable:
+		
+		def deflt_mapper(*args) -> tuple:
+			return args[1:] # glfw first arg is window handle
+		
+		mapper = mapper or deflt_mapper
+
+		return self.setup_event(channel_name, mapper)
+
 	def setup_event(
 		self,
 		channel_name: str,
 		mapper: Callable | None = None,
-		info_log: bool = False,
 	) -> Callable:
-		def print_handler(*args):
-			print(channel_name, *args)
 
-		handlers = []
-		if info_log:
-			handlers.append(print_handler)
-		self.event_handlers[channel_name] = handlers
+		self.event_handlers[channel_name] = []
 
 		def deflt_mapper(*args) -> tuple:
-			return args[1:]
+			return args
 
-		mapper = mapper if mapper else deflt_mapper
+		mapper = mapper or deflt_mapper
 
 		def handlers_call(*args) -> None:
-			if mapper:
-				args = mapper(*args)
+			args = mapper(*args)
 			for handler in self.event_handlers[channel_name]:
 				if handler(*args):
 					break
@@ -254,23 +263,33 @@ class _RenderContext:
 	) -> DepthAttachment:
 		return DepthAttachment(self.depth, self.depth_format, clear, store, read_only)
 
-
 RenderContext = _RenderContext()
 
 class GC_Manager:
-	""" decides whether to run gc, called every frame """
+	""" decides whether to run gc, called by 'idle' hook
+	automatically instanciated by RenderContext.init_window by default
+	"""
 
-	def __init__(self) -> None:
+	def __init__(self,
+		thresholds  : tuple[int,int,int]         = (300, 15, 10),
+		time_budgets: tuple[float, float, float] = (0.0005, 0.002, 0.005), # sec
+	) -> None:
+
+		# collect then freeze, assuming initial window setup is there to stay 
+		gc.collect(0)
+		gc.freeze()
+
 		gc.disable()
-		self.time_budgets: tuple[float, float, float] = (
-			0.0005, 0.002, 0.005 # sec
-		)
+		gc.set_threshold(*thresholds)
+		self.time_budgets = time_budgets
 
 	def __call__(self):
 		counts = gc.get_count()
 		thresholds = gc.get_threshold()
 
-		max_gen = 2 # there are 3 generations : 0, 1, 2
+		#print(f'{counts=}, {thresholds=}')
+
+		max_gen = -1
 		
 		if RenderContext.target_frame_time:
 			budget = RenderContext.target_frame_time - (get_time() - RenderContext.frame_start)
@@ -278,12 +297,26 @@ class GC_Manager:
 				if budget >= self.time_budgets[gen]:
 					max_gen = gen
 					break
+		else:
+			max_gen = 2 # there are 3 generations : 0, 1, 2
 
+		#print(f'{max_gen=}')
 		for gen in range(max_gen, -1, -1):
 			if counts[gen] >= thresholds[gen]:
 				gc.collect(gen)
 				#print("collected gen", gen)
 				break
+
+	@classmethod
+	def scene_transition(unload: Callable, load: Callable) -> None:
+		""" collects old scene, mark new scene for keeping """
+		gc.unfreeze()
+		unload()
+		gc.collect(2)  # Sweeps old scene
+		load()
+		gc.collect(0)  # Sweeps temporary load junk
+		gc.collect(0)  # called twice since some stuff survives single sweeps 
+		gc.freeze()    # locks new scene graph into permanent generation
 
 
 class CommandContext:
