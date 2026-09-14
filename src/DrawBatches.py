@@ -22,6 +22,7 @@ indirect_dtype = np.dtype([
 	("base_vertex", "<i4"), ("first_instance", "<u4"),
 ])
 
+MeshId = int | None
 
 @dataclass
 class SourceBatch:
@@ -32,13 +33,13 @@ class SourceBatch:
 
 @dataclass(frozen=True)
 class LodGroup:
-	mesh_ids: tuple[int, ...]
+	mesh_ids: tuple[MeshId, ...]
 	distances: tuple[float, ...]
 
 @dataclass
 class DrawBatch:
 	"""Main-pass destination; offset/count describe its reserved index region."""
-	mesh_id: int
+	mesh_id: MeshId
 	shader_id: int
 	offset: int
 	count: int
@@ -97,7 +98,7 @@ class DrawBatches:
 	def __init__(self, cull_shader: Shader | None = None) -> None:
 		self._cull_shader: Shader = cull_shader or Shader(filepath='scenes/shaders/cull.shader', label="cull")
 		self._cull_pipelines: dict[str, ComputePipeline] = {}
-		self.meshes: dict[int, MeshInfo] = {}
+		self.meshes: dict[MeshId, MeshInfo] = {}
 		self.group_rows: dict[int, int] = {}
 		self.lod_groups: dict[int, LodGroup] = {}
 		self.source_batches: list[SourceBatch] = []
@@ -126,13 +127,14 @@ class DrawBatches:
 		self.camera_params_buffer = self._cull_shader.UniformBuffer("camera_params")
 		self._camera_params_dirty = False
 
-	def register_lod_group(self, group_id: int, mesh_ids: Sequence[int], distances: Sequence[float] = ()) -> None:
+	def register_lod_group(self, group_id: int, mesh_ids: Sequence[MeshId], distances: Sequence[float] = ()) -> None:
 		"""MeshRef.id names a group. Distances are increasing world-space switch distances.
 
 		Supply one fewer distance than meshes; equality selects the coarser LoD.
+		None meshId renders nothing in that LoD range; at least one mesh must be non-None.
 		Distances are measured from the culling camera to the transformed group bounds center.
 		All variants must use the same local coordinate system and compatible shaders.
-		Example: register_lod_group(10, (100, 101, 102), (30.0, 100.0)).
+		Example: register_lod_group(10, (100, 101, None), (30.0, 100.0)).
 		"""
 		mesh_ids = tuple(mesh_ids)
 		distances = tuple(float(value) for value in distances)
@@ -141,7 +143,10 @@ class DrawBatches:
 		values = np.asarray(distances, dtype=np.float32)
 		if not np.all(np.isfinite(values)) or np.any(values <= 0) or np.any(np.diff(values) <= 0):
 			raise ValueError("LoD distances must be finite, positive and strictly increasing in float32")
+		if all(mesh_id is None for mesh_id in mesh_ids):
+			raise ValueError("Expected at least one non-None mesh for group bounds")
 		for mesh_id in mesh_ids:
+			if mesh_id is None: continue
 			if mesh_id not in self.meshes: raise KeyError(f"Unregistered mesh_id {mesh_id}")
 		group = LodGroup(mesh_ids, distances)
 		previous = self.lod_groups.get(group_id)
@@ -214,7 +219,7 @@ class DrawBatches:
 
 
 	def _group_bounds(self, group_id: int) -> tuple[np.ndarray, np.ndarray]:
-		infos = [self.meshes[mesh_id] for mesh_id in self.lod_groups[group_id].mesh_ids]
+		infos = [self.meshes[mesh_id] for mesh_id in self.lod_groups[group_id].mesh_ids if mesh_id is not None]
 		box_min = np.min([info.box_center - info.box_extents for info in infos], axis=0)
 		box_max = np.max([info.box_center + info.box_extents for info in infos], axis=0)
 		return (box_min + box_max) * 0.5, (box_max - box_min) * 0.5
@@ -312,13 +317,17 @@ class DrawBatches:
 			prepass = self.shaders[batch.shader_id].prepass is not None
 			params[batch_id] = (group_rows[batch.lod_group_id], batch.offset, batch.count, len(commands), prepass, 0)
 			for mesh_id in self.lod_groups[batch.lod_group_id].mesh_ids:
-				mesh = self.meshes[mesh_id].mesh
 				command_index = len(commands)
 				draw_batches.append(DrawBatch(mesh_id, batch.shader_id, main_count, batch.count, command_index))
-				command = (mesh.index_count, 0, mesh.index_range[0], mesh.vertex_range[0])
-				commands.append((*command, main_count))
+				if mesh_id is None:
+					command = (0, 0, 0, 0)
+					commands.append((*command, main_count))
+				else:
+					mesh = self.meshes[mesh_id].mesh
+					command = (mesh.index_count, 0, mesh.index_range[0], mesh.vertex_range[0])
+					commands.append((*command, main_count))
+					mesh_commands.setdefault(mesh_id, []).append(command_index)
 				prepass_commands.append((*command, prepass_count if prepass else 0))
-				mesh_commands.setdefault(mesh_id, []).append(command_index)
 				main_count += batch.count
 				if prepass: prepass_count += batch.count
 		if max(
@@ -408,6 +417,7 @@ class DrawBatches:
 	def draw(self, rp: Any, stage: str) -> None:
 		commands = self.buffers[f"{stage}_draw_cmd"]
 		for batch in self.draw_batches:
+			if batch.mesh_id is None: continue
 			spec = getattr(self.shaders[batch.shader_id], stage)
 			if spec is None: continue
 			rp.set_pipeline(spec.pipeline)

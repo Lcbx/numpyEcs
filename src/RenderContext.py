@@ -308,15 +308,20 @@ class GC_Manager:
 				break
 
 	@classmethod
-	def scene_transition(unload: Callable, load: Callable) -> None:
+	def full_sweep() -> None:
+		gc.unfreeze()
+		gc.collect(2)
+		gc.freeze()
+
+	@classmethod
+	def scene_transition(new_scene_load: Callable) -> None:
 		""" collects old scene, mark new scene for keeping """
 		gc.unfreeze()
-		unload()
 		gc.collect(2)  # Sweeps old scene
 		load()
 		gc.collect(0)  # Sweeps temporary load junk
-		gc.collect(0)  # called twice since some stuff survives single sweeps 
-		gc.freeze()    # locks new scene graph into permanent generation
+		gc.collect(0)  # called twice since some stuff survives single sweeps
+		gc.freeze()    # exclude new scene from sweeps
 
 
 class CommandContext:

@@ -92,6 +92,7 @@ fn cull_frustum(@builtin(workgroup_id) group_id: vec3u, @builtin(num_workgroups)
 			lod = i;
 		}
 		let command_id = batches[batch_id].command_offset + lod;
+		if prepass_draw_cmd[command_id].index_count == 0u { return; }
 		let slot = atomicAdd(&batches[batch_id].frustum_count, 1u);
 		frustum_candidates[instance_offset + slot] = FrustumCandidate(instance_id, command_id);
 		if batches[batch_id].prepass != 0u {

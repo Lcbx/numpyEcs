@@ -154,8 +154,8 @@ cube_mesh = make_cube_mesh()
 render_data.register_mesh(0, model_mesh)
 render_data.register_mesh(1, cube_mesh)
 
-# to test LoD system, pole becomes box after some distance
-render_data.register_lod_group(0, (0,1), (100.0,))
+# to test LoD system, pole disappears after some distance
+render_data.register_lod_group(0, (0, None), (100.0,))
 render_data.register_lod_group(1, (1,))
 
 
